@@ -1,0 +1,13 @@
+venv
+.local
+__pycache__
+*.csv
+*.tar.gz
+*.tar
+*.gz
+*.cast
+*.parquet
+*.gzip
+*.rec
+*.zip
+dist

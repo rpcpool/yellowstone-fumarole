@@ -1,0 +1,3 @@
+[submodule "yellowstone-api"]
+	path = yellowstone-api
+	url = https://github.com/rpcpool/yellowstone-api
