@@ -1,9 +1,13 @@
-
 import multiprocessing
 import random
 import string
 import click
-from fume.grpc import FumaroleClient, grpc_channel, subscribe_update_to_dict, subscribe_update_to_summarize
+from fume.grpc import (
+    FumaroleClient,
+    grpc_channel,
+    subscribe_update_to_dict,
+    subscribe_update_to_summarize,
+)
 
 
 def generate_random_cg_name():
@@ -20,11 +24,11 @@ def generate_random_cg_name():
     default=generate_random_cg_name,
 )
 @click.option(
-    "-p", 
-    "--parallel", 
-    help="Number of parallel consumers, the number cannot be greater than the size of group", 
-    type=int, 
-    default=1
+    "-p",
+    "--parallel",
+    help="Number of parallel consumers, the number cannot be greater than the size of group",
+    type=int,
+    default=1,
 )
 @click.option(
     "--tx-account",
@@ -59,26 +63,19 @@ def generate_random_cg_name():
     show_default=True,
 )
 @click.option(
-    '-o', '--output-format',
+    "-o",
+    "--output-format",
     help="Output format",
     type=click.Choice(["json", "summ"]),
     default="summ",
 )
 @click.pass_context
-def stream(
-    ctx, 
-    cg_name,
-    parallel,
-    tx_account,
-    account,
-    owner,
-    output_format
-):
+def stream(ctx, cg_name, parallel, tx_account, account, owner, output_format):
     """Stream JSON data from Fumarole."""
-    conn = ctx.obj['conn']
-    endpoints = conn['endpoints']
-    x_token = conn.get('x-token')
-    metadata = conn.get('grpc-metadata')
+    conn = ctx.obj["conn"]
+    endpoints = conn["endpoints"]
+    x_token = conn.get("x-token")
+    metadata = conn.get("grpc-metadata")
 
     subscribe_request = {}
 
@@ -92,11 +89,12 @@ def stream(
         if owner:
             subscribe_request["accounts"]["owner"] = list(owner)
 
-
     def fumarole_stream_proc(shared_q, cg_name, member_idx, endpoint, x_token):
         with grpc_channel(endpoint, x_token) as channel:
             fc = FumaroleClient(channel, metadata=metadata)
-            for event in fc.subscribe(cg_name, member_idx, mapper=output_format, **subscribe_request):
+            for event in fc.subscribe(
+                cg_name, member_idx, mapper=output_format, **subscribe_request
+            ):
                 shared_q.put(event)
 
     def stream_loop(mpq, fumarole_ps):
@@ -111,17 +109,12 @@ def stream(
         endpoint = endpoints[j]
         print(f"Spawned fumarole connection: {i}...")
         fumarole = multiprocessing.Process(
-            target=fumarole_stream_proc, 
-            args=(
-                mpq,
-                cg_name,
-                i,
-                endpoint,
-                x_token
-            )
+            target=fumarole_stream_proc, args=(mpq, cg_name, i, endpoint, x_token)
         )
         fumarole.start()
-        click.echo(f"Started fumarole connection: {i} with pid={fumarole.pid}!", err=True)
+        click.echo(
+            f"Started fumarole connection: {i} with pid={fumarole.pid}!", err=True
+        )
         fumarole_ps.append(fumarole)
 
     try:

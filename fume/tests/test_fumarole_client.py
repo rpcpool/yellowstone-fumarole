@@ -5,41 +5,45 @@ import toml
 import pytest
 from fume.grpc import FumaroleClient, grpc_channel
 
+
 @pytest.fixture
 def test_config():
-    test_config_path = os.environ.get('FUME_TEST_CONFIG')
+    test_config_path = os.environ.get("FUME_TEST_CONFIG")
     if test_config_path:
         with open(test_config_path) as f:
             config = toml.load(f)
-            return config['fumarole']
+            return config["fumarole"]
     else:
         return {
-            'endpoints': 'localhost:9000',
-            'x-token': None,
-            'x-subscription-id': '11111111-11111111-11111111-11111111'
+            "endpoints": "localhost:9000",
+            "x-token": None,
+            "x-subscription-id": "11111111-11111111-11111111-11111111",
         }
 
 
 @pytest.fixture
 def fumarole_client(test_config):
 
-    metadata = [ (k, v) for k, v in test_config.items() 
-                 if k.startswith('x-') and k != "x-token" ]
+    metadata = [
+        (k, v) for k, v in test_config.items() if k.startswith("x-") and k != "x-token"
+    ]
 
-    with grpc_channel(test_config['endpoints'][0], test_config.get('x-token')) as channel:
+    with grpc_channel(
+        test_config["endpoints"][0], test_config.get("x-token")
+    ) as channel:
         yield FumaroleClient(channel, metadata=metadata)
 
 
 def random_str(len, prefix=None):
-    suffix = ''.join(random.choices(string.ascii_letters, k=len))
+    suffix = "".join(random.choices(string.ascii_letters, k=len))
     if prefix:
         return f"{prefix}-{suffix}"
     return suffix
 
 
 def test_create_consumer_group(fumarole_client: FumaroleClient):
-    cg_name = random_str(6, prefix='fume-test')
-    commitment = 'confirmed'
+    cg_name = random_str(6, prefix="fume-test")
+    commitment = "confirmed"
 
     cg = fumarole_client.create_consumer_group(
         name=cg_name,
@@ -55,8 +59,8 @@ def test_create_consumer_group(fumarole_client: FumaroleClient):
 
 
 def test_delete_consumer(fumarole_client: FumaroleClient):
-    cg_name = random_str(6, prefix='fume-test')
-    commitment = 'confirmed'
+    cg_name = random_str(6, prefix="fume-test")
+    commitment = "confirmed"
 
     cg = fumarole_client.create_consumer_group(
         name=cg_name,
