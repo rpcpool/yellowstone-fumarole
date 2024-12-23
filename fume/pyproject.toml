@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "yellowstone-fume"
+version = "0.1.0"
+description = "Yellowstone Fumarole CLI tool"
+authors = ["Louis-Vincent <louis-vincent@triton.one>"]
+readme = "README.md"
+
+packages = [
+    { include = "yellowstone_api" },
+    { include = "fume" },
+]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+click = "^8.1.7"
+grpcio = "^1.68.1"
+protobuf = "^5.29.1"
+toml = "^0.10.2"
+base58 = "^2.1.1"
+tabulate = "^0.9.0"
+lark = "^1.2.2"
+
+
+[tool.poetry.scripts]
+fume = "fume.cli.app:main"
+
+[tool.poetry.group.test.dependencies]
+pytest = "^8.3.4"
+
+
+
+[tool.poetry.group.dev.dependencies]
+grpcio-tools = "^1.68.1"
+black = "^24.10.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

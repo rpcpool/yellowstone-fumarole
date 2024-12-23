@@ -11,3 +11,4 @@ __pycache__
 *.rec
 *.zip
 dist
+.pytest_cache
