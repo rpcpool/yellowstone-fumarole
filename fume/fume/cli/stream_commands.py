@@ -121,11 +121,10 @@ def stream(ctx, cg_name, parallel, tx_account, account, owner, output_format):
         stream_loop(mpq, fumarole_ps)
         click.echo("All connections closed", err=True)
     except KeyboardInterrupt:
-        click.echo("Ctrl+C detected, cleaning up...", err=True)
+        pass
     except EOFError:
-        click.echo("Ctrl+D detected, cleaning up...", err=True)
+        pass
     finally:
-        click.echo("Closing all connections...", err=True)
         for p in fumarole_ps:
             p.terminate()
         for p in fumarole_ps:
