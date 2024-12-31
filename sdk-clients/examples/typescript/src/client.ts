@@ -13,9 +13,9 @@ import Client, {
   SubscribeUpdateTransactionInfo,
   txEncode,
   txErrDecode,
-} from "@triton-one/yellowstone-grpc";
-import { EventSubscriptionPolicy, FumaroleClient, InitialOffsetPolicy } from "@triton-one/yellowstone-grpc/dist/grpc/fumarole";
-import { WasmUiTransactionEncoding } from "@triton-one/yellowstone-grpc/dist/encoding/yellowstone_grpc_solana_encoding_wasm";
+} from "@triton-one/yellowstone-fumarole";
+import { EventSubscriptionPolicy, FumaroleClient, InitialOffsetPolicy } from "@triton-one/yellowstone-fumarole/dist/grpc/fumarole";
+import { WasmUiTransactionEncoding } from "@triton-one/yellowstone-fumarole/dist/encoding/yellowstone_grpc_solana_encoding_wasm";
 
 async function main() {
   const args = parseCommandLineArgs();
@@ -143,6 +143,7 @@ async function fumaroleSubscribeCommand(client: FumaroleSDKClient, args) {
     consumerGroupLabel: args.consumerGroupLabel,
     consumerId: 0
   };
+console.log(request);
 
   // Subscribe for events
   const stream = await client.subscribe();
@@ -166,6 +167,8 @@ async function fumaroleSubscribeCommand(client: FumaroleSDKClient, args) {
 
   // Handle updates
   stream.on("data", (data) => {
+    console.log(data);
+    
     try {
       const start = performance.now()
       const parsedTx = txEncode.encode(data.transaction.transaction, WasmUiTransactionEncoding.JsonParsed, 255, true)
@@ -175,19 +178,6 @@ async function fumaroleSubscribeCommand(client: FumaroleSDKClient, args) {
     catch (e) { }
   });
 
-  new Promise<void>(() => {
-    while (true) {
-      if (count == 10000) {
-        let sum = 0
-        for (let i = 0; i < count; i++) {
-          sum += times[i]
-        }
-        console.log(`Average time to parse and print ${count} txs: ${Math.floor(sum / count)}`);
-
-        count = 1;
-      }
-    }
-  });
 
   // Send subscribe request
   await new Promise<void>((resolve, reject) => {
