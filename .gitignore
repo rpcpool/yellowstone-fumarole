@@ -12,3 +12,11 @@ __pycache__
 *.zip
 dist
 .pytest_cache
+
+# NodeJS
+sdk-clients/yellowstone-fumarole-client-nodejs/node_modules
+sdk-clients/yellowstone-fumarole-client-nodejs/dist
+sdk-clients/yellowstone-fumarole-client-nodejs/src/encoding
+sdk-clients/yellowstone-fumarole-client-nodejs/src/grpc
+
+sdk-clients/yellowstone-fumarole-client-nodejs/solana-encoding-wasm/target
