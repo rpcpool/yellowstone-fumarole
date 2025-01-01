@@ -143,7 +143,6 @@ async function fumaroleSubscribeCommand(client: FumaroleSDKClient, args) {
     consumerGroupLabel: args.consumerGroupLabel,
     consumerId: 0
   };
-console.log(request);
 
   // Subscribe for events
   const stream = await client.subscribe();
@@ -162,20 +161,19 @@ console.log(request);
     });
   });
 
-  let count = 1
-  const times = []
-
   // Handle updates
   stream.on("data", (data) => {
+    console.log("Log raw transaction or parse it");
     console.log(data);
-    
+
     try {
-      const start = performance.now()
       const parsedTx = txEncode.encode(data.transaction.transaction, WasmUiTransactionEncoding.JsonParsed, 255, true)
-      times.push(performance.now() - start)
-      ++count
+
+      console.log(parsedTx);
     }
-    catch (e) { }
+    catch (e) {
+      console.log("Parsing Failed");
+    }
   });
 
 
@@ -215,45 +213,45 @@ async function subscribeCommand(client, args) {
   });
 
 
-let times=[]
-let count=1
+  let times = []
+  let count = 1
 
-    // Handle updates
-    stream.on("data", (data) => {
-      try {
-        const start = performance.now()
-        const parsedTx = txEncode.encode(data.transaction.transaction, WasmUiTransactionEncoding.JsonParsed, 255, true)
-        times.push(performance.now() - start)
-        count++
+  // Handle updates
+  stream.on("data", (data) => {
+    try {
+      const start = performance.now()
+      const parsedTx = txEncode.encode(data.transaction.transaction, WasmUiTransactionEncoding.JsonParsed, 255, true)
+      times.push(performance.now() - start)
+      count++
 
 
-        if (count == 3) {
-          let sum = 0
-          for (let i = 0; i < count; i++) {
-            sum += times[i]
-          }
-          console.log(`Average time to parse and print ${count} txs: ${Math.floor(sum / count)}`);
-  
-          count = 1;
+      if (count == 3) {
+        let sum = 0
+        for (let i = 0; i < count; i++) {
+          sum += times[i]
         }
+        console.log(`Average time to parse and print ${count} txs: ${Math.floor(sum / count)}`);
 
+        count = 1;
       }
-      catch (e) { }
-    });
 
-    // new Promise<void>(() => {
-    //   while (true) {
-    //     if (count == 3) {
-    //       let sum = 0
-    //       for (let i = 0; i < count; i++) {
-    //         sum += times[i]
-    //       }
-    //       console.log(`Average time to parse and print ${count} txs: ${Math.floor(sum / count)}`);
-  
-    //       count = 1;
-    //     }
-    //   }
-    // });
+    }
+    catch (e) { }
+  });
+
+  // new Promise<void>(() => {
+  //   while (true) {
+  //     if (count == 3) {
+  //       let sum = 0
+  //       for (let i = 0; i < count; i++) {
+  //         sum += times[i]
+  //       }
+  //       console.log(`Average time to parse and print ${count} txs: ${Math.floor(sum / count)}`);
+
+  //       count = 1;
+  //     }
+  //   }
+  // });
 
 
 
