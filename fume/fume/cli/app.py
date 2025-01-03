@@ -16,7 +16,6 @@ def parse_key_value(ctx, param, value):
     for item in value:
         key, val = item.split(":", 1)  # split only on the first colon
         pairs.append((key, val))
-    print(f"my pairs: {pairs}")
     return pairs
 
 
