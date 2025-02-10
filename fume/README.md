@@ -207,7 +207,7 @@ poetry install
 Test in fume CLI works by printing its version:
 
 ```sh
-$ fume version
+$ poetry run fume version
 0.1.0
 ```
 
