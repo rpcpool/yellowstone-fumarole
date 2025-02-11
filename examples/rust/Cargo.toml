@@ -1,0 +1,23 @@
+[package]
+name = "yellowstone-fumarole-client-simple"
+authors = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+license = "Apache-2.0"
+keywords = { workspace = true }
+publish = { workspace = true }
+
+[[bin]]
+name = "client"
+
+[dependencies]
+solana-sdk = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde_yaml = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio-stream = { workspace = true }
+yellowstone-fumarole-client = { workspace = true }
+
+[lints]
+workspace = true
