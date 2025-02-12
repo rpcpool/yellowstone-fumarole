@@ -138,7 +138,7 @@ impl Default for SubscribeRequestBuilder {
 }
 
 impl SubscribeRequestBuilder {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             accounts: None,
             owners: None,
