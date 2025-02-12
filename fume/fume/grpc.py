@@ -260,8 +260,13 @@ class FumaroleClient:
             map_fn = subscribe_update_to_summarize
         else:
             map_fn = mapper
-
-        for subscribe_update in stream:
-            result = map_fn(subscribe_update)
-            if result is not None:
-                yield result
+        try:
+            for subscribe_update in stream:
+                result = map_fn(subscribe_update)
+                if result is not None:
+                    yield result
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.CANCELLED:
+                return
+            else:
+                raise e
