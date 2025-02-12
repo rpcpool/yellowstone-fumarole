@@ -1,13 +1,16 @@
-use std::path::PathBuf;
-
-use clap::{command, Parser, Subcommand};
-use solana_sdk::pubkey::Pubkey;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
-use yellowstone_fumarole_client::{config::FumaroleConfig, FumaroleClientBuilder};
-
-
-
+use {
+    clap::{command, Parser, Subcommand},
+    solana_sdk::{bs58, pubkey::Pubkey},
+    std::{path::PathBuf, str::FromStr},
+    tokio::{sync::mpsc, task::JoinSet},
+    tokio_stream::wrappers::ReceiverStream,
+    yellowstone_fumarole_client::{
+        config::FumaroleConfig,
+        fumarole::SubscribeRequest,
+        geyser::{SubscribeUpdateAccount, SubscribeUpdateTransaction},
+        BoxedFumaroleClient, FumaroleBoxedChannel, FumaroleClientBuilder,
+    },
+};
 
 #[derive(Debug, Clone, Parser)]
 #[clap(author, version, about = "Yellowstone gRPC ScyllaDB Tool")]
@@ -23,7 +26,7 @@ struct Args {
 #[derive(Debug, Clone, Parser)]
 enum Action {
     /// Subscribe to fumarole events
-    Subscribe(SubscribeArgs)
+    Subscribe(SubscribeArgs),
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -43,58 +46,68 @@ struct SubscribeArgs {
     /// List of account pubkeys that we want transaction to include
     #[clap(long, required = false)]
     tx_accounts: Option<Vec<Pubkey>>,
+
+    /// Number of parallel streams to open: must be lower or equal to the size of your consumer group, otherwise the program will return an error
+    #[clap(long)]
+    par: Option<u32>,
 }
 
-async fn subscribe(
-    args: SubscribeArgs,
-    config: FumaroleConfig,
+fn summarize_account(account: SubscribeUpdateAccount) -> Option<String> {
+    let slot = account.slot;
+    let account = account.account?;
+    let pubkey = Pubkey::try_from(account.pubkey).expect("Failed to parse pubkey");
+    let owner = Pubkey::try_from(account.owner).expect("Failed to parse owner");
+    Some(format!("account,{},{},{}", slot, pubkey, owner))
+}
+
+fn summarize_tx(tx: SubscribeUpdateTransaction) -> Option<String> {
+    let slot = tx.slot;
+    let tx = tx.transaction?;
+    let sig = bs58::encode(tx.signature).into_string();
+    Some(format!("tx,{slot},{sig}"))
+}
+
+async fn subscribe_with_request(
+    mut fumarole: BoxedFumaroleClient,
+    request: SubscribeRequest,
+    out_tx: mpsc::Sender<String>,
 ) {
-    let mut fumarole = FumaroleClientBuilder::connect(config)
-        .await
-        .expect("Failed to connect to Fumarole service");
-    let accounts = args.accounts;
-    let owners = args.owners;
-    let tx_accounts = args.tx_accounts;
-
-    let request = yellowstone_fumarole_client::SubscribeRequestBuilder::default()
-        .with_accounts(accounts)
-        .with_owners(owners)
-        .with_tx_accounts(tx_accounts)
-        .build("my_consumer".to_string());
-
     let (tx, rx) = mpsc::channel(100);
     let rx = ReceiverStream::new(rx);
-    let rx = fumarole.subscribe(rx).await.expect("Failed to subscribe to Fumarole service");
 
-    tx.send(request).await.expect("Failed to send request to Fumarole service");
-
+    // NOTE: Make sure send request before giving the stream to the service
+    // Otherwise, the service will not be able to send the response
+    // This is due to how fumarole works in the background for auto-commit offset management.
+    tx.send(request)
+        .await
+        .expect("Failed to send request to Fumarole service");
+    let rx = fumarole
+        .subscribe(rx)
+        .await
+        .expect("Failed to subscribe to Fumarole service");
+    println!("Subscribed to Fumarole service");
+    println!("Request sent");
     let mut rx = rx.into_inner();
 
     loop {
         match rx.message().await {
             Ok(Some(event)) => {
-                if let Some(oneof) = event.update_oneof {
+                let message = if let Some(oneof) = event.update_oneof {
                     match oneof {
                         yellowstone_fumarole_client::geyser::subscribe_update::UpdateOneof::Account(account_update) => {
-                            let account = match account_update.account {
-                                Some(account_update) => account_update,
-                                None => continue,
-                            };
-                            let pubkey = Pubkey::try_from(account.pubkey).expect("Failed to parse pubkey");
-                            let owner = Pubkey::try_from(account.owner).expect("Failed to parse owner");
-                            let slot = account_update.slot;
-                            println!("account,{slot},{pubkey},{owner}");
+                            summarize_account(account_update)
                         }
                         yellowstone_fumarole_client::geyser::subscribe_update::UpdateOneof::Transaction(tx) => {
-                            let slot = tx.slot;
-                            let tx = match tx.transaction {
-                                Some(tx) => tx,
-                                None => continue,
-                            };
-                            let tx_id = Pubkey::try_from(tx.signature).expect("Failed to parse tx signature");
-                            println!("tx,{slot},{tx_id}");
+                            summarize_tx(tx)
                         }
-                        _ => continue,
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(message) = message {
+                    if out_tx.send(message).await.is_err() {
+                        break;
                     }
                 }
             }
@@ -107,12 +120,57 @@ async fn subscribe(
     }
 }
 
+async fn subscribe(args: SubscribeArgs, config: FumaroleConfig) {
+    let accounts = args.accounts;
+    let owners = args.owners;
+    let tx_accounts = args.tx_accounts;
+    println!("parallel count: {:?}", args.par);
+    let requests = yellowstone_fumarole_client::SubscribeRequestBuilder::default()
+        .with_accounts(accounts)
+        .with_owners(owners)
+        .with_tx_accounts(tx_accounts)
+        .build_vec(args.cg_name, args.par.unwrap_or(1));
+
+    let mut task_set = JoinSet::new();
+
+    let (shared_tx, mut rx) = mpsc::channel(1000);
+    for request in requests {
+        let fumarole = FumaroleClientBuilder::connect(config.clone())
+            .await
+            .expect("Failed to connect to Fumarole service");
+        let tx = shared_tx.clone();
+        task_set.spawn(subscribe_with_request(fumarole, request, tx));
+    }
+
+    loop {
+        tokio::select! {
+            maybe = task_set.join_next() => {
+                let result = maybe.expect("no task");
+                if let Err(e) = result {
+                    eprintln!("Task failed: {:?}", e);
+                }
+                break
+            }
+            maybe = rx.recv() => {
+                match maybe {
+                    Some(message) => {
+                        println!("{}", message);
+                    }
+                    None => {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() {
     let args: Args = Args::parse();
     let config = std::fs::read_to_string(&args.config).expect("Failed to read config file");
-    let config: FumaroleConfig = serde_yaml::from_str(&config).expect("Failed to parse config file");
+    let config: FumaroleConfig =
+        serde_yaml::from_str(&config).expect("Failed to parse config file");
 
     match args.action {
         Action::Subscribe(sub_args) => {

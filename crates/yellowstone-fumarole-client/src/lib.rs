@@ -1,11 +1,15 @@
 pub mod config;
 
 use {
-    config::FumaroleConfig, fumarole::{AccountUpdateFilter, TransactionFilter}, solana_sdk::pubkey::Pubkey, tonic::{
+    config::FumaroleConfig,
+    fumarole::{AccountUpdateFilter, TransactionFilter},
+    solana_sdk::pubkey::Pubkey,
+    tonic::{
         metadata::{Ascii, MetadataValue},
         service::Interceptor,
         transport::{Channel, ClientTlsConfig},
-    }, tower::{util::BoxService, ServiceBuilder, ServiceExt}
+    },
+    tower::{util::BoxService, ServiceBuilder, ServiceExt},
 };
 
 pub mod solana {
@@ -61,11 +65,15 @@ pub type FumaroleBoxedChannel = BoxService<
     tonic::transport::Error,
 >;
 
+pub type BoxedFumaroleClient = FumaroleClient<FumaroleBoxedChannel>;
+
 impl FumaroleClientBuilder {
     ///
     /// Connect to a Fumarole service.
-    /// 
-    pub async fn connect(config: FumaroleConfig) -> Result<FumaroleClient<FumaroleBoxedChannel>, ConnectError> {
+    ///
+    pub async fn connect(
+        config: FumaroleConfig,
+    ) -> Result<FumaroleClient<FumaroleBoxedChannel>, ConnectError> {
         let tls_config = ClientTlsConfig::new().with_native_roots();
         let channel = Channel::from_shared(config.endpoint.clone())?
             .tls_config(tls_config)?
@@ -76,7 +84,7 @@ impl FumaroleClientBuilder {
 
     ///
     /// Connect to a Fumarole service with an existing channel.
-    /// 
+    ///
     pub async fn connect_with_channel(
         config: FumaroleConfig,
         channel: tonic::transport::Channel,
@@ -92,30 +100,31 @@ impl FumaroleClientBuilder {
             channel.boxed()
         };
 
-        Ok(FumaroleClient::new(svc).max_decoding_message_size(config.max_decoding_message_size_bytes))
+        Ok(FumaroleClient::new(svc)
+            .max_decoding_message_size(config.max_decoding_message_size_bytes))
     }
 }
 
-
 ///
 /// A builder for creating a SubscribeRequest.
-/// 
+///
 /// Example:
-/// 
+///
 /// ```rust
 /// use yellowstone_fumarole_client::SubscribeRequestBuilder;
 /// use solana_sdk::pubkey::Pubkey;
-/// 
+///
 /// let accounts = vec![Pubkey::new_keypair()];
 /// let owners = vec![Pubkey::new_keypair()];
 /// let tx_accounts = vec![Pubkey::new_keypair()];
-/// 
+///
 /// let request = SubscribeRequestBuilder::default()
 ///     .with_accounts(accounts)
 ///     .with_owners(owners)
 ///     .with_tx_accounts(tx_accounts)
 ///     .build("my_consumer".to_string());
 /// ```
+#[derive(Clone)]
 pub struct SubscribeRequestBuilder {
     accounts: Option<Vec<Pubkey>>,
     owners: Option<Vec<Pubkey>>,
@@ -130,16 +139,16 @@ impl Default for SubscribeRequestBuilder {
 
 impl SubscribeRequestBuilder {
     pub fn new() -> Self {
-        Self { 
+        Self {
             accounts: None,
             owners: None,
             tx_account_keys: None,
         }
     }
 
-    /// 
+    ///
     /// Sets the accounts to subscribe to.
-    /// 
+    ///
     pub fn with_accounts(mut self, accounts: Option<Vec<Pubkey>>) -> Self {
         self.accounts = accounts;
         self
@@ -147,7 +156,7 @@ impl SubscribeRequestBuilder {
 
     ///
     /// Sets the owners of the accounts to subscribe to.
-    /// 
+    ///
     pub fn with_owners(mut self, owners: Option<Vec<Pubkey>>) -> Self {
         self.owners = owners;
         self
@@ -155,7 +164,7 @@ impl SubscribeRequestBuilder {
 
     ///
     /// Sets the account pubkeys list that needs to be included in each transaction we subscribe to.
-    /// 
+    ///
     pub fn with_tx_accounts(mut self, tx_accounts: Option<Vec<Pubkey>>) -> Self {
         self.tx_account_keys = tx_accounts;
         self
@@ -163,31 +172,40 @@ impl SubscribeRequestBuilder {
 
     ///
     /// Builds a SubscribeRequest.
-    /// 
+    ///
     /// If the consumer index is not provided, it defaults to 0.
-    /// 
-    pub fn build(
-        self,
-        consumer_group: String,
-    ) -> fumarole::SubscribeRequest {
+    ///
+    pub fn build(self, consumer_group: String) -> fumarole::SubscribeRequest {
         self.build_with_consumer_idx(consumer_group, 0)
     }
 
     ///
+    /// Builds a vector of SubscribeRequests where each request has a different consumer index.
+    ///
+    pub fn build_vec(self, consumer_group: String, counts: u32) -> Vec<fumarole::SubscribeRequest> {
+        (0..counts)
+            .map(|i| {
+                self.clone()
+                    .build_with_consumer_idx(consumer_group.clone(), i)
+            })
+            .collect()
+    }
+
+    ///
     /// Builds a SubscribeRequest with a consumer index.
-    /// 
+    ///
     pub fn build_with_consumer_idx(
         self,
         consumer_group: String,
         consumer_idx: u32,
     ) -> fumarole::SubscribeRequest {
-
-        let account = self.accounts
+        let account = self
+            .accounts
             .map(|vec| vec.into_iter().map(|pubkey| pubkey.to_string()).collect());
 
-        let owner = self.owners
+        let owner = self
+            .owners
             .map(|vec| vec.into_iter().map(|pubkey| pubkey.to_string()).collect());
-
 
         let account_filter = match (account, owner) {
             (Some(accounts), Some(owners)) => Some(AccountUpdateFilter {
@@ -213,10 +231,7 @@ impl SubscribeRequestBuilder {
             consumer_group_label: consumer_group,
             consumer_id: Some(consumer_idx),
             accounts: account_filter,
-            transactions: tx_filter
+            transactions: tx_filter,
         }
     }
 }
-
-
-

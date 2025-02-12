@@ -3523,6 +3523,7 @@ dependencies = [
  "solana-sdk",
  "tokio",
  "tokio-stream",
+ "tonic",
  "yellowstone-fumarole-client",
 ]
 

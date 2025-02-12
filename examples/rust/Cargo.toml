@@ -17,6 +17,7 @@ clap = { workspace = true, features = ["derive"] }
 serde_yaml = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tokio-stream = { workspace = true }
+tonic = { workspace = true }
 yellowstone-fumarole-client = { workspace = true }
 
 [lints]

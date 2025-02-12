@@ -13,7 +13,6 @@ pub struct FumaroleConfig {
     pub max_decoding_message_size_bytes: usize,
 }
 
-
 impl FumaroleConfig {
     fn default_max_decoding_message_size_bytes() -> usize {
         512_000_000
