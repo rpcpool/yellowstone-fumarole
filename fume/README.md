@@ -58,7 +58,7 @@ $ fume create-cg --name helloworld-2 \
 
 More usage can be find using the `--help` options:
 
-```
+```sh
 $ fume create-cg --help
 Creates a consumer group
 
