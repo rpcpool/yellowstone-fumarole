@@ -4,6 +4,8 @@ use {
     config::FumaroleConfig,
     fumarole::{AccountUpdateFilter, TransactionFilter},
     solana_sdk::pubkey::Pubkey,
+    tokio::sync::mpsc,
+    tokio_stream::wrappers::ReceiverStream,
     tonic::{
         metadata::{Ascii, MetadataValue},
         service::Interceptor,
@@ -31,7 +33,7 @@ pub mod fumarole {
     include!(concat!(env!("OUT_DIR"), "/fumarole.rs"));
 }
 
-use fumarole::fumarole_client::FumaroleClient;
+use fumarole::fumarole_client::FumaroleClient as TonicFumaroleClient;
 
 #[derive(Clone)]
 struct TritonAuthInterceptor {
@@ -65,15 +67,79 @@ pub type FumaroleBoxedChannel = BoxService<
     tonic::transport::Error,
 >;
 
-pub type BoxedFumaroleClient = FumaroleClient<FumaroleBoxedChannel>;
+pub type BoxedTonicFumaroleClient = TonicFumaroleClient<FumaroleBoxedChannel>;
+
+pub struct FumaroleClient {
+    inner: BoxedTonicFumaroleClient,
+}
+
+impl FumaroleClient {
+    pub async fn subscribe_with_request(
+        &mut self,
+        request: fumarole::SubscribeRequest,
+    ) -> Result<tonic::Response<tonic::codec::Streaming<geyser::SubscribeUpdate>>, tonic::Status>
+    {
+        let (tx, rx) = mpsc::channel(100);
+        let rx = ReceiverStream::new(rx);
+
+        // NOTE: Make sure send request before giving the stream to the service
+        // Otherwise, the service will not be able to send the response
+        // This is due to how fumarole works in the background for auto-commit offset management.
+        tx.send(request)
+            .await
+            .expect("Failed to send request to Fumarole service");
+        self.inner.subscribe(rx).await
+    }
+
+    pub async fn list_available_commitment_levels(
+        &mut self,
+        request: impl tonic::IntoRequest<fumarole::ListAvailableCommitmentLevelsRequest>,
+    ) -> std::result::Result<
+        tonic::Response<fumarole::ListAvailableCommitmentLevelsResponse>,
+        tonic::Status,
+    > {
+        self.inner.list_available_commitment_levels(request).await
+    }
+
+    pub async fn list_consumer_groups(
+        &mut self,
+        request: impl tonic::IntoRequest<fumarole::ListConsumerGroupsRequest>,
+    ) -> std::result::Result<tonic::Response<fumarole::ListConsumerGroupsResponse>, tonic::Status>
+    {
+        self.inner.list_consumer_groups(request).await
+    }
+
+    pub async fn get_consumer_group_info(
+        &mut self,
+        request: impl tonic::IntoRequest<fumarole::GetConsumerGroupInfoRequest>,
+    ) -> std::result::Result<tonic::Response<fumarole::ConsumerGroupInfo>, tonic::Status> {
+        self.inner.get_consumer_group_info(request).await
+    }
+
+    pub async fn delete_consumer_group(
+        &mut self,
+        request: impl tonic::IntoRequest<fumarole::DeleteConsumerGroupRequest>,
+    ) -> std::result::Result<tonic::Response<fumarole::DeleteConsumerGroupResponse>, tonic::Status>
+    {
+        self.inner.delete_consumer_group(request).await
+    }
+
+    pub async fn create_consumer_group(
+        &mut self,
+        request: impl tonic::IntoRequest<fumarole::CreateStaticConsumerGroupRequest>,
+    ) -> std::result::Result<
+        tonic::Response<fumarole::CreateStaticConsumerGroupResponse>,
+        tonic::Status,
+    > {
+        self.inner.create_static_consumer_group(request).await
+    }
+}
 
 impl FumaroleClientBuilder {
     ///
     /// Connect to a Fumarole service.
     ///
-    pub async fn connect(
-        config: FumaroleConfig,
-    ) -> Result<FumaroleClient<FumaroleBoxedChannel>, ConnectError> {
+    pub async fn connect(config: FumaroleConfig) -> Result<FumaroleClient, ConnectError> {
         let tls_config = ClientTlsConfig::new().with_native_roots();
         let channel = Channel::from_shared(config.endpoint.clone())?
             .tls_config(tls_config)?
@@ -88,7 +154,7 @@ impl FumaroleClientBuilder {
     pub async fn connect_with_channel(
         config: FumaroleConfig,
         channel: tonic::transport::Channel,
-    ) -> Result<FumaroleClient<FumaroleBoxedChannel>, ConnectError> {
+    ) -> Result<FumaroleClient, ConnectError> {
         let svc = if let Some(x_token) = config.x_token {
             let metadata = x_token.try_into()?;
             let interceptor = TritonAuthInterceptor { x_token: metadata };
@@ -99,9 +165,12 @@ impl FumaroleClientBuilder {
         } else {
             channel.boxed()
         };
+        let tonic_client = TonicFumaroleClient::new(svc)
+            .max_decoding_message_size(config.max_decoding_message_size_bytes);
 
-        Ok(FumaroleClient::new(svc)
-            .max_decoding_message_size(config.max_decoding_message_size_bytes))
+        Ok(FumaroleClient {
+            inner: tonic_client,
+        })
     }
 }
 

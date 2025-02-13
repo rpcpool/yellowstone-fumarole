@@ -547,6 +547,8 @@ version = "1.2.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7777341816418c02e033934a09f20dc0ccaf65a5201ef8a450ae0105a573fda"
 dependencies = [
+ "jobserver",
+ "libc",
  "shlex",
 ]
 
@@ -681,6 +683,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "crc32fast"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a97769d94ddab943e4510d138150169a2758b5ef3eb191a9ee688de3e23ef7b3"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]
@@ -929,6 +940,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
 
 [[package]]
+name = "flate2"
+version = "1.0.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c936bfdafb507ebbf50b8074c54fa31c5be9a1e7e5f467dd659697041407d07c"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -950,12 +971,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
+name = "futures"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65bc07b1a8bc7c85c5f2e110c476c7389b4554ba72af57d8445ea63a576b0876"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-executor",
+ "futures-io",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dff15bf788c671c1934e366d07e30c1814a8ef514e1af724a602e8a2fbe1b10"
 dependencies = [
  "futures-core",
+ "futures-sink",
 ]
 
 [[package]]
@@ -963,6 +1000,34 @@ name = "futures-core"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f29059c0c2090612e8d742178b0580d2dc940c837851ad723096f87af6663e"
+
+[[package]]
+name = "futures-executor"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e28d1d997f585e54aebc3f97d39e72338912123a67330d723fdbb564d646c9f"
+dependencies = [
+ "futures-core",
+ "futures-task",
+ "futures-util",
+]
+
+[[package]]
+name = "futures-io"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e5c1b78ca4aae1ac06c48a526a655760685149f0d465d21f37abfe57ce075c6"
+
+[[package]]
+name = "futures-macro"
+version = "0.3.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "162ee34ebcb7c64a8abebc059ce0fee27c2262618d7b60ed8faf72fef13c3650"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.98",
+]
 
 [[package]]
 name = "futures-sink"
@@ -982,10 +1047,16 @@ version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9fa08315bb612088cc391249efdc3bc77536f16c91f6cf495e6fbe85b20a4a81"
 dependencies = [
+ "futures-channel",
  "futures-core",
+ "futures-io",
+ "futures-macro",
+ "futures-sink",
  "futures-task",
+ "memchr",
  "pin-project-lite",
  "pin-utils",
+ "slab",
 ]
 
 [[package]]
@@ -1313,6 +1384,15 @@ name = "itoa"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d75a2a4b1b190afb6f5425f10f6a8f959d2ea0b9c2b1d79553551850539e4674"
+
+[[package]]
+name = "jobserver"
+version = "0.1.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48d1dbcbbeb6a7fec7e059840aa538bd62aaccf972c7346c4d9d2059312853d0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "js-sys"
@@ -3118,6 +3198,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bytes",
+ "flate2",
  "h2",
  "http",
  "http-body",
@@ -3138,6 +3219,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+ "zstd",
 ]
 
 [[package]]
@@ -3152,6 +3234,19 @@ dependencies = [
  "prost-types",
  "quote",
  "syn 2.0.98",
+]
+
+[[package]]
+name = "tonic-health"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1eaf34ddb812120f5c601162d5429933c9b527d901ab0e7f930d3147e33a09b2"
+dependencies = [
+ "async-stream",
+ "prost",
+ "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]
@@ -3509,6 +3604,8 @@ dependencies = [
  "serde_yaml",
  "solana-sdk",
  "thiserror",
+ "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-build",
  "tower 0.5.2",
@@ -3525,6 +3622,33 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "yellowstone-fumarole-client",
+ "yellowstone-grpc-client",
+]
+
+[[package]]
+name = "yellowstone-grpc-client"
+version = "5.0.0+solana.2.1.11"
+source = "git+https://github.com/rpcpool/yellowstone-grpc.git?tag=v5.0.0+solana.2.1.11#405879f39eb282775772adb327af7d84ef12ebdd"
+dependencies = [
+ "bytes",
+ "futures",
+ "thiserror",
+ "tonic",
+ "tonic-health",
+ "yellowstone-grpc-proto",
+]
+
+[[package]]
+name = "yellowstone-grpc-proto"
+version = "5.0.0+solana.2.1.11"
+source = "git+https://github.com/rpcpool/yellowstone-grpc.git?tag=v5.0.0+solana.2.1.11#405879f39eb282775772adb327af7d84ef12ebdd"
+dependencies = [
+ "anyhow",
+ "prost",
+ "prost-types",
+ "protobuf-src",
+ "tonic",
+ "tonic-build",
 ]
 
 [[package]]
@@ -3566,4 +3690,32 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.98",
+]
+
+[[package]]
+name = "zstd"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcf2b778a664581e31e389454a7072dab1647606d44f7feea22cd5abb9c9f3f9"
+dependencies = [
+ "zstd-safe",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54a3ab4db68cea366acc5c897c7b4d4d1b8994a9cd6e6f841f8964566a419059"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.0.13+zstd.1.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38ff0f21cfee8f97d94cef41359e0c89aa6113028ab0291aa8ca0038995a95aa"
+dependencies = [
+ "cc",
+ "pkg-config",
 ]

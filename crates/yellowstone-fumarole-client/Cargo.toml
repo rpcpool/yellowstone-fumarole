@@ -18,6 +18,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_with = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tonic = { workspace = true, features = ["tls", "tls-native-roots"] }
 tower = { workspace = true }
 

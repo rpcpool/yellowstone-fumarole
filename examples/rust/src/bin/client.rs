@@ -1,14 +1,13 @@
 use {
-    clap::{command, Parser, Subcommand},
+    clap::Parser,
     solana_sdk::{bs58, pubkey::Pubkey},
-    std::{path::PathBuf, str::FromStr},
+    std::path::PathBuf,
     tokio::{sync::mpsc, task::JoinSet},
-    tokio_stream::wrappers::ReceiverStream,
     yellowstone_fumarole_client::{
         config::FumaroleConfig,
         fumarole::SubscribeRequest,
         geyser::{SubscribeUpdateAccount, SubscribeUpdateTransaction},
-        BoxedFumaroleClient, FumaroleBoxedChannel, FumaroleClientBuilder,
+        BoxedTonicFumaroleClient, FumaroleBoxedChannel, FumaroleClient, FumaroleClientBuilder,
     },
 };
 
@@ -68,21 +67,15 @@ fn summarize_tx(tx: SubscribeUpdateTransaction) -> Option<String> {
 }
 
 async fn subscribe_with_request(
-    mut fumarole: BoxedFumaroleClient,
+    mut fumarole: FumaroleClient,
     request: SubscribeRequest,
     out_tx: mpsc::Sender<String>,
 ) {
-    let (tx, rx) = mpsc::channel(100);
-    let rx = ReceiverStream::new(rx);
-
     // NOTE: Make sure send request before giving the stream to the service
     // Otherwise, the service will not be able to send the response
     // This is due to how fumarole works in the background for auto-commit offset management.
-    tx.send(request)
-        .await
-        .expect("Failed to send request to Fumarole service");
     let rx = fumarole
-        .subscribe(rx)
+        .subscribe_with_request(request)
         .await
         .expect("Failed to subscribe to Fumarole service");
     println!("Subscribed to Fumarole service");

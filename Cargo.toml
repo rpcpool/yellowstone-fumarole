@@ -30,6 +30,7 @@ tonic = "0.12.3"
 tonic-build = "0.12.3"
 tower = "0.5.2"
 yellowstone-fumarole-client = { path = "crates/yellowstone-fumarole-client" }
+yellowstone-grpc-client = { git = "https://github.com/rpcpool/yellowstone-grpc.git", tag = "v5.0.0+solana.2.1.11" }
 
 [workspace.lints.clippy]
 clone_on_ref_ptr = "deny"
