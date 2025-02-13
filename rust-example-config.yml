@@ -1,0 +1,4 @@
+
+
+endpoint: "https://api.rust-example.com"
+x_token: "your_token_here"

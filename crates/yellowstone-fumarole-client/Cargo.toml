@@ -1,0 +1,29 @@
+[package]
+name = "yellowstone-fumarole-client"
+version = "0.1.0"
+authors = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+license = "Apache-2.0"
+keywords = { workspace = true }
+publish = { workspace = true }
+
+[dependencies]
+solana-sdk = { workspace = true }
+http = { workspace = true }
+hyper = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_with = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tonic = { workspace = true, features = ["tls", "tls-native-roots"] }
+tower = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+protobuf-src = { workspace = true }
+
+[lints]
+workspace = true

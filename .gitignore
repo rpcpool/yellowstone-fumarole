@@ -12,3 +12,5 @@ __pycache__
 *.zip
 dist
 .pytest_cache
+
+target
