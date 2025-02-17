@@ -1,43 +1,54 @@
+///
+/// Fumarole's client library.
+///
 pub mod config;
 
 use {
     config::FumaroleConfig,
-    fumarole::{AccountUpdateFilter, TransactionFilter},
     solana_sdk::pubkey::Pubkey,
+    std::collections::HashMap,
     tokio::sync::mpsc,
     tokio_stream::wrappers::ReceiverStream,
     tonic::{
-        metadata::{Ascii, MetadataValue},
+        metadata::{
+            errors::{InvalidMetadataKey, InvalidMetadataValue},
+            Ascii, MetadataKey, MetadataValue,
+        },
         service::Interceptor,
         transport::{Channel, ClientTlsConfig},
     },
     tower::{util::BoxService, ServiceBuilder, ServiceExt},
+    yellowstone_grpc_proto::geyser::{
+        SubscribeRequestFilterAccounts, SubscribeRequestFilterTransactions,
+    },
 };
 
-pub mod solana {
-    pub mod storage {
-        pub mod confirmed_block {
-            include!(concat!(
-                env!("OUT_DIR"),
-                "/solana.storage.confirmed_block.rs"
-            ));
-        }
-    }
+pub(crate) mod solana {
+    #[allow(unused_imports)]
+    pub use yellowstone_grpc_proto::solana::{
+        storage,
+        storage::{confirmed_block, confirmed_block::*},
+    };
 }
 
-pub mod geyser {
-    include!(concat!(env!("OUT_DIR"), "/geyser.rs"));
+pub(crate) mod geyser {
+    pub use yellowstone_grpc_proto::geyser::*;
 }
 
-pub mod fumarole {
+pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/fumarole.rs"));
 }
 
-use fumarole::fumarole_client::FumaroleClient as TonicFumaroleClient;
+use proto::fumarole_client::FumaroleClient as TonicFumaroleClient;
 
 #[derive(Clone)]
 struct TritonAuthInterceptor {
     x_token: MetadataValue<Ascii>,
+}
+
+#[derive(Clone)]
+struct AsciiMetadataInterceptor {
+    metadata: HashMap<MetadataKey<Ascii>, MetadataValue<Ascii>>,
 }
 
 impl Interceptor for TritonAuthInterceptor {
@@ -49,7 +60,28 @@ impl Interceptor for TritonAuthInterceptor {
     }
 }
 
-pub struct FumaroleClientBuilder {}
+impl Interceptor for AsciiMetadataInterceptor {
+    fn call(&mut self, request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        let mut request = request;
+        let metadata = request.metadata_mut();
+        for (key, value) in &self.metadata {
+            metadata.insert(key.clone(), value.clone());
+        }
+        Ok(request)
+    }
+}
+
+pub struct FumaroleClientBuilder {
+    pub metadata: HashMap<MetadataKey<Ascii>, MetadataValue<Ascii>>,
+}
+
+impl Default for FumaroleClientBuilder {
+    fn default() -> Self {
+        Self {
+            metadata: HashMap::default(),
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
@@ -76,7 +108,7 @@ pub struct FumaroleClient {
 impl FumaroleClient {
     pub async fn subscribe_with_request(
         &mut self,
-        request: fumarole::SubscribeRequest,
+        request: proto::SubscribeRequest,
     ) -> Result<tonic::Response<tonic::codec::Streaming<geyser::SubscribeUpdate>>, tonic::Status>
     {
         let (tx, rx) = mpsc::channel(100);
@@ -93,9 +125,9 @@ impl FumaroleClient {
 
     pub async fn list_available_commitment_levels(
         &mut self,
-        request: impl tonic::IntoRequest<fumarole::ListAvailableCommitmentLevelsRequest>,
+        request: impl tonic::IntoRequest<proto::ListAvailableCommitmentLevelsRequest>,
     ) -> std::result::Result<
-        tonic::Response<fumarole::ListAvailableCommitmentLevelsResponse>,
+        tonic::Response<proto::ListAvailableCommitmentLevelsResponse>,
         tonic::Status,
     > {
         self.inner.list_available_commitment_levels(request).await
@@ -103,68 +135,99 @@ impl FumaroleClient {
 
     pub async fn list_consumer_groups(
         &mut self,
-        request: impl tonic::IntoRequest<fumarole::ListConsumerGroupsRequest>,
-    ) -> std::result::Result<tonic::Response<fumarole::ListConsumerGroupsResponse>, tonic::Status>
+        request: impl tonic::IntoRequest<proto::ListConsumerGroupsRequest>,
+    ) -> std::result::Result<tonic::Response<proto::ListConsumerGroupsResponse>, tonic::Status>
     {
         self.inner.list_consumer_groups(request).await
     }
 
     pub async fn get_consumer_group_info(
         &mut self,
-        request: impl tonic::IntoRequest<fumarole::GetConsumerGroupInfoRequest>,
-    ) -> std::result::Result<tonic::Response<fumarole::ConsumerGroupInfo>, tonic::Status> {
+        request: impl tonic::IntoRequest<proto::GetConsumerGroupInfoRequest>,
+    ) -> std::result::Result<tonic::Response<proto::ConsumerGroupInfo>, tonic::Status> {
         self.inner.get_consumer_group_info(request).await
     }
 
     pub async fn delete_consumer_group(
         &mut self,
-        request: impl tonic::IntoRequest<fumarole::DeleteConsumerGroupRequest>,
-    ) -> std::result::Result<tonic::Response<fumarole::DeleteConsumerGroupResponse>, tonic::Status>
+        request: impl tonic::IntoRequest<proto::DeleteConsumerGroupRequest>,
+    ) -> std::result::Result<tonic::Response<proto::DeleteConsumerGroupResponse>, tonic::Status>
     {
         self.inner.delete_consumer_group(request).await
     }
 
     pub async fn create_consumer_group(
         &mut self,
-        request: impl tonic::IntoRequest<fumarole::CreateStaticConsumerGroupRequest>,
-    ) -> std::result::Result<
-        tonic::Response<fumarole::CreateStaticConsumerGroupResponse>,
-        tonic::Status,
-    > {
+        request: impl tonic::IntoRequest<proto::CreateStaticConsumerGroupRequest>,
+    ) -> std::result::Result<tonic::Response<proto::CreateStaticConsumerGroupResponse>, tonic::Status>
+    {
         self.inner.create_static_consumer_group(request).await
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum InvalidMetadataHeader {
+    #[error(transparent)]
+    InvalidMetadataKey(#[from] InvalidMetadataKey),
+    #[error(transparent)]
+    InvalidMetadataValue(#[from] InvalidMetadataValue),
+}
+
 impl FumaroleClientBuilder {
+    pub fn add_metadata_header(
+        mut self,
+        key: impl AsRef<str>,
+        value: impl AsRef<str>,
+    ) -> Result<Self, InvalidMetadataHeader> {
+        let key = MetadataKey::from_bytes(key.as_ref().as_bytes())?;
+        let value: MetadataValue<Ascii> = value.as_ref().try_into()?;
+        self.metadata.insert(key, value);
+        Ok(self)
+    }
+
     ///
     /// Connect to a Fumarole service.
     ///
-    pub async fn connect(config: FumaroleConfig) -> Result<FumaroleClient, ConnectError> {
+    pub async fn connect(self, config: FumaroleConfig) -> Result<FumaroleClient, ConnectError> {
         let tls_config = ClientTlsConfig::new().with_native_roots();
         let channel = Channel::from_shared(config.endpoint.clone())?
             .tls_config(tls_config)?
             .connect()
             .await?;
-        Self::connect_with_channel(config, channel).await
+        self.connect_with_channel(config, channel).await
     }
 
     ///
     /// Connect to a Fumarole service with an existing channel.
     ///
     pub async fn connect_with_channel(
+        self,
         config: FumaroleConfig,
         channel: tonic::transport::Channel,
     ) -> Result<FumaroleClient, ConnectError> {
-        let svc = if let Some(x_token) = config.x_token {
+        let x_token_layer = if let Some(x_token) = config.x_token {
             let metadata = x_token.try_into()?;
             let interceptor = TritonAuthInterceptor { x_token: metadata };
-            ServiceBuilder::new()
-                .layer(tonic::service::interceptor(interceptor))
-                .service(channel)
-                .boxed()
+            Some(tonic::service::interceptor(interceptor))
         } else {
-            channel.boxed()
+            None
         };
+
+        let metadata_layer = if self.metadata.is_empty() {
+            None
+        } else {
+            let interceptor = AsciiMetadataInterceptor {
+                metadata: self.metadata,
+            };
+            Some(tonic::service::interceptor(interceptor))
+        };
+
+        let svc = ServiceBuilder::new()
+            .option_layer(x_token_layer)
+            .option_layer(metadata_layer)
+            .service(channel)
+            .boxed();
+
         let tonic_client = TonicFumaroleClient::new(svc)
             .max_decoding_message_size(config.max_decoding_message_size_bytes);
 
@@ -197,7 +260,11 @@ impl FumaroleClientBuilder {
 pub struct SubscribeRequestBuilder {
     accounts: Option<Vec<Pubkey>>,
     owners: Option<Vec<Pubkey>>,
-    tx_account_keys: Option<Vec<Pubkey>>,
+    tx_includes: Option<Vec<Pubkey>>,
+    tx_excludes: Option<Vec<Pubkey>>,
+    tx_requires: Option<Vec<Pubkey>>,
+    tx_fail: Option<bool>,
+    tx_vote: Option<bool>,
 }
 
 impl Default for SubscribeRequestBuilder {
@@ -211,7 +278,11 @@ impl SubscribeRequestBuilder {
         Self {
             accounts: None,
             owners: None,
-            tx_account_keys: None,
+            tx_includes: None,
+            tx_excludes: None,
+            tx_requires: None,
+            tx_fail: None,
+            tx_vote: None,
         }
     }
 
@@ -232,10 +303,58 @@ impl SubscribeRequestBuilder {
     }
 
     ///
-    /// Sets the account pubkeys list that needs to be included in each transaction we subscribe to.
+    /// A transaction is included if it has at least one of the provided accounts in its list of instructions.
     ///
-    pub fn with_tx_accounts(mut self, tx_accounts: Option<Vec<Pubkey>>) -> Self {
-        self.tx_account_keys = tx_accounts;
+    pub fn with_tx_includes(mut self, tx_accounts: Option<Vec<Pubkey>>) -> Self {
+        self.tx_includes = tx_accounts;
+        self
+    }
+
+    ///
+    /// A transaction is excluded if it has at least one of the provided accounts in its list of instructions.
+    ///
+    pub fn with_tx_excludes(mut self, tx_excludes: Option<Vec<Pubkey>>) -> Self {
+        self.tx_includes = tx_excludes;
+        self
+    }
+
+    ///
+    /// A transaction is included if all of the provided accounts in its list of instructions.
+    ///
+    pub fn with_tx_requires(mut self, tx_requires: Option<Vec<Pubkey>>) -> Self {
+        self.tx_requires = tx_requires;
+        self
+    }
+
+    ///
+    /// Include failed transactions.
+    ///
+    pub fn include_fail_tx(mut self) -> Self {
+        self.tx_fail = None;
+        self
+    }
+
+    ///
+    /// Include vote transactions.
+    ///
+    pub fn include_vote_tx(mut self) -> Self {
+        self.tx_vote = None;
+        self
+    }
+
+    ///
+    /// Exclude failed transactions.
+    ///
+    pub fn no_vote_tx(mut self) -> Self {
+        self.tx_vote = Some(false);
+        self
+    }
+
+    ///
+    /// Exclude vote transactions.
+    ///
+    pub fn no_fail_tx(mut self) -> Self {
+        self.tx_fail = Some(false);
         self
     }
 
@@ -244,14 +363,14 @@ impl SubscribeRequestBuilder {
     ///
     /// If the consumer index is not provided, it defaults to 0.
     ///
-    pub fn build(self, consumer_group: String) -> fumarole::SubscribeRequest {
+    pub fn build(self, consumer_group: String) -> proto::SubscribeRequest {
         self.build_with_consumer_idx(consumer_group, 0)
     }
 
     ///
     /// Builds a vector of SubscribeRequests where each request has a different consumer index.
     ///
-    pub fn build_vec(self, consumer_group: String, counts: u32) -> Vec<fumarole::SubscribeRequest> {
+    pub fn build_vec(self, consumer_group: String, counts: u32) -> Vec<proto::SubscribeRequest> {
         (0..counts)
             .map(|i| {
                 self.clone()
@@ -267,7 +386,7 @@ impl SubscribeRequestBuilder {
         self,
         consumer_group: String,
         consumer_idx: u32,
-    ) -> fumarole::SubscribeRequest {
+    ) -> proto::SubscribeRequest {
         let account = self
             .accounts
             .map(|vec| vec.into_iter().map(|pubkey| pubkey.to_string()).collect());
@@ -276,31 +395,38 @@ impl SubscribeRequestBuilder {
             .owners
             .map(|vec| vec.into_iter().map(|pubkey| pubkey.to_string()).collect());
 
-        let account_filter = match (account, owner) {
-            (Some(accounts), Some(owners)) => Some(AccountUpdateFilter {
-                account: accounts,
-                owner: owners,
-            }),
-            (Some(accounts), None) => Some(AccountUpdateFilter {
-                account: accounts,
-                owner: vec![],
-            }),
-            (None, Some(owners)) => Some(AccountUpdateFilter {
-                account: vec![],
-                owner: owners,
-            }),
-            _ => None,
+        let tx_includes = self
+            .tx_includes
+            .map(|vec| vec.iter().map(|pubkey| pubkey.to_string()).collect());
+
+        let tx_excludes = self
+            .tx_excludes
+            .map(|vec| vec.iter().map(|pubkey| pubkey.to_string()).collect());
+
+        let tx_requires = self
+            .tx_requires
+            .map(|vec| vec.iter().map(|pubkey| pubkey.to_string()).collect());
+
+        let tx_filter = SubscribeRequestFilterTransactions {
+            vote: self.tx_vote,
+            failed: self.tx_fail,
+            account_exclude: tx_excludes.unwrap_or_default(),
+            account_include: tx_includes.unwrap_or_default(),
+            account_required: tx_requires.unwrap_or_default(),
+            signature: None,
         };
 
-        let tx_filter = self.tx_account_keys.map(|vec| TransactionFilter {
-            account_keys: vec.into_iter().map(|pubkey| pubkey.to_string()).collect(),
-        });
+        let account_filter = SubscribeRequestFilterAccounts {
+            account: account.unwrap_or_default(),
+            owner: owner.unwrap_or_default(),
+            ..Default::default()
+        };
 
-        fumarole::SubscribeRequest {
+        proto::SubscribeRequest {
             consumer_group_label: consumer_group,
             consumer_id: Some(consumer_idx),
-            accounts: account_filter,
-            transactions: tx_filter,
+            accounts: HashMap::from([("default".to_string(), account_filter)]),
+            transactions: HashMap::from([("default".to_string(), tx_filter)]),
         }
     }
 }

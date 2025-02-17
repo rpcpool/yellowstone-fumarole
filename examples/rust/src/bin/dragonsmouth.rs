@@ -2,9 +2,7 @@ use {
     clap::Parser,
     solana_sdk::{bs58, pubkey::Pubkey},
     std::{collections::HashMap, path::PathBuf},
-    tokio::{sync::mpsc, task::JoinSet},
     tokio_stream::StreamExt,
-    tonic::transport::Endpoint,
     yellowstone_fumarole_client::config::FumaroleConfig,
     yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcBuilder},
     yellowstone_grpc_proto::geyser::{

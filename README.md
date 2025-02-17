@@ -139,6 +139,39 @@ for fumarole stays low and can integrate easily into your code without too much 
 **Note**: You don't have to do anything to benefits from redundancy and persistence. It is done
 in the backend for you.
 
+### Filtering compatibility
+
+Fumarole supports the exact same accounts and transactions filter as _Dragonsmouth_.
+
+Here's a reminder of _Dragonsmouth_ gRPC `SubscribeRequest`:
+
+```proto
+message SubscribeRequest {
+  map<string, SubscribeRequestFilterAccounts> accounts = 1;
+  map<string, SubscribeRequestFilterSlots> slots = 2;
+  map<string, SubscribeRequestFilterTransactions> transactions = 3;
+  map<string, SubscribeRequestFilterTransactions> transactions_status = 10;
+  map<string, SubscribeRequestFilterBlocks> blocks = 4;
+  map<string, SubscribeRequestFilterBlocksMeta> blocks_meta = 5;
+  map<string, SubscribeRequestFilterEntry> entry = 8;
+  optional CommitmentLevel commitment = 6;
+  repeated SubscribeRequestAccountsDataSlice accounts_data_slice = 7;
+  optional SubscribeRequestPing ping = 9;
+  optional uint64 from_slot = 11;
+}
+```
+
+Here's Fumarole `SubscribeRequest`
+
+```proto
+message SubscribeRequest {
+  string consumer_group_label = 1; // name of the consumer group
+  optional uint32 consumer_id = 2; //  #num consumer group member, 0 by default
+  map<string, geyser.SubscribeRequestFilterAccounts> accounts = 3;  // Same as Dragonsmouth
+  map<string, geyser.SubscribeRequestFilterTransactions> transactions = 4; // Same as Dragonsmouth
+}
+```
+
 ### Coding examples
 
 To see the difference between Dragonsmouth and fumarole compare two files [dragonsmouth.rs](examples/rust/src/bin/dragonsmouth.rs) and
@@ -176,14 +209,14 @@ let (_sink, mut rx) = geyser.subscribe_with_request(Some(request)).await.expect(
 ```
 
 
-And here's Fumarole version:
+And here's the more concise Fumarole version:
 
 
 ```rust
 let requests = yellowstone_fumarole_client::SubscribeRequestBuilder::default()
     .build(args.cg_name);
 
-let fumarole = FumaroleClientBuilder::connect(config)
+let fumarole = FumaroleClientBuilder::default().connect(config);
 let rx = fumarole
     .subscribe_with_request(request)
     .await
@@ -191,73 +224,22 @@ let rx = fumarole
 ```
 
 
-## Breaking changes with Dragonsmouth
-
-Fumarole does not support the same filter API as Dragonsmouth yet.
-
-Uses the `yellowstone_fumarole_client::SubscribeRequestBuilder` to build custom subscribe request.
-
-Fumarole supports the following filters:
-
-- `AccountUpdate` pubkey set filter
-- `AccountUpdate` owner set filter
-- `TransactionUpdate` reference accounts keys filter
-
-Here's a Rust example to filter all accounts update where the owner is the tokenkeg account:
+If you want better control of your `SubscribeRequest` build process, you can fallback to the its _de-sugar_ form, without the builder pattern:
 
 ```rust
+let request = yellowstone_fumarole_client::proto::SubscribeRequest {
+    consumer_group_label: "my_group".to_string(),
+    accounts: HashMap::from(
+        [("f1".to_owned(), SubscribeRequestFilterAccounts::default())]
+    ),
+    transactions: HashMap::from(
+        [("f1".to_owned(), SubscribeRequestFilterTransactions::default())]
+    ),
+}
 
-let tokenkeg = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-
-let requests = yellowstone_fumarole_client::SubscribeRequestBuilder::default()
-    .with_owners(Some(vec![tokenkeg]))
-    .build();
+let fumarole = FumaroleClientBuilder::default().connect(config);
+let rx = fumarole
+    .subscribe_with_request(request)
+    .await
+    .expect("Failed to subscribe to Fumarole service");
 ```
-
-Here's a how to subscribe to account updates whose pubkey is contains in a pubkey set.
-
-```rust
-
-let pubkey1: Pubkey = ...;
-let pubkey2: Pubkey = ...;
-let pubkey3: Pubkey = ...;
-
-let pubkeyset = vec![pubkey1, pubkey2, pubkey3];
-
-let requests = yellowstone_fumarole_client::SubscribeRequestBuilder::default()
-    .with_accounts(Some(pubkeyset))
-    .build();
-```
-
-Here's how to subscribe to transaction that contains a list of pubkeys:
-
-```rust
-let pubkey1: Pubkey = ...;
-let pubkey2: Pubkey = ...;
-let pubkey3: Pubkey = ...;
-
-let pubkeyset = vec![pubkey1, pubkey2, pubkey3];
-
-let requests = yellowstone_fumarole_client::SubscribeRequestBuilder::default()
-    .with_tx_accounts(Some(pubkeyset))
-    .build();
-```
-
-
-You can mix-and-match any of those:
-
-```rust
-let pubkey1: Pubkey = ...;
-let pubkey2: Pubkey = ...;
-let pubkey3: Pubkey = ...;
-
-let tokenkeg = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-let pubkeyset = vec![pubkey1, pubkey2, pubkey3];
-
-let requests = yellowstone_fumarole_client::SubscribeRequestBuilder::default()
-    .with_owners(Some(vec![tokenkeg]))
-    .with_tx_accounts(Some(pubkeyset))
-    .build();
-```
-
-For more example on how to filter please look at the [proto definition](https://github.com/rpcpool/yellowstone-api/blob/main/proto/fumarole.proto)

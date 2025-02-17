@@ -145,6 +145,63 @@ def subscribe_update_to_summarize(subscribe_update: geyser_pb2.SubscribeUpdate) 
         return None
 
 
+class SubscribeFilterBuilder:
+    def __init__(self):
+        self.accounts = None
+        self.owners = None
+        self.tx_includes = None
+        self.tx_excludes = None
+        self.tx_requires = None
+        self.tx_fail = None
+        self.tx_vote = None
+
+    def __getattr__(self, name):
+        if not name.startswith("with_"):
+            raise AttributeError(f"Attribute {name} not found")
+
+        attr = name.split("with_")[1]
+
+        def setter(value):
+            setattr(self, attr, value)
+            return self
+
+        return setter
+
+    def include_vote_tx(self):
+        self.tx_vote = None
+        return self
+
+    def include_fail_tx(self):
+        self.tx_fail = None
+        return self
+
+    def no_fail_tx(self):
+        self.tx_fail = False
+        return self
+
+    def no_vote_tx(self, tx):
+        self.tx_vote = False
+        return self
+
+    def build(self):
+        return {
+            "accounts": {
+                "default": geyser_pb2.SubscribeRequestFilterAccounts(
+                    account=self.accounts, owner=self.owners
+                )
+            },
+            "transactions": {
+                "default": geyser_pb2.SubscribeRequestFilterTransactions(
+                    vote=self.tx_vote,
+                    failed=self.tx_fail,
+                    account_required=self.tx_requires,
+                    account_include=self.tx_includes,
+                    account_exclude=self.tx_excludes,
+                )
+            },
+        }
+
+
 class FumaroleClient:
 
     def __init__(self, channel, metadata: Optional[list[tuple[str, str]]] = None):
