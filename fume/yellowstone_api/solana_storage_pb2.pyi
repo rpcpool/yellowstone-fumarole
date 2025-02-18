@@ -2,13 +2,7 @@ from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from typing import (
-    ClassVar as _ClassVar,
-    Iterable as _Iterable,
-    Mapping as _Mapping,
-    Optional as _Optional,
-    Union as _Union,
-)
+from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
@@ -19,7 +13,6 @@ class RewardType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     Rent: _ClassVar[RewardType]
     Staking: _ClassVar[RewardType]
     Voting: _ClassVar[RewardType]
-
 Unspecified: RewardType
 Fee: RewardType
 Rent: RewardType
@@ -27,16 +20,7 @@ Staking: RewardType
 Voting: RewardType
 
 class ConfirmedBlock(_message.Message):
-    __slots__ = (
-        "previous_blockhash",
-        "blockhash",
-        "parent_slot",
-        "transactions",
-        "rewards",
-        "block_time",
-        "block_height",
-        "num_partitions",
-    )
+    __slots__ = ("previous_blockhash", "blockhash", "parent_slot", "transactions", "rewards", "block_time", "block_height", "num_partitions")
     PREVIOUS_BLOCKHASH_FIELD_NUMBER: _ClassVar[int]
     BLOCKHASH_FIELD_NUMBER: _ClassVar[int]
     PARENT_SLOT_FIELD_NUMBER: _ClassVar[int]
@@ -53,19 +37,7 @@ class ConfirmedBlock(_message.Message):
     block_time: UnixTimestamp
     block_height: BlockHeight
     num_partitions: NumPartitions
-    def __init__(
-        self,
-        previous_blockhash: _Optional[str] = ...,
-        blockhash: _Optional[str] = ...,
-        parent_slot: _Optional[int] = ...,
-        transactions: _Optional[
-            _Iterable[_Union[ConfirmedTransaction, _Mapping]]
-        ] = ...,
-        rewards: _Optional[_Iterable[_Union[Reward, _Mapping]]] = ...,
-        block_time: _Optional[_Union[UnixTimestamp, _Mapping]] = ...,
-        block_height: _Optional[_Union[BlockHeight, _Mapping]] = ...,
-        num_partitions: _Optional[_Union[NumPartitions, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, previous_blockhash: _Optional[str] = ..., blockhash: _Optional[str] = ..., parent_slot: _Optional[int] = ..., transactions: _Optional[_Iterable[_Union[ConfirmedTransaction, _Mapping]]] = ..., rewards: _Optional[_Iterable[_Union[Reward, _Mapping]]] = ..., block_time: _Optional[_Union[UnixTimestamp, _Mapping]] = ..., block_height: _Optional[_Union[BlockHeight, _Mapping]] = ..., num_partitions: _Optional[_Union[NumPartitions, _Mapping]] = ...) -> None: ...
 
 class ConfirmedTransaction(_message.Message):
     __slots__ = ("transaction", "meta")
@@ -73,11 +45,7 @@ class ConfirmedTransaction(_message.Message):
     META_FIELD_NUMBER: _ClassVar[int]
     transaction: Transaction
     meta: TransactionStatusMeta
-    def __init__(
-        self,
-        transaction: _Optional[_Union[Transaction, _Mapping]] = ...,
-        meta: _Optional[_Union[TransactionStatusMeta, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, transaction: _Optional[_Union[Transaction, _Mapping]] = ..., meta: _Optional[_Union[TransactionStatusMeta, _Mapping]] = ...) -> None: ...
 
 class Transaction(_message.Message):
     __slots__ = ("signatures", "message")
@@ -85,21 +53,10 @@ class Transaction(_message.Message):
     MESSAGE_FIELD_NUMBER: _ClassVar[int]
     signatures: _containers.RepeatedScalarFieldContainer[bytes]
     message: Message
-    def __init__(
-        self,
-        signatures: _Optional[_Iterable[bytes]] = ...,
-        message: _Optional[_Union[Message, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, signatures: _Optional[_Iterable[bytes]] = ..., message: _Optional[_Union[Message, _Mapping]] = ...) -> None: ...
 
 class Message(_message.Message):
-    __slots__ = (
-        "header",
-        "account_keys",
-        "recent_blockhash",
-        "instructions",
-        "versioned",
-        "address_table_lookups",
-    )
+    __slots__ = ("header", "account_keys", "recent_blockhash", "instructions", "versioned", "address_table_lookups")
     HEADER_FIELD_NUMBER: _ClassVar[int]
     ACCOUNT_KEYS_FIELD_NUMBER: _ClassVar[int]
     RECENT_BLOCKHASH_FIELD_NUMBER: _ClassVar[int]
@@ -111,39 +68,18 @@ class Message(_message.Message):
     recent_blockhash: bytes
     instructions: _containers.RepeatedCompositeFieldContainer[CompiledInstruction]
     versioned: bool
-    address_table_lookups: _containers.RepeatedCompositeFieldContainer[
-        MessageAddressTableLookup
-    ]
-    def __init__(
-        self,
-        header: _Optional[_Union[MessageHeader, _Mapping]] = ...,
-        account_keys: _Optional[_Iterable[bytes]] = ...,
-        recent_blockhash: _Optional[bytes] = ...,
-        instructions: _Optional[_Iterable[_Union[CompiledInstruction, _Mapping]]] = ...,
-        versioned: bool = ...,
-        address_table_lookups: _Optional[
-            _Iterable[_Union[MessageAddressTableLookup, _Mapping]]
-        ] = ...,
-    ) -> None: ...
+    address_table_lookups: _containers.RepeatedCompositeFieldContainer[MessageAddressTableLookup]
+    def __init__(self, header: _Optional[_Union[MessageHeader, _Mapping]] = ..., account_keys: _Optional[_Iterable[bytes]] = ..., recent_blockhash: _Optional[bytes] = ..., instructions: _Optional[_Iterable[_Union[CompiledInstruction, _Mapping]]] = ..., versioned: bool = ..., address_table_lookups: _Optional[_Iterable[_Union[MessageAddressTableLookup, _Mapping]]] = ...) -> None: ...
 
 class MessageHeader(_message.Message):
-    __slots__ = (
-        "num_required_signatures",
-        "num_readonly_signed_accounts",
-        "num_readonly_unsigned_accounts",
-    )
+    __slots__ = ("num_required_signatures", "num_readonly_signed_accounts", "num_readonly_unsigned_accounts")
     NUM_REQUIRED_SIGNATURES_FIELD_NUMBER: _ClassVar[int]
     NUM_READONLY_SIGNED_ACCOUNTS_FIELD_NUMBER: _ClassVar[int]
     NUM_READONLY_UNSIGNED_ACCOUNTS_FIELD_NUMBER: _ClassVar[int]
     num_required_signatures: int
     num_readonly_signed_accounts: int
     num_readonly_unsigned_accounts: int
-    def __init__(
-        self,
-        num_required_signatures: _Optional[int] = ...,
-        num_readonly_signed_accounts: _Optional[int] = ...,
-        num_readonly_unsigned_accounts: _Optional[int] = ...,
-    ) -> None: ...
+    def __init__(self, num_required_signatures: _Optional[int] = ..., num_readonly_signed_accounts: _Optional[int] = ..., num_readonly_unsigned_accounts: _Optional[int] = ...) -> None: ...
 
 class MessageAddressTableLookup(_message.Message):
     __slots__ = ("account_key", "writable_indexes", "readonly_indexes")
@@ -153,32 +89,10 @@ class MessageAddressTableLookup(_message.Message):
     account_key: bytes
     writable_indexes: bytes
     readonly_indexes: bytes
-    def __init__(
-        self,
-        account_key: _Optional[bytes] = ...,
-        writable_indexes: _Optional[bytes] = ...,
-        readonly_indexes: _Optional[bytes] = ...,
-    ) -> None: ...
+    def __init__(self, account_key: _Optional[bytes] = ..., writable_indexes: _Optional[bytes] = ..., readonly_indexes: _Optional[bytes] = ...) -> None: ...
 
 class TransactionStatusMeta(_message.Message):
-    __slots__ = (
-        "err",
-        "fee",
-        "pre_balances",
-        "post_balances",
-        "inner_instructions",
-        "inner_instructions_none",
-        "log_messages",
-        "log_messages_none",
-        "pre_token_balances",
-        "post_token_balances",
-        "rewards",
-        "loaded_writable_addresses",
-        "loaded_readonly_addresses",
-        "return_data",
-        "return_data_none",
-        "compute_units_consumed",
-    )
+    __slots__ = ("err", "fee", "pre_balances", "post_balances", "inner_instructions", "inner_instructions_none", "log_messages", "log_messages_none", "pre_token_balances", "post_token_balances", "rewards", "loaded_writable_addresses", "loaded_readonly_addresses", "return_data", "return_data_none", "compute_units_consumed")
     ERR_FIELD_NUMBER: _ClassVar[int]
     FEE_FIELD_NUMBER: _ClassVar[int]
     PRE_BALANCES_FIELD_NUMBER: _ClassVar[int]
@@ -211,27 +125,7 @@ class TransactionStatusMeta(_message.Message):
     return_data: ReturnData
     return_data_none: bool
     compute_units_consumed: int
-    def __init__(
-        self,
-        err: _Optional[_Union[TransactionError, _Mapping]] = ...,
-        fee: _Optional[int] = ...,
-        pre_balances: _Optional[_Iterable[int]] = ...,
-        post_balances: _Optional[_Iterable[int]] = ...,
-        inner_instructions: _Optional[
-            _Iterable[_Union[InnerInstructions, _Mapping]]
-        ] = ...,
-        inner_instructions_none: bool = ...,
-        log_messages: _Optional[_Iterable[str]] = ...,
-        log_messages_none: bool = ...,
-        pre_token_balances: _Optional[_Iterable[_Union[TokenBalance, _Mapping]]] = ...,
-        post_token_balances: _Optional[_Iterable[_Union[TokenBalance, _Mapping]]] = ...,
-        rewards: _Optional[_Iterable[_Union[Reward, _Mapping]]] = ...,
-        loaded_writable_addresses: _Optional[_Iterable[bytes]] = ...,
-        loaded_readonly_addresses: _Optional[_Iterable[bytes]] = ...,
-        return_data: _Optional[_Union[ReturnData, _Mapping]] = ...,
-        return_data_none: bool = ...,
-        compute_units_consumed: _Optional[int] = ...,
-    ) -> None: ...
+    def __init__(self, err: _Optional[_Union[TransactionError, _Mapping]] = ..., fee: _Optional[int] = ..., pre_balances: _Optional[_Iterable[int]] = ..., post_balances: _Optional[_Iterable[int]] = ..., inner_instructions: _Optional[_Iterable[_Union[InnerInstructions, _Mapping]]] = ..., inner_instructions_none: bool = ..., log_messages: _Optional[_Iterable[str]] = ..., log_messages_none: bool = ..., pre_token_balances: _Optional[_Iterable[_Union[TokenBalance, _Mapping]]] = ..., post_token_balances: _Optional[_Iterable[_Union[TokenBalance, _Mapping]]] = ..., rewards: _Optional[_Iterable[_Union[Reward, _Mapping]]] = ..., loaded_writable_addresses: _Optional[_Iterable[bytes]] = ..., loaded_readonly_addresses: _Optional[_Iterable[bytes]] = ..., return_data: _Optional[_Union[ReturnData, _Mapping]] = ..., return_data_none: bool = ..., compute_units_consumed: _Optional[int] = ...) -> None: ...
 
 class TransactionError(_message.Message):
     __slots__ = ("err",)
@@ -245,11 +139,7 @@ class InnerInstructions(_message.Message):
     INSTRUCTIONS_FIELD_NUMBER: _ClassVar[int]
     index: int
     instructions: _containers.RepeatedCompositeFieldContainer[InnerInstruction]
-    def __init__(
-        self,
-        index: _Optional[int] = ...,
-        instructions: _Optional[_Iterable[_Union[InnerInstruction, _Mapping]]] = ...,
-    ) -> None: ...
+    def __init__(self, index: _Optional[int] = ..., instructions: _Optional[_Iterable[_Union[InnerInstruction, _Mapping]]] = ...) -> None: ...
 
 class InnerInstruction(_message.Message):
     __slots__ = ("program_id_index", "accounts", "data", "stack_height")
@@ -261,13 +151,7 @@ class InnerInstruction(_message.Message):
     accounts: bytes
     data: bytes
     stack_height: int
-    def __init__(
-        self,
-        program_id_index: _Optional[int] = ...,
-        accounts: _Optional[bytes] = ...,
-        data: _Optional[bytes] = ...,
-        stack_height: _Optional[int] = ...,
-    ) -> None: ...
+    def __init__(self, program_id_index: _Optional[int] = ..., accounts: _Optional[bytes] = ..., data: _Optional[bytes] = ..., stack_height: _Optional[int] = ...) -> None: ...
 
 class CompiledInstruction(_message.Message):
     __slots__ = ("program_id_index", "accounts", "data")
@@ -277,12 +161,7 @@ class CompiledInstruction(_message.Message):
     program_id_index: int
     accounts: bytes
     data: bytes
-    def __init__(
-        self,
-        program_id_index: _Optional[int] = ...,
-        accounts: _Optional[bytes] = ...,
-        data: _Optional[bytes] = ...,
-    ) -> None: ...
+    def __init__(self, program_id_index: _Optional[int] = ..., accounts: _Optional[bytes] = ..., data: _Optional[bytes] = ...) -> None: ...
 
 class TokenBalance(_message.Message):
     __slots__ = ("account_index", "mint", "ui_token_amount", "owner", "program_id")
@@ -296,14 +175,7 @@ class TokenBalance(_message.Message):
     ui_token_amount: UiTokenAmount
     owner: str
     program_id: str
-    def __init__(
-        self,
-        account_index: _Optional[int] = ...,
-        mint: _Optional[str] = ...,
-        ui_token_amount: _Optional[_Union[UiTokenAmount, _Mapping]] = ...,
-        owner: _Optional[str] = ...,
-        program_id: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, account_index: _Optional[int] = ..., mint: _Optional[str] = ..., ui_token_amount: _Optional[_Union[UiTokenAmount, _Mapping]] = ..., owner: _Optional[str] = ..., program_id: _Optional[str] = ...) -> None: ...
 
 class UiTokenAmount(_message.Message):
     __slots__ = ("ui_amount", "decimals", "amount", "ui_amount_string")
@@ -315,13 +187,7 @@ class UiTokenAmount(_message.Message):
     decimals: int
     amount: str
     ui_amount_string: str
-    def __init__(
-        self,
-        ui_amount: _Optional[float] = ...,
-        decimals: _Optional[int] = ...,
-        amount: _Optional[str] = ...,
-        ui_amount_string: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, ui_amount: _Optional[float] = ..., decimals: _Optional[int] = ..., amount: _Optional[str] = ..., ui_amount_string: _Optional[str] = ...) -> None: ...
 
 class ReturnData(_message.Message):
     __slots__ = ("program_id", "data")
@@ -329,9 +195,7 @@ class ReturnData(_message.Message):
     DATA_FIELD_NUMBER: _ClassVar[int]
     program_id: bytes
     data: bytes
-    def __init__(
-        self, program_id: _Optional[bytes] = ..., data: _Optional[bytes] = ...
-    ) -> None: ...
+    def __init__(self, program_id: _Optional[bytes] = ..., data: _Optional[bytes] = ...) -> None: ...
 
 class Reward(_message.Message):
     __slots__ = ("pubkey", "lamports", "post_balance", "reward_type", "commission")
@@ -345,14 +209,7 @@ class Reward(_message.Message):
     post_balance: int
     reward_type: RewardType
     commission: str
-    def __init__(
-        self,
-        pubkey: _Optional[str] = ...,
-        lamports: _Optional[int] = ...,
-        post_balance: _Optional[int] = ...,
-        reward_type: _Optional[_Union[RewardType, str]] = ...,
-        commission: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, pubkey: _Optional[str] = ..., lamports: _Optional[int] = ..., post_balance: _Optional[int] = ..., reward_type: _Optional[_Union[RewardType, str]] = ..., commission: _Optional[str] = ...) -> None: ...
 
 class Rewards(_message.Message):
     __slots__ = ("rewards", "num_partitions")
@@ -360,11 +217,7 @@ class Rewards(_message.Message):
     NUM_PARTITIONS_FIELD_NUMBER: _ClassVar[int]
     rewards: _containers.RepeatedCompositeFieldContainer[Reward]
     num_partitions: NumPartitions
-    def __init__(
-        self,
-        rewards: _Optional[_Iterable[_Union[Reward, _Mapping]]] = ...,
-        num_partitions: _Optional[_Union[NumPartitions, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, rewards: _Optional[_Iterable[_Union[Reward, _Mapping]]] = ..., num_partitions: _Optional[_Union[NumPartitions, _Mapping]] = ...) -> None: ...
 
 class UnixTimestamp(_message.Message):
     __slots__ = ("timestamp",)

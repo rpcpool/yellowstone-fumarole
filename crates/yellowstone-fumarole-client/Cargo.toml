@@ -1,11 +1,11 @@
 [package]
 name = "yellowstone-fumarole-client"
-version = "0.1.0"
+version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
-license = "Apache-2.0"
+license = { workspace = true }
 keywords = { workspace = true }
 publish = { workspace = true }
 
@@ -18,8 +18,11 @@ serde = { workspace = true, features = ["derive"] }
 serde_with = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tonic = { workspace = true, features = ["tls", "tls-native-roots"] }
 tower = { workspace = true }
+yellowstone-grpc-proto = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

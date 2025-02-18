@@ -10,8 +10,7 @@ import click
 from fume.grpc import (
     FumaroleClient,
     grpc_channel,
-    subscribe_update_to_dict,
-    subscribe_update_to_summarize,
+    SubscribeFilterBuilder,
 )
 
 
@@ -97,17 +96,13 @@ def stream(ctx, cg_name, parallel, tx_account, account, owner, output_format):
     x_token = conn.get("x-token")
     metadata = conn.get("grpc-metadata")
 
-    subscribe_request = {}
-
-    if tx_account:
-        subscribe_request["transactions"] = {}
-        subscribe_request["transactions"]["account_keys"] = list(tx_account)
-    if account or owner:
-        subscribe_request["accounts"] = {}
-        if account:
-            subscribe_request["accounts"]["account"] = list(account)
-        if owner:
-            subscribe_request["accounts"]["owner"] = list(owner)
+    subscribe_filter = (
+        SubscribeFilterBuilder()
+        .with_tx_includes(list(tx_account))
+        .with_accounts(list(account))
+        .with_owners(list(owner))
+        .build()
+    )
 
     def fumarole_stream_proc(
         cnc_rx: multiprocessing.Queue,  # command-and-control queue
@@ -123,7 +118,7 @@ def stream(ctx, cg_name, parallel, tx_account, account, owner, output_format):
 
             my_pid = multiprocessing.current_process().pid
             subscribe_iter = fc.subscribe(
-                cg_name, member_idx, mapper=output_format, **subscribe_request
+                cg_name, member_idx, mapper=output_format, **subscribe_filter
             )
             for event in subscribe_iter:
                 data_tx.put(FumaroleStreamData(data=event))
@@ -178,7 +173,6 @@ def stream(ctx, cg_name, parallel, tx_account, account, owner, output_format):
                     fumarole_stream_id_vec.remove(pid)
                     click.echo(f"Connection {pid} ended!", err=True)
                     break
-            click.echo(data)
         except KeyboardInterrupt:
             break
         except EOFError:

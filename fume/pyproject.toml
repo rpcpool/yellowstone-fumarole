@@ -27,7 +27,6 @@ fume = "fume.cli.app:main"
 pytest = "^8.3.4"
 
 
-
 [tool.poetry.group.dev.dependencies]
 grpcio-tools = "^1.68.1"
 black = "^24.10.0"
