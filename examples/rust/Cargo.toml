@@ -1,5 +1,6 @@
 [package]
 name = "yellowstone-fumarole-client-simple"
+description = "Simple Yellowstone Fumarole Client examples"
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }

@@ -1,5 +1,7 @@
 [tool.poetry]
 name = "yellowstone-fume"
+homepage = "https://github.com/rpcpool/yellowstone-fumarole"
+repository = "https://github.com/rpcpool/yellowstone-fumarole"
 version = "0.1.0"
 description = "Yellowstone Fumarole CLI tool"
 authors = ["Louis-Vincent <louis-vincent@triton.one>"]

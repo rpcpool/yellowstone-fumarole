@@ -101,6 +101,9 @@ pub type FumaroleBoxedChannel = BoxService<
 
 pub type BoxedTonicFumaroleClient = TonicFumaroleClient<FumaroleBoxedChannel>;
 
+///
+/// Yellowstone Fumarole Client
+/// 
 pub struct FumaroleClient {
     inner: BoxedTonicFumaroleClient,
 }
@@ -173,7 +176,13 @@ pub enum InvalidMetadataHeader {
     InvalidMetadataValue(#[from] InvalidMetadataValue),
 }
 
+///
+/// A builder for creating a FumaroleClient.
+/// 
 impl FumaroleClientBuilder {
+    ///
+    /// Add a metadata header to the client for each request.
+    /// 
     pub fn add_metadata_header(
         mut self,
         key: impl AsRef<str>,
@@ -251,9 +260,9 @@ impl FumaroleClientBuilder {
 /// let tx_accounts = vec![Pubkey::new_keypair()];
 ///
 /// let request = SubscribeRequestBuilder::default()
-///     .with_accounts(accounts)
-///     .with_owners(owners)
-///     .with_tx_accounts(tx_accounts)
+///     .with_accounts(Some(accounts))
+///     .with_owners(Some(owners))
+///     .with_tx_accounts(Some(tx_accounts))
 ///     .build("my_consumer".to_string());
 /// ```
 #[derive(Clone)]

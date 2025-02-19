@@ -5042,8 +5042,9 @@ dependencies = [
 
 [[package]]
 name = "yellowstone-grpc-client"
-version = "5.0.0+solana.2.1.11"
-source = "git+https://github.com/rpcpool/yellowstone-grpc.git?tag=v5.0.0+solana.2.1.11#405879f39eb282775772adb327af7d84ef12ebdd"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02edc8a1f2049482c96c397452e27e46036322d7e179c0709b2d54aac13722bf"
 dependencies = [
  "bytes",
  "futures",
@@ -5055,8 +5056,9 @@ dependencies = [
 
 [[package]]
 name = "yellowstone-grpc-proto"
-version = "5.0.0+solana.2.1.11"
-source = "git+https://github.com/rpcpool/yellowstone-grpc.git?tag=v5.0.0+solana.2.1.11#405879f39eb282775772adb327af7d84ef12ebdd"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b5c9aed52d059ee34dab8118fe0f115a3a1e52b2e6cc01d099dfd92e1c73e7a"
 dependencies = [
  "anyhow",
  "bincode",
