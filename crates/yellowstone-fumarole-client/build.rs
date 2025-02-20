@@ -2,7 +2,7 @@ use std::{env, path::Path};
 
 fn main() {
     let package_root = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let mut path = Path::new(&package_root).join("yellowstone-api/proto");
+    let mut path = Path::new(&package_root).join("yellowstone-grpc/proto");
 
     // Locate the Cargo.lock file
     while !path.join("Cargo.lock").exists() {
