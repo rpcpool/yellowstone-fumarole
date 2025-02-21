@@ -5032,6 +5032,7 @@ dependencies = [
  "clap",
  "serde_yaml",
  "solana-sdk",
+ "thiserror",
  "tokio",
  "tokio-stream",
  "tonic",
