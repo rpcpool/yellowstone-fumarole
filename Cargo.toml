@@ -35,6 +35,7 @@ tower = "0.5.2"
 yellowstone-fumarole-client = { path = "crates/yellowstone-fumarole-client" }
 yellowstone-grpc-client = "5.0.0"
 yellowstone-grpc-proto = "5.0.0"
+spl-token-2022 = "7.0.0"
 
 [workspace.lints.clippy]
 clone_on_ref_ptr = "deny"
