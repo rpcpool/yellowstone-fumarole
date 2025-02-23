@@ -1,0 +1,52 @@
+{
+  "name": "@triton-one/yellowstone-fumarole",
+  "version": "3.0.0",
+  "license": "Apache-2.0",
+  "author": "Triton One",
+  "description": "Yellowstone gRPC Fumarole Node.js Client",
+  "main": "dist/cjs/index.js",
+  "types": "dist/types/index.d.ts",
+  "scripts": {
+    "build": "npm run grpc-generate && tsc --project tsconfig.esm.json && tsc --project tsconfig.cjs.json && npm run cp-encoding-files && node add-js-extensions.js",
+    "cp-encoding-files": "mkdir -p dist/esm/encoding && cp -r src/encoding/* dist/cjs/encoding/ && mkdir -p dist/esm/encoding && cp -r src/encoding/* dist/esm/encoding/ && mkdir -p dist/types/encoding && cp -r src/encoding/* dist/types/encoding/",
+    "fmt": "prettier -w .",
+    "grpc-generate": "mkdir -p src/grpc && protoc -I../yellowstone-grpc/yellowstone-grpc-proto/proto -I../proto --plugin=node_modules/.bin/protoc-gen-ts_proto --ts_proto_opt=forceLong=string --ts_proto_opt=outputServices=grpc-js --experimental_allow_proto3_optional --ts_proto_out=src/grpc fumarole.proto --ts_proto_opt=esModuleInterop=true"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rpcpool/yellowstone-fumarole.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bugs": {
+    "url": "https://github.com/rpcpool/yellowstone-fumarole/issues"
+  },
+  "keywords": [
+    "solana"
+  ],
+  "homepage": "https://triton.one",
+  "dependencies": {
+    "@grpc/grpc-js": "^1.8.0"
+  },
+  "devDependencies": {
+    "@babel/parser": "^7.26.3",
+    "@solana/rpc-api": "=2.0.0",
+    "prettier": "^2.8.3",
+    "recast": "^0.23.9",
+    "ts-proto": "^1.139.0",
+    "typescript": "=5.2.2"
+  },
+  "engines": {
+    "node": ">=20.18.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    }
+  }
+}
