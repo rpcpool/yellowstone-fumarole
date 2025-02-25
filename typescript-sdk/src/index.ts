@@ -4,13 +4,28 @@ import {
   ChannelOptions,
   Metadata,
 } from "@grpc/grpc-js";
-import { ConsumerGroupInfo, CreateStaticConsumerGroupRequest, CreateStaticConsumerGroupResponse, DeleteConsumerGroupRequest, DeleteConsumerGroupResponse, FumaroleClient as FumaroleProtoClient, GetConsumerGroupInfoRequest, GetOldestSlotRequest, GetOldestSlotResponse, GetSlotLagInfoRequest, GetSlotLagInfoResponse, ListAvailableCommitmentLevelsRequest, ListAvailableCommitmentLevelsResponse, ListConsumerGroupsResponse, SubscribeRequest } from "./grpc/fumarole";
+import {
+  ConsumerGroupInfo,
+  CreateStaticConsumerGroupRequest,
+  CreateStaticConsumerGroupResponse,
+  DeleteConsumerGroupRequest,
+  DeleteConsumerGroupResponse,
+  FumaroleClient,
+  GetConsumerGroupInfoRequest,
+  GetOldestSlotRequest,
+  GetOldestSlotResponse,
+  GetSlotLagInfoRequest,
+  GetSlotLagInfoResponse,
+  ListAvailableCommitmentLevelsRequest,
+  ListAvailableCommitmentLevelsResponse,
+  ListConsumerGroupsResponse,
+  SubscribeRequest,
+} from "./grpc/fumarole";
 
 export type FumaroleSubscribeRequest = SubscribeRequest;
 
-export default class FumaroleClient {
-
-  _client: FumaroleProtoClient;
+export default class Client {
+  _client: FumaroleClient;
   _insecureXToken: string | undefined;
 
   constructor(
@@ -19,7 +34,6 @@ export default class FumaroleClient {
     channelOptions: ChannelOptions | undefined
   ) {
     let creds: ChannelCredentials;
-
 
     const endpointURL = new URL(endpoint);
     let port = endpointURL.port;
@@ -33,7 +47,6 @@ export default class FumaroleClient {
           break;
       }
     }
-
 
     // Check if we need to use TLS.
     if (endpointURL.protocol === "https:") {
@@ -54,8 +67,7 @@ export default class FumaroleClient {
       }
     }
 
-
-    this._client = new FumaroleProtoClient(
+    this._client = new FumaroleClient(
       `${endpointURL.hostname}:${port}`,
       creds,
       channelOptions
@@ -70,7 +82,9 @@ export default class FumaroleClient {
     return metadata;
   }
 
-  async createStaticConsumerGroup(request: CreateStaticConsumerGroupRequest): Promise<CreateStaticConsumerGroupResponse> {
+  async createStaticConsumerGroup(
+    request: CreateStaticConsumerGroupRequest
+  ): Promise<CreateStaticConsumerGroupResponse> {
     return await new Promise((resolve, reject) => {
       this._client.createStaticConsumerGroup(request, (error, response) => {
         if (error === null || error === undefined) {
@@ -78,11 +92,13 @@ export default class FumaroleClient {
         } else {
           reject(error);
         }
-      })
-    })
+      });
+    });
   }
 
-  async listConsumerGroups(request: ListAvailableCommitmentLevelsRequest): Promise<ListConsumerGroupsResponse> {
+  async listConsumerGroups(
+    request: ListAvailableCommitmentLevelsRequest
+  ): Promise<ListConsumerGroupsResponse> {
     return await new Promise((resolve, reject) => {
       this._client.listConsumerGroups(request, (error, response) => {
         if (error === null || error === undefined) {
@@ -90,11 +106,13 @@ export default class FumaroleClient {
         } else {
           reject(error);
         }
-      })
-    })
+      });
+    });
   }
 
-  async getConsumerGroupInfo(request: GetConsumerGroupInfoRequest): Promise<ConsumerGroupInfo> {
+  async getConsumerGroupInfo(
+    request: GetConsumerGroupInfoRequest
+  ): Promise<ConsumerGroupInfo> {
     return await new Promise((resolve, reject) => {
       this._client.getConsumerGroupInfo(request, (error, response) => {
         if (error === null || error === undefined) {
@@ -102,11 +120,13 @@ export default class FumaroleClient {
         } else {
           reject(error);
         }
-      })
-    })
+      });
+    });
   }
 
-  async deleteConsumerGroup(request: DeleteConsumerGroupRequest): Promise<DeleteConsumerGroupResponse> {
+  async deleteConsumerGroup(
+    request: DeleteConsumerGroupRequest
+  ): Promise<DeleteConsumerGroupResponse> {
     return await new Promise((resolve, reject) => {
       this._client.deleteConsumerGroup(request, (error, response) => {
         if (error === null || error === undefined) {
@@ -114,11 +134,13 @@ export default class FumaroleClient {
         } else {
           reject(error);
         }
-      })
-    })
+      });
+    });
   }
 
-  async getSlotLagInfo(request: GetSlotLagInfoRequest): Promise<GetSlotLagInfoResponse> {
+  async getSlotLagInfo(
+    request: GetSlotLagInfoRequest
+  ): Promise<GetSlotLagInfoResponse> {
     return await new Promise<GetSlotLagInfoResponse>((resolve, reject) => {
       this._client.getSlotLagInfo(request, (error, response) => {
         if (error === null || error === undefined) {
@@ -126,11 +148,13 @@ export default class FumaroleClient {
         } else {
           reject(error);
         }
-      })
+      });
     });
   }
 
-  async getOldestSlot(request: GetOldestSlotRequest): Promise<GetOldestSlotResponse> {
+  async getOldestSlot(
+    request: GetOldestSlotRequest
+  ): Promise<GetOldestSlotResponse> {
     return await new Promise((resolve, reject) => {
       this._client.getOldestSlot(request, (error, response) => {
         if (error === null || error === undefined) {
@@ -138,11 +162,13 @@ export default class FumaroleClient {
         } else {
           reject(error);
         }
-      })
-    })
+      });
+    });
   }
 
-  async listAvailableCommitmentLevels(request: ListAvailableCommitmentLevelsRequest): Promise<ListAvailableCommitmentLevelsResponse> {
+  async listAvailableCommitmentLevels(
+    request: ListAvailableCommitmentLevelsRequest
+  ): Promise<ListAvailableCommitmentLevelsResponse> {
     return await new Promise((resolve, reject) => {
       this._client.listAvailableCommitmentLevels(request, (error, response) => {
         if (error === null || error === undefined) {
@@ -150,12 +176,11 @@ export default class FumaroleClient {
         } else {
           reject(error);
         }
-      })
-    })
+      });
+    });
   }
 
   async subscribe() {
-    return await this._client.subscribe(this._getInsecureMetadata())
+    return await this._client.subscribe(this._getInsecureMetadata());
   }
-
 }
