@@ -1,6 +1,6 @@
 {
   "name": "@triton-one/yellowstone-fumarole",
-  "version": "3.0.0",
+  "version": "0.1.0",
   "license": "Apache-2.0",
   "author": "Triton One",
   "description": "Yellowstone gRPC Fumarole Node.js Client",
@@ -24,7 +24,10 @@
     "url": "https://github.com/rpcpool/yellowstone-fumarole/issues"
   },
   "keywords": [
-    "solana"
+    "solana",
+    "yellowstone",
+    "grpc",
+    "fumarole"
   ],
   "homepage": "https://triton.one",
   "dependencies": {
