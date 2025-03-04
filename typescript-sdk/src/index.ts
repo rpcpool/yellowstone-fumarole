@@ -37,7 +37,7 @@ export default class Client {
 
     const endpointURL = new URL(endpoint);
     let port = endpointURL.port;
-    if (port == "") {
+    if (!port) {
       switch (endpointURL.protocol) {
         case "https:":
           port = "443";
@@ -49,7 +49,7 @@ export default class Client {
     }
 
     // Check if we need to use TLS.
-    if (endpointURL.protocol === "https:") {
+    if (endpointURL.protocol.startsWith("https:")) {
       creds = credentials.combineChannelCredentials(
         credentials.createSsl(),
         credentials.createFromMetadataGenerator((_params, callback) => {
