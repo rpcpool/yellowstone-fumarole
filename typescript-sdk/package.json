@@ -1,0 +1,77 @@
+{
+  "name": "@triton-one/yellowstone-fumarole",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "author": "Triton One",
+  "description": "Yellowstone gRPC Fumarole Node.js Client",
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "scripts": {
+    "build": "npm run grpc-generate && tsc --project tsconfig.esm.json && tsc --project tsconfig.cjs.json && node add-js-extensions.mjs",
+    "fmt": "prettier -w .",
+    "grpc-generate": "mkdir -p src/grpc && protoc -I../yellowstone-grpc/yellowstone-grpc-proto/proto -I../proto --plugin=node_modules/.bin/protoc-gen-ts_proto --ts_proto_opt=forceLong=string --ts_proto_opt=outputServices=grpc-js --experimental_allow_proto3_optional --ts_proto_out=src/grpc fumarole.proto --ts_proto_opt=esModuleInterop=true"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rpcpool/yellowstone-fumarole.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bugs": {
+    "url": "https://github.com/rpcpool/yellowstone-fumarole/issues"
+  },
+  "keywords": [
+    "solana",
+    "yellowstone",
+    "grpc",
+    "fumarole"
+  ],
+  "homepage": "https://triton.one",
+  "dependencies": {
+    "@grpc/grpc-js": "^1.8.0"
+  },
+  "devDependencies": {
+    "@babel/parser": "^7.26.3",
+    "@solana/rpc-api": "=2.0.0",
+    "prettier": "^2.8.3",
+    "recast": "^0.23.9",
+    "ts-proto": "^1.139.0",
+    "typescript": "=5.2.2"
+  },
+  "engines": {
+    "node": ">=20.18.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./grpc/fumarole": {
+      "types": "./dist/types/grpc/fumarole.d.ts",
+      "import": "./dist/esm/grpc/fumarole.js",
+      "require": "./dist/cjs/grpc/fumarole.js"
+    },
+    "./grpc/geyser": {
+      "types": "./dist/types/grpc/geyser.d.ts",
+      "import": "./dist/esm/grpc/geyser.js",
+      "require": "./dist/cjs/grpc/geyser.js"
+    },
+    "./dist/types/grpc/fumarole": {
+      "types": "./dist/types/grpc/fumarole.d.ts",
+      "import": "./dist/esm/grpc/fumarole.js",
+      "require": "./dist/cjs/grpc/fumarole.js"
+    },
+    "./dist/types/grpc/geyser": {
+      "types": "./dist/types/grpc/geyser.d.ts",
+      "import": "./dist/esm/grpc/geyser.js",
+      "require": "./dist/cjs/grpc/geyser.js"
+    }
+  }
+}

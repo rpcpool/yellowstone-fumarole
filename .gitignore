@@ -14,3 +14,5 @@ dist
 .pytest_cache
 
 target
+node_modules
+dist
