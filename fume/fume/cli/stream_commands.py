@@ -7,6 +7,7 @@ import signal
 import string
 from typing import Optional
 import click
+import grpc
 from fume.grpc import (
     FumaroleClient,
     grpc_channel,
@@ -95,6 +96,7 @@ def stream(ctx, cg_name, parallel, tx_account, account, owner, output_format):
     endpoints = conn["endpoints"]
     x_token = conn.get("x-token")
     metadata = conn.get("grpc-metadata")
+    compression = conn.get("compression")
 
     subscribe_filter = (
         SubscribeFilterBuilder()
@@ -112,8 +114,13 @@ def stream(ctx, cg_name, parallel, tx_account, account, owner, output_format):
         endpoint: str,
         x_token: Optional[str],
     ):
-        signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ignore Ctrl+C in subprocess
-        with grpc_channel(endpoint, x_token) as channel:
+        def sigint_handler(signum, frame):
+            data_tx.put(FumaroleStreamEnd(pid=my_pid))
+            exit(0)
+
+        signal.signal(signal.SIGINT, sigint_handler)  # Ignore Ctrl+C in subprocess
+
+        with grpc_channel(endpoint, x_token, compression=compression) as channel:
             fc = FumaroleClient(channel, metadata=metadata)
 
             my_pid = multiprocessing.current_process().pid
@@ -166,7 +173,7 @@ def stream(ctx, cg_name, parallel, tx_account, account, owner, output_format):
         try:
             if not all(p.is_alive() for p in fumarole_ps.values()):
                 break
-            match data_rx.get():
+            match data_rx.get(timeout=1):
                 case FumaroleStreamData(data):
                     click.echo(data)
                 case FumaroleStreamEnd(pid):
@@ -177,12 +184,14 @@ def stream(ctx, cg_name, parallel, tx_account, account, owner, output_format):
             break
         except EOFError:
             break
+        except queue.Empty:
+            pass
 
     for cnc_tx in fumarole_cnc_tx_vec:
         cnc_tx.put(StopFumaroleStream())
 
     # Drain any leftover data in case some is left in the queue.
-    while fumarole_stream_id_vec or any(p.is_alive() for p in fumarole_ps.values()):
+    while True:
         try:
             match data_rx.get(timeout=1):
                 case FumaroleStreamData(data):
@@ -194,6 +203,9 @@ def stream(ctx, cg_name, parallel, tx_account, account, owner, output_format):
                     fumarole_proc.join()
         except queue.Empty:
             pass
+
+        if not any(p.is_alive() for p in fumarole_ps.values()):
+            break
 
     for _, fumarole_proc in fumarole_ps.items():
         fumarole_proc.terminate()
