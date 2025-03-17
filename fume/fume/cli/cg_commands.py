@@ -87,8 +87,9 @@ def create_cg(
     endpoints = conn["endpoints"]
     x_token = conn.get("x-token")
     metadata = conn.get("grpc-metadata")
+    compression = conn.get("compression")
 
-    with grpc_channel(endpoints[0], x_token) as c:
+    with grpc_channel(endpoints[0], x_token, compression=compression) as c:
         fc = FumaroleClient(c, metadata=metadata)
 
         name = fc.create_consumer_group(
@@ -112,8 +113,9 @@ def list_cg(
     endpoints = conn["endpoints"]
     x_token = conn.get("x-token")
     metadata = conn.get("grpc-metadata")
+    compression = conn.get("compression")
 
-    with grpc_channel(endpoints[0], x_token) as c:
+    with grpc_channel(endpoints[0], x_token, compression=compression) as c:
         fc = FumaroleClient(c, metadata=metadata)
 
         cs = fc.list_consumer_groups()
@@ -146,8 +148,9 @@ def delete_cg(ctx, name):
     endpoints = conn["endpoints"]
     x_token = conn.get("x-token")
     metadata = conn.get("grpc-metadata")
+    compression = conn.get("compression")
 
-    with grpc_channel(endpoints[0], x_token) as c:
+    with grpc_channel(endpoints[0], x_token, compression=compression) as c:
         fc = FumaroleClient(c, metadata=metadata)
         if click.confirm(f"Are you sure you want to delete consumer group {name}?"):
             is_deleted = fc.delete_consumer_group(name=name)
@@ -167,7 +170,9 @@ def delete_all_cg(ctx):
     endpoints = conn["endpoints"]
     x_token = conn.get("x-token")
     metadata = conn.get("grpc-metadata")
-    with grpc_channel(endpoints[0], x_token) as c:
+    compression = conn.get("compression")
+
+    with grpc_channel(endpoints[0], x_token, compression=compression) as c:
         fc = FumaroleClient(c, metadata=metadata)
 
         cs = fc.list_consumer_groups()
@@ -197,8 +202,9 @@ def get_cg(ctx, name):
     endpoints = conn["endpoints"]
     x_token = conn.get("x-token")
     metadata = conn.get("grpc-metadata")
+    compression = conn.get("compression")
 
-    with grpc_channel(endpoints[0], x_token) as c:
+    with grpc_channel(endpoints[0], x_token, compression=compression) as c:
         fc = FumaroleClient(c, metadata=metadata)
 
         cg = fc.get_cg_info(name)

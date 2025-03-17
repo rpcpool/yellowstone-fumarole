@@ -33,7 +33,7 @@ class TritonAuthMetadataPlugin(grpc.AuthMetadataPlugin):
         return _triton_sign_request(callback, self.x_token, None)
 
 
-def grpc_channel(endpoint: str, x_token=None, *grpc_options):
+def grpc_channel(endpoint: str, x_token=None, compression=None, *grpc_options):
     options = [("grpc.max_receive_message_length", 111111110), *grpc_options]
     if x_token is not None:
         auth = TritonAuthMetadataPlugin(x_token)
@@ -48,10 +48,13 @@ def grpc_channel(endpoint: str, x_token=None, *grpc_options):
         combined_creds = grpc.composite_channel_credentials(ssl_creds, call_creds)
 
         return grpc.secure_channel(
-            endpoint, credentials=combined_creds, options=options
+            endpoint,
+            credentials=combined_creds,
+            compression=compression,
+            options=options,
         )
     else:
-        return grpc.insecure_channel(endpoint, options=options)
+        return grpc.insecure_channel(endpoint, compression=compression, options=options)
 
 
 InitialSeek = Union[Literal["earliest"], Literal["latest"], Literal["slot"]]
@@ -124,7 +127,14 @@ def summarize_account_update(account_update: geyser_pb2.SubscribeUpdateAccount) 
     pubkey = base58.b58encode(account_update.account.pubkey).decode("utf-8")
     owner = base58.b58encode(account_update.account.owner).decode("utf-8")
     account_info: geyser_pb2.SubscribeUpdateAccountInfo = account_update.account
-    return f"account,{slot},{owner},{pubkey},{account_info.write_version}"
+    if account_info.txn_signature:
+        txn_signature = base58.b58encode(account_info.txn_signature).decode("utf-8")
+    else:
+        txn_signature = None
+    size = account_info.ByteSize()
+    return (
+        f"account,{slot},owner={owner},pubkey={pubkey},tx={txn_signature},size={size}"
+    )
 
 
 def summarize_tx_update(tx: geyser_pb2.SubscribeUpdateTransaction) -> str:

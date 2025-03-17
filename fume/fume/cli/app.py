@@ -2,6 +2,7 @@ import click
 import importlib.metadata
 import sys
 import toml
+import grpc
 import os
 from pathlib import Path
 
@@ -74,6 +75,18 @@ def cli(ctx, config, endpoints, x_token, x_header):
 
     for x_header_key, x_header_value in x_header:
         conn["grpc-metadata"].append((x_header_key, x_header_value))
+
+    if conn.get("compression") == "gzip":
+        conn["compression"] = grpc.Compression.Gzip
+    elif conn.get("compression") == "none":
+        conn["compression"] = grpc.Compression.NoCompression
+    elif conn.get("compression") is None:
+        conn["compression"] = grpc.Compression.NoCompression
+    else:
+        click.echo(
+            'Error: Invalid compression type, supports "gzip" or "none".', err=True
+        )
+        sys.exit(1)
 
     if not conn.get("x-token"):
         click.echo("Warning: No access token provided", err=True)
