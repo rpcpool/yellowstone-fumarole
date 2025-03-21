@@ -1,3 +1,18 @@
+/**
+ * Read the Fumarole documentation abd blog if you haven't already to understand what's happening in the following code
+ * https://docs.triton.one/project-yellowstone/fumarole
+ * https://blog.triton.one/introducing-yellowstone-fumarole
+ *
+ * Fumarole Example Client
+ *
+ * This example demonstrates how to use the Yellowstone Fumarole client to:
+ * - Connect to a Fumarole endpoint
+ * - Subscribe to account and transaction updates
+ * - Manage consumer groups
+ * - Handle streaming data
+ * 
+ * Comment/Uncomment blocks of code to perform the operations you want to try out
+ */
 import Client, {
   FumaroleSubscribeRequest,
 } from "@triton-one/yellowstone-fumarole";
@@ -15,7 +30,7 @@ async function main() {
     "grpc.max_receive_message_length": 64 * 1024 * 1024, // 64MiB
   });
 
-  const consumerGroupLabel = "hello2";
+  const consumerGroupLabel = "hello3";
 
   // const consumerGroup = await client.createStaticConsumerGroup({
   //   commitmentLevel: CommitmentLevel.CONFIRMED,
@@ -38,26 +53,26 @@ async function main() {
   // });
   // console.log(`Slot Lag Info: ${slotLagInfo}`);
 
-  // const subscribeRequest: FumaroleSubscribeRequest = {
-  //   accounts: {
-  //     tokenKeg: {
-  //       account: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
-  //       filters: [],
-  //       owner: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
-  //       nonemptyTxnSignature: false,
-  //     },
-  //   },
-  //   consumerGroupLabel: consumerGroupLabel,
-  //   transactions: {
-  //   //   tokenKeg: {
-  //   //     accountExclude: [],
-  //   //     accountInclude: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
-  //   //     accountRequired: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
-  //   //   },
-  //   },
-  // };
+  const subscribeRequest: FumaroleSubscribeRequest = {
+    accounts: {
+      tokenKeg: {
+        account: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+        filters: [],
+        owner: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+        nonemptyTxnSignature: false,
+      },
+    },
+    consumerGroupLabel: consumerGroupLabel,
+    transactions: {
+      //   tokenKeg: {
+      //     accountExclude: [],
+      //     accountInclude: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+      //     accountRequired: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+      //   },
+    },
+  };
 
-  // await fumaroleSubscribe(client, subscribeRequest)
+  await fumaroleSubscribe(client, subscribeRequest);
 
   const consumerGroupsList = await client.listConsumerGroups({});
   console.log(`Consumer groups`);
@@ -83,6 +98,7 @@ async function fumaroleSubscribe(
 ) {
   // Subscribe for events
   const stream = await client.subscribe();
+  // const stream = await client.subscribe({ compression: "gzip" });
 
   // Create `error` / `end` handler
   const streamClosed = new Promise<void>((resolve, reject) => {

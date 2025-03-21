@@ -1,3 +1,13 @@
+/**
+ * @fileoverview Fumarole TypeScript SDK for streaming Solana account and transaction data
+ *
+ * Fumarole provides:
+ * - High availability through multi-node data collection
+ * - Persistent storage of historical state
+ * - Horizontal scalability via consumer groups
+ *
+ * @see https://github.com/rpcpool/yellowstone-fumarole
+ */
 import {
   ChannelCredentials,
   credentials,
@@ -24,10 +34,32 @@ import {
 
 export type FumaroleSubscribeRequest = SubscribeRequest;
 
+/**
+ * Configuration options for Fumarole subscription
+ * @example
+ * ```typescript
+ * const stream = await client.subscribe({ compression: "gzip" });
+ * ```
+ */
+export type SubscribeConfig = {
+  /** Enable gzip compression for reduced bandwidth usage */
+  compression?: "gzip";
+};
+
+/**
+ * Main client for interacting with the Fumarole service
+ */
 export default class Client {
   _client: FumaroleClient;
   _insecureXToken: string | undefined;
 
+  /**
+   * Creates a new Fumarole client instance
+   *
+   * @param endpoint - The Fumarole service endpoint URL
+   * @param xToken - Authentication token provided by Triton
+   * @param channelOptions - Additional gRPC channel options
+   */
   constructor(
     endpoint: string,
     xToken: string | undefined,
@@ -82,6 +114,19 @@ export default class Client {
     return metadata;
   }
 
+  /**
+   * Creates a new static consumer group for horizontal scaling
+   *
+   * @example
+   * ```typescript
+   * const group = await client.createStaticConsumerGroup({
+   *   commitmentLevel: CommitmentLevel.CONFIRMED,
+   *   consumerGroupLabel: "my-group",
+   *   eventSubscriptionPolicy: EventSubscriptionPolicy.BOTH,
+   *   initialOffsetPolicy: InitialOffsetPolicy.LATEST,
+   * });
+   * ```
+   */
   async createStaticConsumerGroup(
     request: CreateStaticConsumerGroupRequest
   ): Promise<CreateStaticConsumerGroupResponse> {
@@ -96,6 +141,12 @@ export default class Client {
     });
   }
 
+  /**
+   * Lists all available consumer groups
+   *
+   * @param request - List request parameters
+   * @returns Promise resolving to list of consumer groups
+   */
   async listConsumerGroups(
     request: ListAvailableCommitmentLevelsRequest
   ): Promise<ListConsumerGroupsResponse> {
@@ -110,6 +161,12 @@ export default class Client {
     });
   }
 
+  /**
+   * Gets detailed information about a specific consumer group
+   *
+   * @param request - Consumer group info request
+   * @returns Promise resolving to consumer group details
+   */
   async getConsumerGroupInfo(
     request: GetConsumerGroupInfoRequest
   ): Promise<ConsumerGroupInfo> {
@@ -124,6 +181,12 @@ export default class Client {
     });
   }
 
+  /**
+   * Deletes an existing consumer group
+   *
+   * @param request - Delete request parameters
+   * @returns Promise resolving when deletion is complete
+   */
   async deleteConsumerGroup(
     request: DeleteConsumerGroupRequest
   ): Promise<DeleteConsumerGroupResponse> {
@@ -138,6 +201,12 @@ export default class Client {
     });
   }
 
+  /**
+   * Gets information about slot lag for a subscription
+   *
+   * @param request - Slot lag info request
+   * @returns Promise resolving to slot lag details
+   */
   async getSlotLagInfo(
     request: GetSlotLagInfoRequest
   ): Promise<GetSlotLagInfoResponse> {
@@ -152,6 +221,12 @@ export default class Client {
     });
   }
 
+  /**
+   * Gets the oldest available slot in the persistence store
+   *
+   * @param request - Oldest slot request parameters
+   * @returns Promise resolving to oldest slot information
+   */
   async getOldestSlot(
     request: GetOldestSlotRequest
   ): Promise<GetOldestSlotResponse> {
@@ -166,6 +241,12 @@ export default class Client {
     });
   }
 
+  /**
+   * Lists available commitment levels for subscriptions
+   *
+   * @param request - List commitment levels request
+   * @returns Promise resolving to available commitment levels
+   */
   async listAvailableCommitmentLevels(
     request: ListAvailableCommitmentLevelsRequest
   ): Promise<ListAvailableCommitmentLevelsResponse> {
@@ -180,7 +261,40 @@ export default class Client {
     });
   }
 
-  async subscribe() {
-    return await this._client.subscribe(this._getInsecureMetadata());
+  /**
+   * Subscribes to account and transaction updates
+   *
+   * @example
+   * ```typescript
+   * const stream = await client.subscribe({ compression: "gzip" });
+   *
+   * stream.on('data', (data) => console.log(data));
+   * stream.write({
+   *   accounts: {
+   *     tokenKeg: {
+   *       account: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+   *       filters: [],
+   *       owner: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
+   *     }
+   *   },
+   *   consumerGroupLabel: "my-group"
+   * });
+   * ```
+   */
+  async subscribe(config?: SubscribeConfig) {
+    const options: any = {};
+    if (config) {
+      if (config.compression) {
+        switch (config.compression) {
+          case "gzip":
+            options["grpc.default_compression_algorithm"] = 2; // set compression to: gzip
+            break;
+          default:
+            options["grpc.default_compression_algorithm"] = 0; // set compression to: none
+            break;
+        }
+      }
+    }
+    return await this._client.subscribe(this._getInsecureMetadata(), options);
   }
 }
