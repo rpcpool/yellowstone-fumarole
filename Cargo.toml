@@ -3,16 +3,18 @@ members = [
     "crates/yellowstone-fumarole-client",
     "examples/rust",
 ]
+resolver = "2"
 
 [workspace.package]
 authors = ["Triton One"]
-version = "0.1.0+solana.2.1.11"
+version = "0.1.1+solana.2.1.11"
 edition = "2021"
 homepage = "https://triton.one"
 repository = "https://github.com/rpcpool/yellowstone-fumarole"
 license = "AGPL-3.0"
 keywords = ["solana"]
 publish = false
+
 
 [workspace.dependencies]
 clap = "4.5.7"
@@ -33,6 +35,7 @@ tower = "0.5.2"
 yellowstone-fumarole-client = { path = "crates/yellowstone-fumarole-client" }
 yellowstone-grpc-client = "5.0.0"
 yellowstone-grpc-proto = "5.0.0"
+spl-token-2022 = "7.0.0"
 
 [workspace.lints.clippy]
 clone_on_ref_ptr = "deny"
