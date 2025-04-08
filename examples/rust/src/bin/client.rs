@@ -144,6 +144,9 @@ async fn subscribe(args: SubscribeArgs, config: FumaroleConfig) {
     let (shared_tx, mut rx) = mpsc::channel(1000);
     for request in requests {
         let fumarole = FumaroleClientBuilder::default()
+            .add_metadata_headers(&config.x_metadata)
+            .expect("Failed to add metadata headers")
+            .enable_compression()
             .connect(config.clone())
             .await
             .expect("Failed to connect to Fumarole service");

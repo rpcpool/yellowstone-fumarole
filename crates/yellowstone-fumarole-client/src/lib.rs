@@ -71,16 +71,13 @@ impl Interceptor for AsciiMetadataInterceptor {
     }
 }
 
+///
+/// A builder for creating a [`FumaroleClient`].
+///
+#[derive(Default)]
 pub struct FumaroleClientBuilder {
     pub metadata: HashMap<MetadataKey<Ascii>, MetadataValue<Ascii>>,
-}
-
-impl Default for FumaroleClientBuilder {
-    fn default() -> Self {
-        Self {
-            metadata: HashMap::default(),
-        }
-    }
+    pub with_compression: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -102,8 +99,8 @@ pub type FumaroleBoxedChannel = BoxService<
 pub type BoxedTonicFumaroleClient = TonicFumaroleClient<FumaroleBoxedChannel>;
 
 ///
-/// Yellowstone Fumarole Client
-/// 
+/// Yellowstone Fumarole gRPC Client
+///
 pub struct FumaroleClient {
     inner: BoxedTonicFumaroleClient,
 }
@@ -178,11 +175,11 @@ pub enum InvalidMetadataHeader {
 
 ///
 /// A builder for creating a FumaroleClient.
-/// 
+///
 impl FumaroleClientBuilder {
     ///
     /// Add a metadata header to the client for each request.
-    /// 
+    ///
     pub fn add_metadata_header(
         mut self,
         key: impl AsRef<str>,
@@ -192,6 +189,35 @@ impl FumaroleClientBuilder {
         let value: MetadataValue<Ascii> = value.as_ref().try_into()?;
         self.metadata.insert(key, value);
         Ok(self)
+    }
+
+    ///
+    /// Add multiple metadata headers to the client for each request.
+    ///
+    pub fn add_metadata_headers<IT, KV>(self, headers: IT) -> Result<Self, InvalidMetadataHeader>
+    where
+        KV: AsRef<str>,
+        IT: IntoIterator<Item = (KV, KV)>,
+    {
+        headers
+            .into_iter()
+            .try_fold(self, |this, (k, v)| this.add_metadata_header(k, v))
+    }
+
+    ///
+    /// Enable compression for the client.
+    ///
+    pub const fn enable_compression(mut self) -> Self {
+        self.with_compression = true;
+        self
+    }
+
+    ///
+    /// Disable compression for the client.
+    ///
+    pub const fn disable_compression(mut self) -> Self {
+        self.with_compression = false;
+        self
     }
 
     ///
@@ -239,6 +265,14 @@ impl FumaroleClientBuilder {
 
         let tonic_client = TonicFumaroleClient::new(svc)
             .max_decoding_message_size(config.max_decoding_message_size_bytes);
+
+        let tonic_client = if self.with_compression {
+            tonic_client
+                .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+                .send_compressed(tonic::codec::CompressionEncoding::Gzip)
+        } else {
+            tonic_client
+        };
 
         Ok(FumaroleClient {
             inner: tonic_client,
@@ -338,7 +372,7 @@ impl SubscribeRequestBuilder {
     ///
     /// Include failed transactions.
     ///
-    pub fn include_fail_tx(mut self) -> Self {
+    pub const fn include_fail_tx(mut self) -> Self {
         self.tx_fail = None;
         self
     }
@@ -346,7 +380,7 @@ impl SubscribeRequestBuilder {
     ///
     /// Include vote transactions.
     ///
-    pub fn include_vote_tx(mut self) -> Self {
+    pub const fn include_vote_tx(mut self) -> Self {
         self.tx_vote = None;
         self
     }
@@ -354,7 +388,7 @@ impl SubscribeRequestBuilder {
     ///
     /// Exclude failed transactions.
     ///
-    pub fn no_vote_tx(mut self) -> Self {
+    pub const fn no_vote_tx(mut self) -> Self {
         self.tx_vote = Some(false);
         self
     }
@@ -362,7 +396,7 @@ impl SubscribeRequestBuilder {
     ///
     /// Exclude vote transactions.
     ///
-    pub fn no_fail_tx(mut self) -> Self {
+    pub const fn no_fail_tx(mut self) -> Self {
         self.tx_fail = Some(false);
         self
     }
