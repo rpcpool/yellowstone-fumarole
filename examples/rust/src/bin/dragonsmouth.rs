@@ -6,11 +6,7 @@ use {
         signature::Signature,
         signer::Signer,
     }, spl_token_2022::{generic_token_account::GenericTokenAccount, state::Account as TokenAccount}, std::{
-        collections::{BTreeMap, HashMap, HashSet},
-        marker::PhantomData,
-        ops::Sub,
-        path::PathBuf,
-        time::Duration,
+        collections::{BTreeMap, HashMap, HashSet}, default, f64::consts::E, marker::PhantomData, ops::Sub, path::PathBuf, time::Duration
     }, tokio::time::Instant, tokio_stream::StreamExt, yellowstone_fumarole_client::config::FumaroleConfig, yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcBuilder}, yellowstone_grpc_proto::{
         geyser::{
             subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
@@ -118,7 +114,7 @@ pub enum InvalidBlockEvent {
 
 pub struct ProjectionIterator<'a, T> {
     events: &'a Vec<BlockEvent>,
-    index_vec: &'a Vec<usize>,
+    index_vec: &'a [usize],
     dest_type: PhantomData<T>,
     curr: usize,
 }
@@ -147,7 +143,7 @@ macro_rules! impl_projection_for {
             pub fn iter(&'a self) -> ProjectionIterator<'a, $dest> {
                 ProjectionIterator {
                     events: self.events,
-                    index_vec: self.index_vec,
+                    index_vec: self.index_vec.as_ref(),
                     dest_type: PhantomData,
                     curr: 0,
                 }
@@ -178,7 +174,7 @@ impl_projection_for!(BlockEvent::Entry, SubscribeUpdateEntry);
 
 pub struct Projection<'a, T> {
     events: &'a Vec<BlockEvent>,
-    index_vec: &'a Vec<usize>,
+    index_vec: &'a [usize],
     dest_type: PhantomData<T>,
 }
 
@@ -486,51 +482,74 @@ impl BlockConstruction {
                     && slot_at_least_confirmed
                     && entry_nested_count_match
                 {
+
+                    // Make sure tx insert order respect the entry ordering
+                    let mut tick_entry_cnt = 0;
+                    let mut largest_entries = 0;
+                    for entry in self.project_entries() {
+                        if entry.executed_transaction_count == 0 {
+                            tick_entry_cnt += 1;
+                            continue;
+                        }
+                        let entry_tx_count = entry.executed_transaction_count as usize;
+                        largest_entries = largest_entries.max(entry_tx_count);
+                    }
+                    assert_eq!(tick_entry_cnt, 64);
+                    // Last entry should always be a tick!
+                    
+                    assert!(self.last_entry().unwrap().executed_transaction_count == 0);
+                    let chunks = self.chunk_on_account_write_conflict();
+                    println!("chunks: {}, data entries: {}", chunks.len(), self.entries_vec.len() - 64);
                     self.is_sealed = true;
                 } else {
-                    let missing_tx =
-                        block_meta.executed_transaction_count as usize - self.tx_vec.len();
-                    let missing_entries =
-                        block_meta.entries_count as usize - self.entries_vec.len();
-                    let failed_tx = self.count_fail_tx();
-                    let unknown_account_tx_sigs_cnt: usize =
-                        self.list_unknown_account_tx_sig().len();
-                    let missing_account_update_cnt: usize =
-                        self.count_missing_account_update_with_tx_sig(false);
-                    // let missing_account_writes = total_account_writes - self.account_vec.len();
-                    // eprintln!(
-                    //     r#"Block not sealed {}: 
-                    //         Total account updates without tx sig = {},
-                    //             - Sysvar account updates = {},
-                    //             - off-curve PDA updates = {},
-                    //             - token account updates = {},
-                    //             - ??Unexplained?? = {}
-                    //         failed tx = {}
-                    //         missing tx = {}
-                    //         missing entries = {}
-                    //         unknown account tx sigs = {} 
-                    //         missing account updates / ex. failed tx  = {}
-                    //     "#, 
-                    //     self.slot,
-                    //     self.emptysig_accounts_index.len(),
-                    //     self.emptysig_accounts_index.len() - self.count_non_sysvar_account_empty_tx_sig(),
-                    //     self.count_off_curve_empty_tx_sig(),
-                    //     self.count_token_account_with_empty_tx_sig(),
-                    //     self.emptysig_accounts_index.len()
-                    //         .saturating_sub(self.emptysig_accounts_index.len() - self.count_non_sysvar_account_empty_tx_sig())
-                    //         .saturating_sub(self.count_off_curve_empty_tx_sig())
-                    //         .saturating_sub(self.count_token_account_with_empty_tx_sig()),
-                    //     failed_tx, 
-                    //     missing_tx, 
-                    //     missing_entries,
-                    //     unknown_account_tx_sigs_cnt,
-                    //     missing_account_update_cnt
-                    // );
                 }
             } else {
                 panic!("unexpected type at {i}, expected BlockMeta");
             }
         }
+    }
+
+
+    fn chunk_on_account_write_conflict(&self) -> Vec<Vec<Signature>> {
+        let sigs = self.project_txs()
+            .into_iter()
+            .flat_map(|tx| tx.transaction.as_ref())
+            .map(|tx_info| {
+                let sig = tx_info.signature.as_slice();
+                Signature::try_from(sig).expect("Failed to parse signature")
+            });
+
+        let mut blocked_account = HashSet::new();
+        let mut nonconflicting_batches = Vec::new();
+        let mut curr_batch = Vec::new();
+        for sig in sigs {
+            let pubkeys = self.tx_account_writes_index
+                .get(&sig)
+                .cloned()
+                .unwrap_or_default();
+
+            for pubkey in pubkeys {
+                if blocked_account.insert(pubkey) {
+                    curr_batch.push(sig);
+                } else {
+                    // If the pubkey is already in the blocked account set, it means
+                    // that this transaction conflicts with a previous one.
+                    // So we need to start a new batch.
+                    nonconflicting_batches.push(curr_batch);
+                    curr_batch = vec![sig];
+                    blocked_account.clear();
+                    blocked_account.insert(pubkey);
+                }
+            }
+        }
+        nonconflicting_batches
+    }
+
+
+    fn last_entry(&self) -> Option<&SubscribeUpdateEntry> {
+        self.project_entries()
+            .into_iter()
+            .last()
     }
 
     fn count_token_account_with_empty_tx_sig(&self) -> usize {
@@ -684,7 +703,15 @@ impl BlockConstruction {
         let mut rollback_plans = vec![rollback_plan];
 
         let rollback_plan = match self.events.last().expect("unexpected") {
-            BlockEvent::Tx(_) => {
+            BlockEvent::Tx(tx) => {
+                // let tx_index = tx.transaction.as_ref().unwrap().index;
+                // if let Some(last) = self.tx_vec.last() {
+                //     let event = &self.events[*last];
+                //     if let BlockEvent::Tx(tx2) = event {
+                //         let previous_index = tx2.transaction.as_ref().unwrap().index;
+                //         assert!(previous_index < tx_index, "tx index not in order {} < {}", previous_index, tx_index);
+                //     }
+                // }
                 self.tx_vec.push(i);
                 rollback_plan_from(|this, _| { this.tx_vec.pop(); })
             }
@@ -696,8 +723,33 @@ impl BlockConstruction {
                 self.block_meta_vec.push(i);
                 rollback_plan_from(|this, _| { this.block_meta_vec.pop(); })
             }
-            BlockEvent::Entry(_) => {
+            BlockEvent::Entry(entry) => {
+                // println!("{}", entry.index);
+                let entry_index = entry.index;
+                let starting_idx = entry.starting_transaction_index as usize;
+                // entry.
+                if let Some(last) = self.entries_vec.last() {
+                    let event = &self.events[*last];
+                    let total_tx_in_between = self.events[(*last+1)..i].len();
+                    let BlockEvent::Entry(entry2) = event else {
+                        panic!("unexpected type at {i}, expected Entry, got {event:?}");
+                    };
+                    let last_starting_idx = entry2.starting_transaction_index as usize;
+                    let last_entry_tx_cnt = entry2.executed_transaction_count as usize;
+                    // let actual = self.tx_vec[last_entry_tx_cnt..].as_ref();
+                    let expected = entry.executed_transaction_count;
+                    // assert!(actual.len() == expected as usize, "tx count mismatch {} != {}", actual.len(), expected);
+                    // let total_entries_tx = self.project_entries().into_iter().map(|entry| entry.executed_transaction_count).sum::<u64>();
+                    let previous_index = entry2.index;
+                    assert!(previous_index < entry_index, "entry index not in order {} < {}", previous_index, entry_index);
+                    assert!(last_starting_idx <= starting_idx, "entry starting index not in order {} < {}", last_starting_idx, starting_idx);
+                }
+                if entry.executed_transaction_count <= 1 {
+                    // println!("entry tx count <= 1, {}", entry.executed_transaction_count);
+                }
+                // println!("tx_cnt: {}, total: {}", total_tx, self.tx_vec.len());
                 self.entries_vec.push(i);
+                // println!("total_entries_tx_cnt: {}, total_tx_cnt: {}", self.sum_entries_tx_count(), self.tx_vec.len());
                 rollback_plan_from(|this, _| { this.entries_vec.pop(); })
             }
             BlockEvent::Slot(_) => {
@@ -922,7 +974,7 @@ async fn main() {
 
         if t.elapsed() >= Duration::from_secs(1) {
             let pending_blocks = block_construction_map.len();
-            println!("Pending blocks: {}", pending_blocks);
+            // println!("Pending blocks: {}", pending_blocks);
             t = Instant::now();
         }
 
@@ -968,7 +1020,7 @@ async fn main() {
                     if block.is_sealed() {
                         // let block = block_construction_map.remove(&slot).expect("block not found");
                         let summary = block.summarize_timeline();
-                        println!("Block {slot} sealed: {:?}", summary);
+                        println!("Block {slot} sealed");
                     }
                 }
                 Err(e) => match e {
