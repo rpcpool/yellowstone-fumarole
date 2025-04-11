@@ -1,0 +1,163 @@
+syntax = "proto3";
+
+import public "geyser.proto";
+
+package fumarole_v2;
+
+service Fumarole {
+  rpc GetConsumerGroupInfo(GetConsumerGroupInfoRequest) returns (ConsumerGroupInfo) {}
+  rpc ListConsumerGroups(ListConsumerGroupsRequest) returns (ListConsumerGroupsResponse) {}
+  rpc DeleteConsumerGroup(DeleteConsumerGroupRequest) returns (DeleteConsumerGroupResponse) {}
+  rpc CreateConsumerGroup(CreateConsumerGroupRequest) returns (CreateConsumerGroupResponse) {}
+
+  // Represents subscription to the data plane
+  rpc SubscribeData(stream DataCommand) returns (stream DataResponse) {}
+
+  // Represents subscription to the control plane
+  rpc Subscribe(stream ControlCommand) returns (stream ControlResponse) {}
+}
+
+message GetConsumerGroupInfoRequest {
+  string consumer_group_label = 1;
+}
+
+message DeleteConsumerGroupRequest {
+  string consumer_group_label = 1;
+}
+
+message DeleteConsumerGroupResponse {
+  bool success = 1;
+}
+
+message ListConsumerGroupsRequest {}
+
+message ListConsumerGroupsResponse {
+  repeated ConsumerGroupInfo consumer_groups = 1;
+}
+
+
+message ConsumerGroupInfo {
+  string id = 1;
+  string consumer_group_label = 2;
+  bool is_stale = 3;
+}
+
+message GetSlotLagInfoRequest {
+  string consumer_group_label = 1;
+}
+
+message BlockFilters {
+    map<string, geyser.SubscribeRequestFilterAccounts> accounts = 1;
+    map<string, geyser.SubscribeRequestFilterTransactions> transactions = 2;
+    map<string, geyser.SubscribeRequestFilterEntry> entries = 3;
+    map<string, geyser.SubscribeRequestFilterBlocksMeta> blocks_meta = 4;
+    geyser.CommitmentLevel commitment_level = 5;
+}
+
+message DownloadBlockShard {
+    bytes blockchain_id = 1;
+    bytes block_uid = 2;
+    uint32 shard_idx = 3;
+}
+
+
+message Ping {
+  uint32 ping_id = 1;
+}
+
+message Pong {
+  uint32 ping_id = 1;
+}
+
+message DataCommand {
+  oneof command {
+    BlockFilters update_filter = 1;
+    DownloadBlockShard download_block_shard = 2;
+    Ping ping = 3;
+  } 
+}
+
+message BlockShardDownloadFinish {
+  bytes blockchain_id = 1;
+  bytes block_uid = 2;
+  uint32 shard_idx = 3;
+}
+
+message BlockNotFound {
+  bytes blockchain_id = 1;
+  bytes block_uid = 2;
+  uint32 shard_idx = 3;
+}
+
+message DataError {
+  oneof error {
+    BlockNotFound not_found = 1;
+  }
+}
+
+message DataResponse {
+  oneof response {
+    geyser.SubscribeUpdate update = 1;
+    BlockShardDownloadFinish block_shard_download_finish = 2;
+    DataError error = 3;
+  }
+}
+
+message CommitOffset {
+  uint64 offset = 1;
+}
+
+
+message PollBlockchainHistory {
+  optional uint64 from = 1;
+}
+
+message BlockchainEvent {
+  uint64 offset = 1;
+  bytes blockchain_id = 2;
+  bytes block_uid = 3;
+  uint32 num_shards = 4;
+  uint64 slot = 5;
+  optional uint64 parent_slot = 6;
+  geyser.CommitmentLevel commitment_level = 7;
+}
+
+message BlockchainHistory {
+  repeated BlockchainEvent events = 1;
+}
+
+message ControlCommand {
+    oneof command {
+        CommitOffset commit_offset = 1;
+        PollBlockchainHistory poll_hist = 2;
+        Ping ping = 3;
+    }
+}
+
+message CommitOffsetResult {
+  uint64 offset = 1;
+}
+
+
+message ControlResponse {
+    oneof response {
+        CommitOffsetResult commit_offset = 1;
+        BlockchainHistory poll_next = 2;
+        Pong pong = 3;
+    }
+}
+
+message CreateConsumerGroupResponse {
+  string group_id = 1;
+}
+
+enum InitialOffsetPolicy {
+  LATEST = 0;
+  //FROM_SLOT = 1;
+}
+
+message CreateConsumerGroupRequest {
+  string consumer_group_label = 1;
+  InitialOffsetPolicy initial_offset_policy = 2;
+  //optional uint64 from_slot = 3;
+}

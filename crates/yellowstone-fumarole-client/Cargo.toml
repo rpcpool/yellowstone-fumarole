@@ -17,6 +17,7 @@ include = [
 ]
 
 [dependencies]
+async-trait = { workspace = true }
 solana-sdk = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true }
@@ -25,10 +26,11 @@ serde = { workspace = true, features = ["derive"] }
 serde_with = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
 tokio-stream = { workspace = true }
 tonic = { workspace = true, features = ["tls", "tls-native-roots"] }
 tower = { workspace = true }
+tracing = { workspace = true }
 yellowstone-grpc-proto = { workspace = true }
 
 [build-dependencies]

@@ -3,13 +3,25 @@
 ///
 pub mod config;
 
+pub(crate) mod runtime;
+pub(crate) mod util;
+
 use {
     config::FumaroleConfig,
-    solana_sdk::pubkey::Pubkey,
-    std::collections::HashMap,
-    tokio::sync::mpsc,
-    tokio_stream::wrappers::ReceiverStream,
+    core::num,
+    proto::{BlockFilters, BlockchainEvent, ControlCommand, PollBlockchainHistory},
+    solana_sdk::{clock::Slot, commitment_config::CommitmentLevel, pubkey::Pubkey},
+    std::{
+        cmp::Reverse,
+        collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque},
+    },
+    tokio::{
+        sync::mpsc,
+        task::{self, JoinError, JoinSet},
+    },
+    tokio_stream::{wrappers::ReceiverStream, StreamMap},
     tonic::{
+        async_trait,
         metadata::{
             errors::{InvalidMetadataKey, InvalidMetadataValue},
             Ascii, MetadataKey, MetadataValue,
@@ -18,12 +30,13 @@ use {
         transport::{Channel, ClientTlsConfig},
     },
     tower::{util::BoxService, ServiceBuilder, ServiceExt},
+    util::collections::KeyedVecDeque,
     yellowstone_grpc_proto::geyser::{
-        SubscribeRequestFilterAccounts, SubscribeRequestFilterTransactions,
+        SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterTransactions,
     },
 };
 
-pub(crate) mod solana {
+mod solana {
     #[allow(unused_imports)]
     pub use yellowstone_grpc_proto::solana::{
         storage,
@@ -31,12 +44,12 @@ pub(crate) mod solana {
     };
 }
 
-pub(crate) mod geyser {
+mod geyser {
     pub use yellowstone_grpc_proto::geyser::*;
 }
 
 pub mod proto {
-    include!(concat!(env!("OUT_DIR"), "/fumarole.rs"));
+    include!(concat!(env!("OUT_DIR"), "/fumarole_v2.rs"));
 }
 
 use proto::fumarole_client::FumaroleClient as TonicFumaroleClient;
@@ -105,32 +118,26 @@ pub struct FumaroleClient {
     inner: BoxedTonicFumaroleClient,
 }
 
+#[async_trait::async_trait]
+pub trait FumaroleSender {
+    // async fn send_request(
+    //     &mut self,
+    //     request: proto::SubscribeRequest,
+    // ) -> Result<tonic::Response<tonic::codec::Streaming<geyser::SubscribeUpdate>>, tonic::Status>;
+}
+
 impl FumaroleClient {
-    pub async fn subscribe_with_request(
-        &mut self,
-        request: proto::SubscribeRequest,
-    ) -> Result<tonic::Response<tonic::codec::Streaming<geyser::SubscribeUpdate>>, tonic::Status>
+    ///
+    /// Subscribe to a stream of updates from the Fumarole service
+    ///
+    pub async fn dragonsmouth_subscribe<S>(
+        consumer_group_name: S,
+        request: geyser::SubscribeRequest,
+    ) -> mpsc::Receiver<geyser::SubscribeUpdate>
+    where
+        S: AsRef<str>,
     {
-        let (tx, rx) = mpsc::channel(100);
-        let rx = ReceiverStream::new(rx);
-
-        // NOTE: Make sure send request before giving the stream to the service
-        // Otherwise, the service will not be able to send the response
-        // This is due to how fumarole works in the background for auto-commit offset management.
-        tx.send(request)
-            .await
-            .expect("Failed to send request to Fumarole service");
-        self.inner.subscribe(rx).await
-    }
-
-    pub async fn list_available_commitment_levels(
-        &mut self,
-        request: impl tonic::IntoRequest<proto::ListAvailableCommitmentLevelsRequest>,
-    ) -> std::result::Result<
-        tonic::Response<proto::ListAvailableCommitmentLevelsResponse>,
-        tonic::Status,
-    > {
-        self.inner.list_available_commitment_levels(request).await
+        todo!()
     }
 
     pub async fn list_consumer_groups(
@@ -158,10 +165,10 @@ impl FumaroleClient {
 
     pub async fn create_consumer_group(
         &mut self,
-        request: impl tonic::IntoRequest<proto::CreateStaticConsumerGroupRequest>,
-    ) -> std::result::Result<tonic::Response<proto::CreateStaticConsumerGroupResponse>, tonic::Status>
+        request: impl tonic::IntoRequest<proto::CreateConsumerGroupRequest>,
+    ) -> std::result::Result<tonic::Response<proto::CreateConsumerGroupResponse>, tonic::Status>
     {
-        self.inner.create_static_consumer_group(request).await
+        self.inner.create_consumer_group(request).await
     }
 }
 
@@ -277,199 +284,5 @@ impl FumaroleClientBuilder {
         Ok(FumaroleClient {
             inner: tonic_client,
         })
-    }
-}
-
-///
-/// A builder for creating a SubscribeRequest.
-///
-/// Example:
-///
-/// ```rust
-/// use yellowstone_fumarole_client::SubscribeRequestBuilder;
-/// use solana_sdk::pubkey::Pubkey;
-///
-/// let accounts = vec![Pubkey::new_keypair()];
-/// let owners = vec![Pubkey::new_keypair()];
-/// let tx_accounts = vec![Pubkey::new_keypair()];
-///
-/// let request = SubscribeRequestBuilder::default()
-///     .with_accounts(Some(accounts))
-///     .with_owners(Some(owners))
-///     .with_tx_accounts(Some(tx_accounts))
-///     .build("my_consumer".to_string());
-/// ```
-#[derive(Clone)]
-pub struct SubscribeRequestBuilder {
-    accounts: Option<Vec<Pubkey>>,
-    owners: Option<Vec<Pubkey>>,
-    tx_includes: Option<Vec<Pubkey>>,
-    tx_excludes: Option<Vec<Pubkey>>,
-    tx_requires: Option<Vec<Pubkey>>,
-    tx_fail: Option<bool>,
-    tx_vote: Option<bool>,
-}
-
-impl Default for SubscribeRequestBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SubscribeRequestBuilder {
-    pub const fn new() -> Self {
-        Self {
-            accounts: None,
-            owners: None,
-            tx_includes: None,
-            tx_excludes: None,
-            tx_requires: None,
-            tx_fail: None,
-            tx_vote: None,
-        }
-    }
-
-    ///
-    /// Sets the accounts to subscribe to.
-    ///
-    pub fn with_accounts(mut self, accounts: Option<Vec<Pubkey>>) -> Self {
-        self.accounts = accounts;
-        self
-    }
-
-    ///
-    /// Sets the owners of the accounts to subscribe to.
-    ///
-    pub fn with_owners(mut self, owners: Option<Vec<Pubkey>>) -> Self {
-        self.owners = owners;
-        self
-    }
-
-    ///
-    /// A transaction is included if it has at least one of the provided accounts in its list of instructions.
-    ///
-    pub fn with_tx_includes(mut self, tx_accounts: Option<Vec<Pubkey>>) -> Self {
-        self.tx_includes = tx_accounts;
-        self
-    }
-
-    ///
-    /// A transaction is excluded if it has at least one of the provided accounts in its list of instructions.
-    ///
-    pub fn with_tx_excludes(mut self, tx_excludes: Option<Vec<Pubkey>>) -> Self {
-        self.tx_includes = tx_excludes;
-        self
-    }
-
-    ///
-    /// A transaction is included if all of the provided accounts in its list of instructions.
-    ///
-    pub fn with_tx_requires(mut self, tx_requires: Option<Vec<Pubkey>>) -> Self {
-        self.tx_requires = tx_requires;
-        self
-    }
-
-    ///
-    /// Include failed transactions.
-    ///
-    pub const fn include_fail_tx(mut self) -> Self {
-        self.tx_fail = None;
-        self
-    }
-
-    ///
-    /// Include vote transactions.
-    ///
-    pub const fn include_vote_tx(mut self) -> Self {
-        self.tx_vote = None;
-        self
-    }
-
-    ///
-    /// Exclude failed transactions.
-    ///
-    pub const fn no_vote_tx(mut self) -> Self {
-        self.tx_vote = Some(false);
-        self
-    }
-
-    ///
-    /// Exclude vote transactions.
-    ///
-    pub const fn no_fail_tx(mut self) -> Self {
-        self.tx_fail = Some(false);
-        self
-    }
-
-    ///
-    /// Builds a SubscribeRequest.
-    ///
-    /// If the consumer index is not provided, it defaults to 0.
-    ///
-    pub fn build(self, consumer_group: String) -> proto::SubscribeRequest {
-        self.build_with_consumer_idx(consumer_group, 0)
-    }
-
-    ///
-    /// Builds a vector of SubscribeRequests where each request has a different consumer index.
-    ///
-    pub fn build_vec(self, consumer_group: String, counts: u32) -> Vec<proto::SubscribeRequest> {
-        (0..counts)
-            .map(|i| {
-                self.clone()
-                    .build_with_consumer_idx(consumer_group.clone(), i)
-            })
-            .collect()
-    }
-
-    ///
-    /// Builds a SubscribeRequest with a consumer index.
-    ///
-    pub fn build_with_consumer_idx(
-        self,
-        consumer_group: String,
-        consumer_idx: u32,
-    ) -> proto::SubscribeRequest {
-        let account = self
-            .accounts
-            .map(|vec| vec.into_iter().map(|pubkey| pubkey.to_string()).collect());
-
-        let owner = self
-            .owners
-            .map(|vec| vec.into_iter().map(|pubkey| pubkey.to_string()).collect());
-
-        let tx_includes = self
-            .tx_includes
-            .map(|vec| vec.iter().map(|pubkey| pubkey.to_string()).collect());
-
-        let tx_excludes = self
-            .tx_excludes
-            .map(|vec| vec.iter().map(|pubkey| pubkey.to_string()).collect());
-
-        let tx_requires = self
-            .tx_requires
-            .map(|vec| vec.iter().map(|pubkey| pubkey.to_string()).collect());
-
-        let tx_filter = SubscribeRequestFilterTransactions {
-            vote: self.tx_vote,
-            failed: self.tx_fail,
-            account_exclude: tx_excludes.unwrap_or_default(),
-            account_include: tx_includes.unwrap_or_default(),
-            account_required: tx_requires.unwrap_or_default(),
-            signature: None,
-        };
-
-        let account_filter = SubscribeRequestFilterAccounts {
-            account: account.unwrap_or_default(),
-            owner: owner.unwrap_or_default(),
-            ..Default::default()
-        };
-
-        proto::SubscribeRequest {
-            consumer_group_label: consumer_group,
-            consumer_id: Some(consumer_idx),
-            accounts: HashMap::from([("default".to_string(), account_filter)]),
-            transactions: HashMap::from([("default".to_string(), tx_filter)]),
-        }
     }
 }

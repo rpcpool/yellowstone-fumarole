@@ -349,9 +349,9 @@ dependencies = [
 
 [[package]]
 name = "async-trait"
-version = "0.1.86"
+version = "0.1.88"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "644dd749086bf3771a2fbc5f256fdb982d53f011c7d5d560304eafeecebce79d"
+checksum = "e539d3fca749fcee5236ab05e93a52867dd549cc157c8cb7f99595f3cedffdb5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5008,6 +5008,7 @@ checksum = "1e9df38ee2d2c3c5948ea468a8406ff0db0b29ae1ffde1bcf20ef305bcc95c51"
 name = "yellowstone-fumarole-client"
 version = "0.1.1-pre.2+solana.2.1.11"
 dependencies = [
+ "async-trait",
  "http 1.2.0",
  "hyper 1.6.0",
  "prost",
@@ -5022,6 +5023,7 @@ dependencies = [
  "tonic",
  "tonic-build",
  "tower 0.5.2",
+ "tracing",
  "yellowstone-grpc-proto",
 ]
 
