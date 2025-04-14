@@ -9,43 +9,39 @@ use {
     std::{
         cmp::Reverse,
         collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque},
-        convert::identity,
     },
     yellowstone_grpc_proto::geyser,
 };
 
-type FumeBlockchainId = [u8; 16];
+pub(crate) type FumeBlockchainId = [u8; 16];
 
-type FumeBlockUID = [u8; 16];
+pub(crate) type FumeBlockUID = [u8; 16];
 
-type FumeNumShards = u32;
+pub(crate) type FumeNumShards = u32;
 
-type FumeShardIdx = u32;
+pub(crate) type FumeShardIdx = u32;
 
-type FumeBlockShard = u32;
+pub(crate) type FumeBlockShard = u32;
 
-type FumeDataBusId = u8;
+pub(crate) type FumeDataBusId = u8;
 
-type FumeOffset = u64;
+pub(crate) type FumeOffset = u64;
 
 #[derive(Debug, Clone)]
-struct FumeDownloadRequest {
-    slot: Slot,
-    blockchain_id: FumeBlockchainId,
-    block_uid: FumeBlockUID,
-    num_shards: FumeNumShards, // First version of fumarole, it should always be 1
+pub(crate) struct FumeDownloadRequest {
+    pub(crate) slot: Slot,
+    pub(crate) blockchain_id: FumeBlockchainId,
+    pub(crate) block_uid: FumeBlockUID,
+    pub(crate) num_shards: FumeNumShards, // First version of fumarole, it should always be 1
 }
 
 #[derive(Clone, Debug)]
-struct FumeSlotStatus {
-    parent_offset: FumeOffset,
-    offset: FumeOffset,
-    slot: Slot,
-    parent_slot: Option<Slot>,
-    block_uid: FumeBlockUID,
-    blockchain_id: FumeBlockchainId,
-    num_shards: FumeNumShards,
-    commitment_level: geyser::CommitmentLevel,
+pub(crate) struct FumeSlotStatus {
+    pub(crate) parent_offset: FumeOffset,
+    pub(crate) offset: FumeOffset,
+    pub(crate) slot: Slot,
+    pub(crate) parent_slot: Option<Slot>,
+    pub(crate) commitment_level: geyser::CommitmentLevel,
 }
 
 #[derive(Debug, Default)]
@@ -159,6 +155,19 @@ pub(crate) struct FumaroleSM {
 }
 
 impl FumaroleSM {
+    pub fn new(last_committed_offset: FumeOffset) -> Self {
+        Self {
+            last_committed_offset,
+            slot_downloaded: Default::default(),
+            inflight_slot_shard_download: Default::default(),
+            slot_download_queue: Default::default(),
+            blocked_slot_status_update: Default::default(),
+            slot_status_update_queue: Default::default(),
+            processed_offset: Default::default(),
+            committable_offset: last_committed_offset,
+        }
+    }
+
     ///
     /// Updates the committed offset
     ///
@@ -188,10 +197,9 @@ impl FumaroleSM {
                 commitment_level,
             } = events;
 
-            assert!(
-                offset > last_offset,
-                "offset must be greater than last offset"
-            );
+            if offset < last_offset {
+                continue;
+            }
             let blockchain_id: [u8; 16] = blockchain_id
                 .try_into()
                 .expect("blockchain_id must be 16 bytes");
@@ -203,10 +211,7 @@ impl FumaroleSM {
                 parent_offset: last_offset,
                 offset,
                 slot,
-                block_uid,
                 parent_slot,
-                blockchain_id,
-                num_shards,
                 commitment_level: cl,
             };
             last_offset = offset;
@@ -297,7 +302,7 @@ impl FumaroleSM {
     }
 
     #[inline]
-    fn missing_process_offset(&self) -> FumeOffset {
+    const fn missing_process_offset(&self) -> FumeOffset {
         self.committable_offset + 1
     }
 
@@ -325,5 +330,100 @@ impl FumaroleSM {
     ///
     pub(crate) fn need_new_blockchain_events(&self) -> bool {
         self.slot_status_update_queue.is_empty() && self.blocked_slot_status_update.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use {super::*, uuid::Uuid, yellowstone_grpc_proto::geyser::CommitmentLevel};
+
+    fn random_blockchain_event(
+        offset: FumeOffset,
+        slot: Slot,
+        commitment_level: CommitmentLevel,
+    ) -> BlockchainEvent {
+        let blockchain_id = Uuid::nil().as_bytes().to_vec();
+        let block_uid = Uuid::new_v4().as_bytes().to_vec();
+        BlockchainEvent {
+            offset: 1,
+            blockchain_id,
+            block_uid,
+            num_shards: 1,
+            slot,
+            parent_slot: None,
+            commitment_level: commitment_level.into(),
+        }
+    }
+
+    #[test]
+    fn test_fumarole_sm_happy_path() {
+        let mut sm = FumaroleSM::new(0);
+
+        let event = random_blockchain_event(1, 1, CommitmentLevel::Processed);
+        sm.queue_blockchain_event(vec![event.clone()]);
+
+        // Slot status should not be available, since we didn't download it yet.
+        assert!(sm.pop_next_slot_status().is_none());
+
+        let download_req = sm.pop_slot_to_download().unwrap();
+
+        assert_eq!(download_req.slot, 1);
+
+        assert!(sm.pop_slot_to_download().is_none());
+
+        sm.make_slot_download_progress(1, 0);
+
+        let status = sm.pop_next_slot_status().unwrap();
+
+        assert_eq!(status.slot, 1);
+        assert_eq!(status.commitment_level, CommitmentLevel::Processed);
+        sm.mark_offset_as_processed(status.offset);
+
+        // All subsequent commitment level should be available right away
+        let mut event2 = event.clone();
+        event2.offset += 1;
+        event2.commitment_level = CommitmentLevel::Confirmed.into();
+        sm.queue_blockchain_event(vec![event2.clone()]);
+
+        // It should not cause new slot download request
+        assert!(sm.pop_slot_to_download().is_none());
+
+        let status = sm.pop_next_slot_status().unwrap();
+        assert_eq!(status.slot, 1);
+        assert_eq!(status.commitment_level, CommitmentLevel::Confirmed);
+        sm.mark_offset_as_processed(status.offset);
+
+        assert_eq!(sm.committable_offset, event2.offset);
+    }
+
+    #[test]
+    fn it_should_dedup_slot_status() {
+        let mut sm = FumaroleSM::new(0);
+
+        let event = random_blockchain_event(1, 1, CommitmentLevel::Processed);
+        sm.queue_blockchain_event(vec![event.clone()]);
+
+        // Slot status should not be available, since we didn't download it yet.
+        assert!(sm.pop_next_slot_status().is_none());
+
+        let download_req = sm.pop_slot_to_download().unwrap();
+
+        assert_eq!(download_req.slot, 1);
+
+        assert!(sm.pop_slot_to_download().is_none());
+
+        sm.make_slot_download_progress(1, 0);
+
+        let status = sm.pop_next_slot_status().unwrap();
+
+        assert_eq!(status.slot, 1);
+        assert_eq!(status.commitment_level, CommitmentLevel::Processed);
+
+        // Putting the same event back should be ignored
+        sm.queue_blockchain_event(vec![event]);
+
+        assert!(sm.pop_next_slot_status().is_none());
+        assert!(sm.pop_slot_to_download().is_none());
     }
 }

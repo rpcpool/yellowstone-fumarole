@@ -3,10 +3,19 @@ use std::{
     hash::Hash,
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct KeyedVecDeque<K, V> {
     vec: VecDeque<(K, V)>,
     index: HashSet<K>,
+}
+
+impl<K, V> Default for KeyedVecDeque<K, V> {
+    fn default() -> Self {
+        Self {
+            vec: Default::default(),
+            index: Default::default(),
+        }
+    }
 }
 
 impl<K, V> KeyedVecDeque<K, V>

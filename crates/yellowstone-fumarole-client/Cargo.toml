@@ -31,6 +31,7 @@ tokio-stream = { workspace = true }
 tonic = { workspace = true, features = ["tls", "tls-native-roots"] }
 tower = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 yellowstone-grpc-proto = { workspace = true }
 
 [build-dependencies]

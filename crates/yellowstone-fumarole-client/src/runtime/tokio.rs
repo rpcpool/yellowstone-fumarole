@@ -1,23 +1,20 @@
 use {
-    super::{FumaroleSM, FumeDownloadRequest, FumeOffset, FumeSlotStatus},
-    crate::{
+    super::{FumaroleSM, FumeDownloadRequest, FumeOffset},
+    crate::
         proto::{
             self, data_command, BlockFilters, CommitOffset, ControlCommand, DataCommand,
             DownloadBlockShard, PollBlockchainHistory,
-        },
-        util::collections::KeyedVecDeque,
-    },
+        }
+    ,
     solana_sdk::clock::Slot,
     std::{
-        cmp::Reverse,
-        collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque},
-        f32::consts::E,
+        collections::{HashMap, VecDeque},
         sync::Arc,
         time::{Duration, Instant},
     },
     tokio::{
         sync::mpsc,
-        task::{self, JoinError, JoinSet},
+        task::{self, JoinSet},
     },
     yellowstone_grpc_proto::geyser::{
         self, SubscribeRequest, SubscribeUpdate, SubscribeUpdateSlot,
@@ -75,7 +72,7 @@ pub(crate) struct TokioFumeDragonsmouthRuntime {
     last_commit: Instant,
 }
 
-fn build_poll_history_cmd(from: Option<FumeOffset>) -> ControlCommand {
+const fn build_poll_history_cmd(from: Option<FumeOffset>) -> ControlCommand {
     ControlCommand {
         command: Some(proto::control_command::Command::PollHist(
             // from None means poll the entire history from wherever we left off since last commit.
@@ -84,7 +81,7 @@ fn build_poll_history_cmd(from: Option<FumeOffset>) -> ControlCommand {
     }
 }
 
-fn build_commit_offset_cmd(offset: FumeOffset) -> ControlCommand {
+const fn build_commit_offset_cmd(offset: FumeOffset) -> ControlCommand {
     ControlCommand {
         command: Some(proto::control_command::Command::CommitOffset(
             CommitOffset { offset },
@@ -390,7 +387,7 @@ impl TokioFumeDragonsmouthRuntime {
                 Some(result) = self.data_plane_tasks.join_next_with_id() => {
                     let (task_id, download_result) = result.expect("data plane task set");
 
-                    self.handle_data_plane_task_result(task_id, download_result);
+                    self.handle_data_plane_task_result(task_id, download_result).await;
                 }
 
                 _ = tokio::time::sleep_until(commit_deadline.into()) => {
