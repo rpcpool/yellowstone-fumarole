@@ -20,6 +20,8 @@ name = "dragonsmouth"
 solana-sdk = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde_yaml = { workspace = true }
+spl-token-2022 = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
