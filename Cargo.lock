@@ -5006,7 +5006,7 @@ checksum = "1e9df38ee2d2c3c5948ea468a8406ff0db0b29ae1ffde1bcf20ef305bcc95c51"
 
 [[package]]
 name = "yellowstone-fumarole-client"
-version = "0.1.0+solana.2.1.11"
+version = "0.1.1-pre.2+solana.2.1.11"
 dependencies = [
  "http 1.2.0",
  "hyper 1.6.0",
@@ -5027,7 +5027,7 @@ dependencies = [
 
 [[package]]
 name = "yellowstone-fumarole-client-simple"
-version = "0.1.0+solana.2.1.11"
+version = "0.1.1+solana.2.1.11"
 dependencies = [
  "clap",
  "serde_yaml",
