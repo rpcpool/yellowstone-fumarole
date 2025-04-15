@@ -22,6 +22,7 @@ impl<K, V> KeyedVecDeque<K, V>
 where
     K: Eq + Hash + Clone,
 {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         KeyedVecDeque {
             vec: VecDeque::new(),
@@ -38,6 +39,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     pub fn push_front(&mut self, key: K, item: V) -> bool {
         if self.index.insert(key.clone()) {
             self.vec.push_front((key, item));
@@ -56,6 +58,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.vec.is_empty()
     }

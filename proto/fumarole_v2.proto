@@ -51,13 +51,14 @@ message BlockFilters {
     map<string, geyser.SubscribeRequestFilterTransactions> transactions = 2;
     map<string, geyser.SubscribeRequestFilterEntry> entries = 3;
     map<string, geyser.SubscribeRequestFilterBlocksMeta> blocks_meta = 4;
-    geyser.CommitmentLevel commitment_level = 5;
+    optional geyser.CommitmentLevel commitment_level = 5;
 }
 
 message DownloadBlockShard {
     bytes blockchain_id = 1;
     bytes block_uid = 2;
     uint32 shard_idx = 3;
+    optional BlockFilters blockFilters = 4;
 }
 
 
@@ -71,9 +72,8 @@ message Pong {
 
 message DataCommand {
   oneof command {
-    BlockFilters update_filter = 1;
-    DownloadBlockShard download_block_shard = 2;
-    Ping ping = 3;
+    DownloadBlockShard download_block_shard = 1;
+    Ping ping = 2;
   } 
 }
 
@@ -138,12 +138,17 @@ message CommitOffsetResult {
   uint64 offset = 1;
 }
 
+message InitialConsumerGroupState {
+  uint64 last_committed_offset = 1;
+  bytes blockchain_id = 2;
+}
 
 message ControlResponse {
     oneof response {
-        CommitOffsetResult commit_offset = 1;
-        BlockchainHistory poll_next = 2;
-        Pong pong = 3;
+        InitialConsumerGroupState init = 1;
+        CommitOffsetResult commit_offset = 2;
+        BlockchainHistory poll_next = 3;
+        Pong pong = 4;
     }
 }
 

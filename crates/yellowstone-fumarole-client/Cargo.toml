@@ -10,6 +10,10 @@ license = { workspace = true }
 keywords = { workspace = true }
 publish = true
 
+[features]
+default = ["tokio"]
+tokio = []
+
 [package.metadata]
 include = [
     "proto/**",
@@ -18,13 +22,14 @@ include = [
 
 [dependencies]
 async-trait = { workspace = true }
-solana-sdk = { workspace = true }
+futures = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_with = { workspace = true }
 serde_yaml = { workspace = true }
+solana-sdk = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tokio-stream = { workspace = true }

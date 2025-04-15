@@ -1,3 +1,4 @@
+#[cfg(feature = "tokio")]
 pub(crate) mod tokio;
 
 use {
@@ -21,10 +22,6 @@ pub(crate) type FumeNumShards = u32;
 
 pub(crate) type FumeShardIdx = u32;
 
-pub(crate) type FumeBlockShard = u32;
-
-pub(crate) type FumeDataBusId = u8;
-
 pub(crate) type FumeOffset = u64;
 
 #[derive(Debug, Clone)]
@@ -37,7 +34,6 @@ pub(crate) struct FumeDownloadRequest {
 
 #[derive(Clone, Debug)]
 pub(crate) struct FumeSlotStatus {
-    pub(crate) parent_offset: FumeOffset,
     pub(crate) offset: FumeOffset,
     pub(crate) slot: Slot,
     pub(crate) parent_slot: Option<Slot>,
@@ -208,7 +204,6 @@ impl FumaroleSM {
             let cl = geyser::CommitmentLevel::try_from(commitment_level)
                 .expect("invalid commitment level");
             let fume_slot_status = FumeSlotStatus {
-                parent_offset: last_offset,
                 offset,
                 slot,
                 parent_slot,
@@ -235,13 +230,6 @@ impl FumaroleSM {
                 self.slot_status_update_queue.push_back(fume_slot_status);
             }
         }
-    }
-
-    ///
-    /// Returns true if there are slot to download, otherwise false.
-    ///
-    pub(crate) fn has_any_slot_to_download(&self) -> bool {
-        !self.slot_download_queue.is_empty()
     }
 
     ///
@@ -346,7 +334,7 @@ mod tests {
         let blockchain_id = Uuid::nil().as_bytes().to_vec();
         let block_uid = Uuid::new_v4().as_bytes().to_vec();
         BlockchainEvent {
-            offset: 1,
+            offset,
             blockchain_id,
             block_uid,
             num_shards: 1,

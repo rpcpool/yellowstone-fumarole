@@ -5018,6 +5018,7 @@ name = "yellowstone-fumarole-client"
 version = "0.1.1-pre.2+solana.2.1.11"
 dependencies = [
  "async-trait",
+ "futures",
  "http 1.2.0",
  "hyper 1.6.0",
  "prost",

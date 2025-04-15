@@ -1,11 +1,9 @@
 use {
     super::{FumaroleSM, FumeDownloadRequest, FumeOffset},
-    crate::
-        proto::{
-            self, data_command, BlockFilters, CommitOffset, ControlCommand, DataCommand,
-            DownloadBlockShard, PollBlockchainHistory,
-        }
-    ,
+    crate::proto::{
+        self, data_command, BlockFilters, CommitOffset, ControlCommand, DataCommand,
+        DownloadBlockShard, PollBlockchainHistory,
+    },
     solana_sdk::clock::Slot,
     std::{
         collections::{HashMap, VecDeque},
@@ -23,16 +21,16 @@ use {
 
 ///
 /// Data-Plane bidirectional stream
-struct DataPlaneBidi {
-    tx: mpsc::Sender<proto::DataCommand>,
-    rx: mpsc::Receiver<proto::DataResponse>,
+pub(crate) struct DataPlaneBidi {
+    pub tx: mpsc::Sender<proto::DataCommand>,
+    pub rx: mpsc::Receiver<Result<proto::DataResponse, tonic::Status>>,
 }
 
 ///
 /// Holds information about on-going data plane task.
 ///
 #[derive(Clone, Debug)]
-struct DataPlaneTaskMeta {
+pub(crate) struct DataPlaneTaskMeta {
     download_request: FumeDownloadRequest,
     scheduled_at: Instant,
     download_attempt: u8,
@@ -42,7 +40,7 @@ struct DataPlaneTaskMeta {
 /// Base trait for Data-plane bidirectional stream factories.
 ///
 #[async_trait::async_trait]
-pub trait DataPlaneBidiFactory {
+pub(crate) trait DataPlaneBidiFactory {
     ///
     /// Builds a [`DataPlaneBidi`]
     ///
@@ -50,26 +48,36 @@ pub trait DataPlaneBidiFactory {
 }
 
 ///
+/// Mimics Dragonsmouth subscribe request bidirectional stream.
+///
+pub struct DragonsmouthSubscribeRequestBidi {
+    #[allow(dead_code)]
+    pub tx: mpsc::Sender<SubscribeRequest>,
+    pub rx: mpsc::Receiver<SubscribeRequest>,
+}
+
+///
 /// Fumarole runtime based on Tokio outputting Dragonsmouth only events.
 ///
 pub(crate) struct TokioFumeDragonsmouthRuntime {
-    rt: tokio::runtime::Handle,
-    sm: FumaroleSM,
-    block_filters: BlockFilters,
-    data_plane_bidi_factory: Arc<dyn DataPlaneBidiFactory + Send + 'static>,
-    subscribe_request: SubscribeRequest,
-    consumer_group_name: String,
-    control_plane_tx: mpsc::Sender<proto::ControlCommand>,
-    control_plane_rx: mpsc::Receiver<proto::ControlResponse>,
-    data_plane_bidi_vec: VecDeque<DataPlaneBidi>,
-    data_plane_tasks: JoinSet<Result<DownloadBlockCompleted, DownloadBlockError>>,
-    data_plane_task_meta: HashMap<tokio::task::Id, DataPlaneTaskMeta>,
-    dragonsmouth_outlet: mpsc::Sender<geyser::SubscribeUpdate>,
-    download_to_retry: VecDeque<FumeDownloadRequest>,
-    download_attempts: HashMap<Slot, u8>,
-    max_slot_download_attempt: u8,
-    commit_interval: Duration,
-    last_commit: Instant,
+    pub rt: tokio::runtime::Handle,
+    pub sm: FumaroleSM,
+    pub dragonsmouth_bidi: DragonsmouthSubscribeRequestBidi,
+    pub data_plane_bidi_factory: Arc<dyn DataPlaneBidiFactory + Send + Sync + 'static>,
+    pub subscribe_request: SubscribeRequest,
+    #[allow(dead_code)]
+    pub consumer_group_name: String,
+    pub control_plane_tx: mpsc::Sender<proto::ControlCommand>,
+    pub control_plane_rx: mpsc::Receiver<Result<proto::ControlResponse, tonic::Status>>,
+    pub data_plane_bidi_vec: VecDeque<DataPlaneBidi>,
+    pub data_plane_tasks: JoinSet<Result<DownloadBlockCompleted, DownloadBlockError>>,
+    pub data_plane_task_meta: HashMap<tokio::task::Id, DataPlaneTaskMeta>,
+    pub dragonsmouth_outlet: mpsc::Sender<Result<geyser::SubscribeUpdate, tonic::Status>>,
+    pub download_to_retry: VecDeque<FumeDownloadRequest>,
+    pub download_attempts: HashMap<Slot, u8>,
+    pub max_slot_download_attempt: u8,
+    pub commit_interval: Duration,
+    pub last_commit: Instant,
 }
 
 const fn build_poll_history_cmd(from: Option<FumeOffset>) -> ControlCommand {
@@ -89,25 +97,31 @@ const fn build_commit_offset_cmd(offset: FumeOffset) -> ControlCommand {
     }
 }
 
-struct DownloadBlockTask {
+pub(crate) struct DownloadBlockTask {
     download_request: FumeDownloadRequest,
-    block_filter: BlockFilters,
     bidi: DataPlaneBidi,
-    dragonsmouth_oulet: mpsc::Sender<SubscribeUpdate>,
+    filters: Option<BlockFilters>,
+    dragonsmouth_oulet: mpsc::Sender<Result<SubscribeUpdate, tonic::Status>>,
 }
 
-struct DownloadBlockCompleted {
+pub(crate) struct DownloadBlockCompleted {
     bidi: DataPlaneBidi,
 }
 
-enum DownloadBlockError {
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DownloadBlockError {
+    #[error("download block task disconnected")]
     Disconnected,
+    #[error("dragonsmouth outlet disconnected")]
     OutletDisconnected,
+    #[error("block shard not found")]
     BlockShardNotFound,
+    #[error(transparent)]
+    GrpcError(#[from] tonic::Status),
 }
 
 impl DownloadBlockTask {
-    async fn run(mut self) -> Result<DownloadBlockCompleted, DownloadBlockError> {
+    async fn run(self) -> Result<DownloadBlockCompleted, DownloadBlockError> {
         let DataPlaneBidi { tx, mut rx } = self.bidi;
 
         // Make sure the stream is empty
@@ -123,7 +137,8 @@ impl DownloadBlockTask {
         let data_cmd = data_command::Command::DownloadBlockShard(DownloadBlockShard {
             blockchain_id: self.download_request.blockchain_id.to_vec(),
             block_uid: self.download_request.block_uid.to_vec(),
-            shard_idx: 0, // ONLY SUPPORTS 1 shard in V1.
+            shard_idx: 0,
+            block_filters: self.filters,
         });
         let data_cmd = DataCommand {
             command: Some(data_cmd),
@@ -133,9 +148,11 @@ impl DownloadBlockTask {
             .map_err(|_| DownloadBlockError::Disconnected)?;
 
         loop {
-            let Some(data) = rx.recv().await else {
+            let Some(result) = rx.recv().await else {
                 return Err(DownloadBlockError::Disconnected);
             };
+
+            let data = result?;
 
             let Some(resp) = data.response else { continue };
 
@@ -143,7 +160,7 @@ impl DownloadBlockTask {
                 proto::data_response::Response::Update(subscribe_update) => {
                     if self
                         .dragonsmouth_oulet
-                        .send(subscribe_update)
+                        .send(Ok(subscribe_update))
                         .await
                         .is_err()
                     {
@@ -177,6 +194,24 @@ impl DownloadBlockTask {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RuntimeError {
+    #[error(transparent)]
+    GrpcError(#[from] tonic::Status),
+}
+
+impl From<SubscribeRequest> for BlockFilters {
+    fn from(val: SubscribeRequest) -> Self {
+        BlockFilters {
+            accounts: val.accounts,
+            transactions: val.transactions,
+            entries: val.entry,
+            blocks_meta: val.blocks_meta,
+            commitment_level: val.commitment,
+        }
+    }
+}
+
 impl TokioFumeDragonsmouthRuntime {
     fn handle_control_response(&mut self, control_response: proto::ControlResponse) {
         let Some(response) = control_response.response else {
@@ -196,6 +231,9 @@ impl TokioFumeDragonsmouthRuntime {
             }
             proto::control_response::Response::Pong(_pong) => {
                 tracing::trace!("pong");
+            }
+            proto::control_response::Response::Init(_init) => {
+                unreachable!("init should not be received here");
             }
         }
     }
@@ -233,8 +271,8 @@ impl TokioFumeDragonsmouthRuntime {
 
             let download_task = DownloadBlockTask {
                 download_request: download_request.clone(),
-                block_filter: self.block_filters.clone(),
                 bidi: data_plane_bidi,
+                filters: Some(self.subscribe_request.clone().into()),
                 dragonsmouth_oulet: self.dragonsmouth_outlet.clone(),
             };
 
@@ -263,7 +301,7 @@ impl TokioFumeDragonsmouthRuntime {
         &mut self,
         task_id: task::Id,
         result: Result<DownloadBlockCompleted, DownloadBlockError>,
-    ) {
+    ) -> Result<(), DownloadBlockError> {
         let Some(task_meta) = self.data_plane_task_meta.remove(&task_id) else {
             panic!("missing task meta")
         };
@@ -280,10 +318,10 @@ impl TokioFumeDragonsmouthRuntime {
             }
             Err(e) => {
                 match e {
-                    DownloadBlockError::Disconnected => {
+                    x @ (DownloadBlockError::Disconnected | DownloadBlockError::GrpcError(_)) => {
                         // We need to retry it
                         if task_meta.download_attempt >= self.max_slot_download_attempt {
-                            panic!("Failed to download slot {slot}")
+                            return Err(x);
                         }
 
                         let data_plane_bidi = self.data_plane_bidi_factory.build().await;
@@ -303,6 +341,7 @@ impl TokioFumeDragonsmouthRuntime {
                 }
             }
         }
+        Ok(())
     }
 
     async fn commit_offset(&mut self) {
@@ -351,7 +390,7 @@ impl TokioFumeDragonsmouthRuntime {
                     )),
                 };
 
-                if self.dragonsmouth_outlet.send(update).await.is_err() {
+                if self.dragonsmouth_outlet.send(Ok(update)).await.is_err() {
                     return;
                 }
                 self.sm.mark_offset_as_processed(slot_status.offset);
@@ -359,7 +398,17 @@ impl TokioFumeDragonsmouthRuntime {
         }
     }
 
-    async fn run(mut self) {
+    async fn unsafe_cancel_all_tasks(&mut self) {
+        self.data_plane_tasks.abort_all();
+        self.data_plane_task_meta.clear();
+        self.download_attempts.clear();
+
+        while (self.data_plane_tasks.join_next().await).is_some() {
+            // Drain all tasks
+        }
+    }
+
+    pub(crate) async fn run(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let inital_load_history_cmd = build_poll_history_cmd(None);
         self.control_plane_tx
             .send(inital_load_history_cmd)
@@ -377,17 +426,35 @@ impl TokioFumeDragonsmouthRuntime {
             self.poll_history_if_needed().await;
             self.schedule_download_task_if_any();
             tokio::select! {
+                Some(subscribe_request) = self.dragonsmouth_bidi.rx.recv() => {
+                    self.subscribe_request = subscribe_request
+                }
                 control_response = self.control_plane_rx.recv() => {
-                    if let Some(control_response) = control_response {
-                        self.handle_control_response(control_response);
-                    } else {
-                        break;
+                    match control_response {
+                        Some(Ok(control_response)) => {
+                            tracing::trace!("control response received");
+                            self.handle_control_response(control_response);
+                        }
+                        Some(Err(e)) => {
+                            tracing::error!("control plane error: {e}");
+                            return Err(Box::new(RuntimeError::GrpcError(e)));
+                        }
+                        None => {
+                            tracing::trace!("control plane disconnected");
+                            break;
+                        }
                     }
                 }
                 Some(result) = self.data_plane_tasks.join_next_with_id() => {
                     let (task_id, download_result) = result.expect("data plane task set");
-
-                    self.handle_data_plane_task_result(task_id, download_result).await;
+                    let result = self.handle_data_plane_task_result(task_id, download_result).await;
+                    if let Err(e) = result {
+                        self.unsafe_cancel_all_tasks().await;
+                        if let DownloadBlockError::GrpcError(e) = e {
+                            let _ = self.dragonsmouth_outlet.send(Err(e)).await;
+                        }
+                        break;
+                    }
                 }
 
                 _ = tokio::time::sleep_until(commit_deadline.into()) => {
@@ -396,7 +463,6 @@ impl TokioFumeDragonsmouthRuntime {
             }
             self.drain_slot_status().await;
         }
+        Ok(())
     }
 }
-
-pub struct TokioFumarolHandle {}
