@@ -191,6 +191,7 @@ impl FumaroleSM {
                 slot,
                 parent_slot,
                 commitment_level,
+                blockchain_shard_id: _, /*First version this is value does not mean nothing */
             } = events;
 
             if offset < last_offset {
@@ -341,6 +342,7 @@ mod tests {
             slot,
             parent_slot: None,
             commitment_level: commitment_level.into(),
+            blockchain_shard_id: 0,
         }
     }
 

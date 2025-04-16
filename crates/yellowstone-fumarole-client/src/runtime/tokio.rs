@@ -92,7 +92,10 @@ const fn build_poll_history_cmd(from: Option<FumeOffset>) -> ControlCommand {
 const fn build_commit_offset_cmd(offset: FumeOffset) -> ControlCommand {
     ControlCommand {
         command: Some(proto::control_command::Command::CommitOffset(
-            CommitOffset { offset },
+            CommitOffset {
+                offset,
+                shard_id: 0, /*ALWAYS 0-FOR FIRST VERSION OF FUMAROLE */
+            },
         )),
     }
 }

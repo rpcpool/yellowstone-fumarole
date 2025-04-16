@@ -105,6 +105,7 @@ message DataResponse {
 
 message CommitOffset {
   uint64 offset = 1;
+  int32 shard_id = 2;
 }
 
 
@@ -120,6 +121,7 @@ message BlockchainEvent {
   uint64 slot = 5;
   optional uint64 parent_slot = 6;
   geyser.CommitmentLevel commitment_level = 7;
+  int32 blockchain_shard_id = 8;
 }
 
 message BlockchainHistory {
@@ -136,6 +138,7 @@ message ControlCommand {
 
 message CommitOffsetResult {
   uint64 offset = 1;
+  int32 shard_id = 2;
 }
 
 message InitialConsumerGroupState {
