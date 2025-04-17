@@ -18,11 +18,11 @@ service Fumarole {
 }
 
 message GetConsumerGroupInfoRequest {
-  string consumer_group_label = 1;
+  string consumer_group_name = 1;
 }
 
 message DeleteConsumerGroupRequest {
-  string consumer_group_label = 1;
+  string consumer_group_name = 1;
 }
 
 message DeleteConsumerGroupResponse {
@@ -38,12 +38,12 @@ message ListConsumerGroupsResponse {
 
 message ConsumerGroupInfo {
   string id = 1;
-  string consumer_group_label = 2;
+  string consumer_group_name = 2;
   bool is_stale = 3;
 }
 
 message GetSlotLagInfoRequest {
-  string consumer_group_label = 1;
+  string consumer_group_name = 1;
 }
 
 message BlockFilters {
@@ -156,7 +156,7 @@ message ControlResponse {
 }
 
 message CreateConsumerGroupResponse {
-  string group_id = 1;
+  string consumer_group_id = 1;
 }
 
 enum InitialOffsetPolicy {
@@ -165,7 +165,7 @@ enum InitialOffsetPolicy {
 }
 
 message CreateConsumerGroupRequest {
-  string consumer_group_label = 1;
+  string consumer_group_name = 1;
   InitialOffsetPolicy initial_offset_policy = 2;
   //optional uint64 from_slot = 3;
 }

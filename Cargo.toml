@@ -1,5 +1,6 @@
 [workspace]
-members = [
+members = [ 
+    "apps/fume",
     "crates/yellowstone-fumarole-client",
     "examples/rust",
 ]
@@ -28,6 +29,7 @@ serde = "1.0.203"
 serde_with = "3.8.1"
 serde_yaml = "0.9.34"
 solana-sdk = "=2.1.11"
+tabled = "0.18.0"
 thiserror = "1.0.61"
 tokio = "1.38.0"
 tokio-stream = "0.1.11"
