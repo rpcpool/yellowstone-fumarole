@@ -1,5 +1,6 @@
 [workspace]
-members = [
+members = [ 
+    "apps/fume",
     "crates/yellowstone-fumarole-client",
     "examples/rust",
 ]
@@ -19,15 +20,19 @@ publish = false
 [workspace.dependencies]
 async-trait = "0.1.88"
 clap = "4.5.7"
+clap-verbosity-flag = "3.0.2"
 futures = "0.3.31"
 http = "1.2.0"
 hyper = "1.3.1"
+lazy_static = "~1.5.0"
+prometheus = "~0.13.0"
 prost = "0.13.0"
 protobuf-src = "1.1.0"
 serde = "1.0.203"
 serde_with = "3.8.1"
 serde_yaml = "0.9.34"
 solana-sdk = "=2.1.11"
+tabled = "0.18.0"
 thiserror = "1.0.61"
 tokio = "1.38.0"
 tokio-stream = "0.1.11"
@@ -35,6 +40,7 @@ tonic = "0.12.3"
 tonic-build = "0.12.3"
 tower = "0.5.2"
 tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 uuid = { version = "1.16.0" }
 yellowstone-fumarole-client = { path = "crates/yellowstone-fumarole-client" }
 yellowstone-grpc-client = "5.0.0"

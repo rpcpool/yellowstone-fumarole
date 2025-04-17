@@ -18,11 +18,11 @@ service Fumarole {
 }
 
 message GetConsumerGroupInfoRequest {
-  string consumer_group_label = 1;
+  string consumer_group_name = 1;
 }
 
 message DeleteConsumerGroupRequest {
-  string consumer_group_label = 1;
+  string consumer_group_name = 1;
 }
 
 message DeleteConsumerGroupResponse {
@@ -38,12 +38,12 @@ message ListConsumerGroupsResponse {
 
 message ConsumerGroupInfo {
   string id = 1;
-  string consumer_group_label = 2;
+  string consumer_group_name = 2;
   bool is_stale = 3;
 }
 
 message GetSlotLagInfoRequest {
-  string consumer_group_label = 1;
+  string consumer_group_name = 1;
 }
 
 message BlockFilters {
@@ -57,7 +57,7 @@ message BlockFilters {
 message DownloadBlockShard {
     bytes blockchain_id = 1;
     bytes block_uid = 2;
-    uint32 shard_idx = 3;
+    int32 shard_idx = 3;
     optional BlockFilters blockFilters = 4;
 }
 
@@ -80,13 +80,13 @@ message DataCommand {
 message BlockShardDownloadFinish {
   bytes blockchain_id = 1;
   bytes block_uid = 2;
-  uint32 shard_idx = 3;
+  int32 shard_idx = 3;
 }
 
 message BlockNotFound {
   bytes blockchain_id = 1;
   bytes block_uid = 2;
-  uint32 shard_idx = 3;
+  int32 shard_idx = 3;
 }
 
 message DataError {
@@ -100,21 +100,24 @@ message DataResponse {
     geyser.SubscribeUpdate update = 1;
     BlockShardDownloadFinish block_shard_download_finish = 2;
     DataError error = 3;
+    Pong pong = 4;
   }
 }
 
 message CommitOffset {
-  uint64 offset = 1;
+  int64 offset = 1;
   int32 shard_id = 2;
 }
 
 
 message PollBlockchainHistory {
-  optional uint64 from = 1;
+  int32 shard_id = 1;
+  optional int64 from = 2;
+  optional int64 limit = 3;
 }
 
 message BlockchainEvent {
-  uint64 offset = 1;
+  int64 offset = 1;
   bytes blockchain_id = 2;
   bytes block_uid = 3;
   uint32 num_shards = 4;
@@ -122,28 +125,34 @@ message BlockchainEvent {
   optional uint64 parent_slot = 6;
   geyser.CommitmentLevel commitment_level = 7;
   int32 blockchain_shard_id = 8;
+  optional string dead_error = 9;
 }
 
 message BlockchainHistory {
   repeated BlockchainEvent events = 1;
 }
 
+message JoinControlPlane {
+  optional string consumer_group_name = 1;
+}
+
 message ControlCommand {
     oneof command {
-        CommitOffset commit_offset = 1;
-        PollBlockchainHistory poll_hist = 2;
-        Ping ping = 3;
+        JoinControlPlane initial_join = 1;
+        CommitOffset commit_offset = 2;
+        PollBlockchainHistory poll_hist = 3;
+        Ping ping = 4;
     }
 }
 
 message CommitOffsetResult {
-  uint64 offset = 1;
+  int64 offset = 1;
   int32 shard_id = 2;
 }
 
 message InitialConsumerGroupState {
-  uint64 last_committed_offset = 1;
-  bytes blockchain_id = 2;
+  bytes blockchain_id = 1;
+  map<int32, int64> last_committed_offsets = 2; 
 }
 
 message ControlResponse {
@@ -156,7 +165,7 @@ message ControlResponse {
 }
 
 message CreateConsumerGroupResponse {
-  string group_id = 1;
+  string consumer_group_id = 1;
 }
 
 enum InitialOffsetPolicy {
@@ -165,7 +174,7 @@ enum InitialOffsetPolicy {
 }
 
 message CreateConsumerGroupRequest {
-  string consumer_group_label = 1;
+  string consumer_group_name = 1;
   InitialOffsetPolicy initial_offset_policy = 2;
   //optional uint64 from_slot = 3;
 }

@@ -30,6 +30,10 @@ where
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.vec.len()
+    }
+
     pub fn push_back(&mut self, key: K, item: V) -> bool {
         if self.index.insert(key.clone()) {
             self.vec.push_back((key, item));

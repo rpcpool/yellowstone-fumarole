@@ -3,6 +3,9 @@
 ///
 pub mod config;
 
+#[cfg(feature = "prometheus")]
+pub mod metrics;
+
 pub(crate) mod runtime;
 pub(crate) mod util;
 
@@ -50,7 +53,7 @@ pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/fumarole_v2.rs"));
 }
 
-use proto::fumarole_client::FumaroleClient as TonicFumaroleClient;
+use proto::{fumarole_client::FumaroleClient as TonicFumaroleClient, JoinControlPlane};
 
 #[derive(Clone)]
 struct FumeInterceptor {
@@ -109,14 +112,17 @@ pub const DEFAULT_DRAGONSMOUTH_CAPACITY: usize = 10000;
 ///
 /// Default Fumarole commit offset interval
 ///
-pub const DEFAULT_COMMIT_INTERVAL: Duration = Duration::from_secs(60);
+pub const DEFAULT_COMMIT_INTERVAL: Duration = Duration::from_secs(5);
 
+///
+/// Default maximum number of consecutive failed slot download attempts before failing the fumarole session.
+///
 pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: u8 = 3;
 
 ///
-/// Default number of parallel data streams
+/// Default number of parallel data streams (TCP connections) to open to fumarole.
 ///
-pub const DEFAULT_PARA_DATA_STREAMS: u8 = 1;
+pub const DEFAULT_PARA_DATA_STREAMS: u8 = 3;
 
 ///
 /// Yellowstone Fumarole gRPC Client
@@ -147,7 +153,7 @@ pub enum FumaroleStreamError {
 ///
 pub struct FumaroleSubscribeConfig {
     ///
-    /// Number of parallel data streams to open to fumarole
+    /// Number of parallel data streams (TCP connections) to open to fumarole
     ///
     pub num_data_streams: NonZeroU8,
     ///
@@ -269,8 +275,25 @@ impl FumaroleClient {
     ///
     /// Subscribe to a stream of updates from the Fumarole service
     ///
-    #[cfg(feature = "tokio")]
     pub async fn dragonsmouth_subscribe<S>(
+        &mut self,
+        consumer_group_name: S,
+        request: geyser::SubscribeRequest,
+    ) -> Result<DragonsmouthAdapterSession, tonic::Status>
+    where
+        S: AsRef<str>,
+    {
+        let handle = tokio::runtime::Handle::current();
+        self.dragonsmouth_subscribe_with_config_on(
+            consumer_group_name,
+            request,
+            Default::default(),
+            handle,
+        )
+        .await
+    }
+
+    pub async fn dragonsmouth_subscribe_with_config<S>(
         &mut self,
         consumer_group_name: S,
         request: geyser::SubscribeRequest,
@@ -280,7 +303,7 @@ impl FumaroleClient {
         S: AsRef<str>,
     {
         let handle = tokio::runtime::Handle::current();
-        self.dragonsmouth_subscribe_on(consumer_group_name, request, config, handle)
+        self.dragonsmouth_subscribe_with_config_on(consumer_group_name, request, config, handle)
             .await
     }
 
@@ -288,8 +311,7 @@ impl FumaroleClient {
     /// Same as [`FumaroleClient::dragonsmouth_subscribe`] but allows you to specify a custom runtime handle
     /// the underlying fumarole runtie will use
     ///
-    #[cfg(feature = "tokio")]
-    pub async fn dragonsmouth_subscribe_on<S>(
+    pub async fn dragonsmouth_subscribe_with_config_on<S>(
         &mut self,
         consumer_group_name: S,
         request: geyser::SubscribeRequest,
@@ -299,16 +321,31 @@ impl FumaroleClient {
     where
         S: AsRef<str>,
     {
-        use runtime::tokio::DragonsmouthSubscribeRequestBidi;
+        use {proto::ControlCommand, runtime::tokio::DragonsmouthSubscribeRequestBidi};
 
         let (dragonsmouth_outlet, dragonsmouth_inlet) =
             mpsc::channel(DEFAULT_DRAGONSMOUTH_CAPACITY);
         let (fume_control_plane_tx, fume_control_plane_rx) = mpsc::channel(100);
 
+        let initial_join = JoinControlPlane {
+            consumer_group_name: Some(consumer_group_name.as_ref().to_string()),
+        };
+        let initial_join_command = ControlCommand {
+            command: Some(proto::control_command::Command::InitialJoin(initial_join)),
+        };
+
+        // IMPORTANT: Make sure we send the request here before we subscribe to the stream
+        // Otherwise this will block until timeout by remote server.
+        fume_control_plane_tx
+            .send(initial_join_command)
+            .await
+            .expect("failed to send initial join");
+
         let resp = self
             .inner
             .subscribe(ReceiverStream::new(fume_control_plane_rx))
             .await?;
+
         let mut streaming = resp.into_inner();
         let fume_control_plane_tx = fume_control_plane_tx.clone();
         let control_response = streaming.message().await?.expect("none");
@@ -318,7 +355,17 @@ impl FumaroleClient {
             panic!("unexpected initial response: {response:?}")
         };
 
-        let sm = FumaroleSM::new(initial_state.last_committed_offset);
+        /* WE DON'T SUPPORT SHARDING YET */
+        assert!(
+            initial_state.last_committed_offsets.len() == 1,
+            "sharding not supported"
+        );
+        let last_committed_offset = initial_state
+            .last_committed_offsets
+            .get(&0)
+            .expect("no last committed offset");
+
+        let sm = FumaroleSM::new(*last_committed_offset);
         let data_bidi_factory = GrpcDataPlaneBidiFactory {
             client: self.clone(),
             channel_capacity: config.data_channel_capacity,
@@ -397,13 +444,11 @@ impl FumaroleClient {
     }
 }
 
-#[cfg(feature = "tokio")]
 pub(crate) struct GrpcDataPlaneBidiFactory {
     client: FumaroleClient,
     channel_capacity: usize,
 }
 
-#[cfg(feature = "tokio")]
 #[async_trait::async_trait]
 impl DataPlaneBidiFactory for GrpcDataPlaneBidiFactory {
     async fn build(&self) -> DataPlaneBidi {

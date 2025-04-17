@@ -11,8 +11,8 @@ keywords = { workspace = true }
 publish = true
 
 [features]
-default = ["tokio"]
-tokio = []
+default = ["prometheus"]
+prometheus = ["dep:prometheus"]
 
 [package.metadata]
 include = [
@@ -20,11 +20,14 @@ include = [
     "yellowstone-grpc-proto/**",
 ]
 
+
 [dependencies]
 async-trait = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true }
+lazy_static = { workspace = true }
+prometheus = { workspace = true, optional = true }
 prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_with = { workspace = true }

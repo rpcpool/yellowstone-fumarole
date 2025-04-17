@@ -1,0 +1,29 @@
+[package]
+name = "fume"
+authors.workspace = true
+version.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+clap-verbosity-flag = { workspace = true }
+futures = { workspace = true }
+solana-sdk = { workspace = true }
+serde_yaml = { workspace = true }
+tabled = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+yellowstone-fumarole-client = { workspace = true }
+yellowstone-grpc-client = { workspace = true }
+yellowstone-grpc-proto = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[lints]
+workspace = true

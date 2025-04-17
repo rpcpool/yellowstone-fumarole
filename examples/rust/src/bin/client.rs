@@ -3,7 +3,7 @@ use {
     solana_sdk::{bs58, pubkey::Pubkey},
     std::{collections::HashMap, path::PathBuf},
     yellowstone_fumarole_client::{
-        config::FumaroleConfig, DragonsmouthAdapterSession, FumaroleClient, FumaroleSubscribeConfig,
+        config::FumaroleConfig, DragonsmouthAdapterSession, FumaroleClient,
     },
     yellowstone_grpc_proto::geyser::{
         subscribe_update::UpdateOneof, SubscribeRequest, SubscribeRequestFilterAccounts,
@@ -69,11 +69,8 @@ async fn subscribe(args: SubscribeArgs, config: FumaroleConfig) {
         .await
         .expect("Failed to connect to fumarole");
 
-    let subscribe_config = FumaroleSubscribeConfig {
-        ..Default::default()
-    };
     let dragonsmouth_session = fumarole_client
-        .dragonsmouth_subscribe(args.cg_name, request, subscribe_config)
+        .dragonsmouth_subscribe(args.cg_name, request)
         .await
         .expect("Failed to subscribe");
 

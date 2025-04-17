@@ -1,4 +1,6 @@
-#[cfg(feature = "tokio")]
+///
+/// Fumarole runtime based of tokio Async I/O.
+///
 pub(crate) mod tokio;
 
 use {
@@ -22,7 +24,7 @@ pub(crate) type FumeNumShards = u32;
 
 pub(crate) type FumeShardIdx = u32;
 
-pub(crate) type FumeOffset = u64;
+pub(crate) type FumeOffset = i64;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FumeDownloadRequest {
@@ -38,6 +40,7 @@ pub(crate) struct FumeSlotStatus {
     pub(crate) slot: Slot,
     pub(crate) parent_slot: Option<Slot>,
     pub(crate) commitment_level: geyser::CommitmentLevel,
+    pub(crate) dead_error: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -148,6 +151,11 @@ pub(crate) struct FumaroleSM {
     /// Represents the high-water mark fume offset that can be committed to the remote fumarole service.
     /// It means the runtime processed everything <= committable offset.
     pub committable_offset: FumeOffset,
+
+    /// Represents the max slot detected in the current session.
+    /// This is used to detect rough slot lag.
+    /// this slot is not necessarily processed by the underlying runtime yet.
+    pub max_slot_detected: Slot,
 }
 
 impl FumaroleSM {
@@ -161,13 +169,14 @@ impl FumaroleSM {
             slot_status_update_queue: Default::default(),
             processed_offset: Default::default(),
             committable_offset: last_committed_offset,
+            max_slot_detected: 0,
         }
     }
 
     ///
     /// Updates the committed offset
     ///
-    pub(crate) fn update_committed_offset(&mut self, offset: FumeOffset) {
+    pub fn update_committed_offset(&mut self, offset: FumeOffset) {
         assert!(
             offset > self.last_committed_offset,
             "offset must be greater than last committed offset"
@@ -177,7 +186,7 @@ impl FumaroleSM {
 
     ///
     /// Queues incoming **ordered** blockchain events
-    pub(crate) fn queue_blockchain_event<IT>(&mut self, events: IT)
+    pub fn queue_blockchain_event<IT>(&mut self, events: IT)
     where
         IT: IntoIterator<Item = proto::BlockchainEvent>,
     {
@@ -192,6 +201,7 @@ impl FumaroleSM {
                 parent_slot,
                 commitment_level,
                 blockchain_shard_id: _, /*First version this is value does not mean nothing */
+                dead_error,
             } = events;
 
             if offset < last_offset {
@@ -209,8 +219,12 @@ impl FumaroleSM {
                 slot,
                 parent_slot,
                 commitment_level: cl,
+                dead_error,
             };
             last_offset = offset;
+            if slot > self.max_slot_detected {
+                self.max_slot_detected = slot;
+            }
             // We don't download the same slot twice in the same session.
             if !self.slot_downloaded.contains_key(&slot) {
                 // if the slot is already in-download, we don't need to schedule it for download again
@@ -250,9 +264,16 @@ impl FumaroleSM {
     }
 
     ///
+    /// Returns the number of slots in the download queue
+    ///
+    pub fn slot_download_queue_size(&self) -> usize {
+        self.slot_download_queue.len()
+    }
+
+    ///
     /// Update download progression for a given `Slot` download
     ///
-    pub(crate) fn make_slot_download_progress(&mut self, slot: Slot, shard_idx: FumeShardIdx) {
+    pub fn make_slot_download_progress(&mut self, slot: Slot, shard_idx: FumeShardIdx) {
         let download_progress = self
             .inflight_slot_shard_download
             .get_mut(&slot)
@@ -276,7 +297,7 @@ impl FumaroleSM {
     ///
     /// Pop next slot status to process
     ///
-    pub(crate) fn pop_next_slot_status(&mut self) -> Option<FumeSlotStatus> {
+    pub fn pop_next_slot_status(&mut self) -> Option<FumeSlotStatus> {
         let slot_status = self.slot_status_update_queue.pop_front()?;
         let info = self.slot_downloaded.get_mut(&slot_status.slot)?;
         if info
@@ -298,16 +319,22 @@ impl FumaroleSM {
     ///
     /// Marks this [`FumeOffset`] has processed by the runtime.
     ///
-    pub(crate) fn mark_offset_as_processed(&mut self, offset: FumeOffset) {
+    pub fn mark_offset_as_processed(&mut self, offset: FumeOffset) {
         if offset == self.missing_process_offset() {
             self.committable_offset = offset;
 
-            while let Some(offset2) = self.processed_offset.peek().copied() {
-                let offset2 = offset2.0;
-                if offset2 == self.missing_process_offset() {
-                    assert!(self.processed_offset.pop().is_some());
-                    self.committable_offset = offset2
+            loop {
+                let Some(offset2) = self.processed_offset.peek().copied() else {
+                    break;
+                };
+
+                if offset2.0 != self.missing_process_offset() {
+                    break;
                 }
+
+                let offset2 = self.processed_offset.pop().unwrap().0;
+                assert_eq!(offset2, self.missing_process_offset());
+                self.committable_offset = offset2;
             }
         } else {
             self.processed_offset.push(Reverse(offset));
@@ -317,7 +344,7 @@ impl FumaroleSM {
     ///
     /// Returns true if there is no blockchain event history to track or progress on.
     ///
-    pub(crate) fn need_new_blockchain_events(&self) -> bool {
+    pub fn need_new_blockchain_events(&self) -> bool {
         self.slot_status_update_queue.is_empty() && self.blocked_slot_status_update.is_empty()
     }
 }
@@ -343,6 +370,7 @@ mod tests {
             parent_slot: None,
             commitment_level: commitment_level.into(),
             blockchain_shard_id: 0,
+            dead_error: None,
         }
     }
 

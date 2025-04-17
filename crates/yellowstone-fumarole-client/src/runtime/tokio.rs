@@ -1,3 +1,9 @@
+#[cfg(feature = "prometheus")]
+use crate::metrics::{
+    dec_inflight_slot_download, inc_failed_slot_download_attempt, inc_inflight_slot_download,
+    inc_offset_commitment_count, inc_slot_download_count, observe_slot_download_duration,
+    set_max_slot_detected, set_slot_download_queue_size,
+};
 use {
     super::{FumaroleSM, FumeDownloadRequest, FumeOffset},
     crate::proto::{
@@ -21,6 +27,7 @@ use {
 
 ///
 /// Data-Plane bidirectional stream
+///
 pub(crate) struct DataPlaneBidi {
     pub tx: mpsc::Sender<proto::DataCommand>,
     pub rx: mpsc::Receiver<Result<proto::DataResponse, tonic::Status>>,
@@ -84,7 +91,11 @@ const fn build_poll_history_cmd(from: Option<FumeOffset>) -> ControlCommand {
     ControlCommand {
         command: Some(proto::control_command::Command::PollHist(
             // from None means poll the entire history from wherever we left off since last commit.
-            PollBlockchainHistory { from },
+            PollBlockchainHistory {
+                shard_id: 0, /*ALWAYS 0-FOR FIRST VERSION OF FUMAROLE */
+                from,
+                limit: None,
+            },
         )),
     }
 }
@@ -189,6 +200,9 @@ impl DownloadBlockTask {
                         }
                     }
                 }
+                proto::data_response::Response::Pong(_pong) => {
+                    tracing::debug!("pong");
+                }
             }
         }
 
@@ -216,24 +230,30 @@ impl From<SubscribeRequest> for BlockFilters {
 }
 
 impl TokioFumeDragonsmouthRuntime {
+    const RUNTIME_NAME: &'static str = "tokio";
+
     fn handle_control_response(&mut self, control_response: proto::ControlResponse) {
         let Some(response) = control_response.response else {
             return;
         };
         match response {
             proto::control_response::Response::CommitOffset(commit_offset_result) => {
-                tracing::trace!("received commit offset : {commit_offset_result:?}");
+                tracing::debug!("received commit offset : {commit_offset_result:?}");
                 self.sm.update_committed_offset(commit_offset_result.offset);
             }
             proto::control_response::Response::PollNext(blockchain_history) => {
-                tracing::trace!(
+                tracing::debug!(
                     "polled blockchain history : {} events",
                     blockchain_history.events.len()
                 );
                 self.sm.queue_blockchain_event(blockchain_history.events);
+                #[cfg(feature = "prometheus")]
+                {
+                    set_max_slot_detected(Self::RUNTIME_NAME, self.sm.max_slot_detected);
+                }
             }
             proto::control_response::Response::Pong(_pong) => {
-                tracing::trace!("pong");
+                tracing::debug!("pong");
             }
             proto::control_response::Response::Init(_init) => {
                 unreachable!("init should not be received here");
@@ -242,8 +262,9 @@ impl TokioFumeDragonsmouthRuntime {
     }
 
     async fn poll_history_if_needed(&mut self) {
-        let cmd = build_poll_history_cmd(Some(self.sm.committable_offset));
         if self.sm.need_new_blockchain_events() {
+            let cmd = build_poll_history_cmd(Some(self.sm.committable_offset));
+            tracing::debug!("polling history...");
             self.control_plane_tx.send(cmd).await.expect("disconnected");
         }
     }
@@ -289,6 +310,7 @@ impl TokioFumeDragonsmouthRuntime {
             let ah = self
                 .data_plane_tasks
                 .spawn_on(download_task.run(), &self.rt);
+            tracing::debug!("download task scheduled for slot {}", download_request.slot);
             self.data_plane_task_meta.insert(
                 ah.id(),
                 DataPlaneTaskMeta {
@@ -297,6 +319,17 @@ impl TokioFumeDragonsmouthRuntime {
                     download_attempt: *download_attempts,
                 },
             );
+
+            #[cfg(feature = "prometheus")]
+            {
+                inc_inflight_slot_download(Self::RUNTIME_NAME);
+            }
+        }
+
+        #[cfg(feature = "prometheus")]
+        {
+            let size = self.sm.slot_download_queue_size() + self.download_to_retry.len();
+            set_slot_download_queue_size(Self::RUNTIME_NAME, size);
         }
     }
 
@@ -308,11 +341,24 @@ impl TokioFumeDragonsmouthRuntime {
         let Some(task_meta) = self.data_plane_task_meta.remove(&task_id) else {
             panic!("missing task meta")
         };
+
+        #[cfg(feature = "prometheus")]
+        {
+            dec_inflight_slot_download(Self::RUNTIME_NAME);
+        }
+
         let slot = task_meta.download_request.slot;
-        tracing::trace!("download task result received for slot {}", slot);
+        tracing::debug!("download task result received for slot {}", slot);
         match result {
             Ok(completed) => {
                 let elapsed = task_meta.scheduled_at.elapsed();
+
+                #[cfg(feature = "prometheus")]
+                {
+                    observe_slot_download_duration(Self::RUNTIME_NAME, elapsed);
+                    inc_slot_download_count(Self::RUNTIME_NAME);
+                }
+
                 tracing::debug!("downloaded slot {slot} in {elapsed:?}");
                 let _ = self.download_attempts.remove(&slot);
                 self.data_plane_bidi_vec.push_back(completed.bidi);
@@ -320,6 +366,11 @@ impl TokioFumeDragonsmouthRuntime {
                 self.sm.make_slot_download_progress(slot, 0);
             }
             Err(e) => {
+                #[cfg(feature = "prometheus")]
+                {
+                    inc_failed_slot_download_attempt(Self::RUNTIME_NAME);
+                }
+
                 match e {
                     x @ (DownloadBlockError::Disconnected | DownloadBlockError::GrpcError(_)) => {
                         // We need to retry it
@@ -327,7 +378,13 @@ impl TokioFumeDragonsmouthRuntime {
                             return Err(x);
                         }
 
+                        tracing::debug!(
+                            "download slot {slot} failed: {x:?}, rebuilding data plane bidi..."
+                        );
+                        // Recreate the data plane bidi
+                        let t = Instant::now();
                         let data_plane_bidi = self.data_plane_bidi_factory.build().await;
+                        tracing::debug!("data plane bidi rebuilt in {:?}", t.elapsed());
                         self.data_plane_bidi_vec.push_back(data_plane_bidi);
 
                         tracing::debug!("Download slot {slot} failed, rescheduling for retry...");
@@ -336,6 +393,7 @@ impl TokioFumeDragonsmouthRuntime {
                     DownloadBlockError::OutletDisconnected => {
                         // Will automatically be handled in the `run` main loop.
                         // so nothing to do.
+                        tracing::debug!("dragonsmouth outlet disconnected");
                     }
                     DownloadBlockError::BlockShardNotFound => {
                         // TODO: I don't think it should ever happen, but lets panic first so we get notified by client if it ever happens.
@@ -349,10 +407,15 @@ impl TokioFumeDragonsmouthRuntime {
 
     async fn commit_offset(&mut self) {
         if self.sm.last_committed_offset < self.sm.committable_offset {
+            tracing::debug!("committing offset {}", self.sm.committable_offset);
             self.control_plane_tx
                 .send(build_commit_offset_cmd(self.sm.committable_offset))
                 .await
                 .expect("failed to commit offset");
+            #[cfg(feature = "prometheus")]
+            {
+                inc_offset_commitment_count(Self::RUNTIME_NAME);
+            }
         }
 
         self.last_commit = Instant::now();
@@ -365,6 +428,8 @@ impl TokioFumeDragonsmouthRuntime {
         while let Some(slot_status) = self.sm.pop_next_slot_status() {
             slot_status_vec.push_back(slot_status);
         }
+
+        tracing::debug!("draining slot status: {} events", slot_status_vec.len());
 
         for slot_status in slot_status_vec {
             let mut matched_filters = vec![];
@@ -388,11 +453,10 @@ impl TokioFumeDragonsmouthRuntime {
                             parent: slot_status.parent_slot,
                             status: slot_status.commitment_level.into(),
                             // TODO: support dead slot
-                            dead_error: None,
+                            dead_error: slot_status.dead_error,
                         },
                     )),
                 };
-
                 if self.dragonsmouth_outlet.send(Ok(update)).await.is_err() {
                     return;
                 }
@@ -402,6 +466,7 @@ impl TokioFumeDragonsmouthRuntime {
     }
 
     async fn unsafe_cancel_all_tasks(&mut self) {
+        tracing::debug!("aborting all data plane tasks");
         self.data_plane_tasks.abort_all();
         self.data_plane_task_meta.clear();
         self.download_attempts.clear();
@@ -420,7 +485,7 @@ impl TokioFumeDragonsmouthRuntime {
 
         loop {
             if self.dragonsmouth_outlet.is_closed() {
-                tracing::trace!("Detected dragonsmouth outlet closed");
+                tracing::debug!("Detected dragonsmouth outlet closed");
                 break;
             }
 
@@ -430,12 +495,12 @@ impl TokioFumeDragonsmouthRuntime {
             self.schedule_download_task_if_any();
             tokio::select! {
                 Some(subscribe_request) = self.dragonsmouth_bidi.rx.recv() => {
+                    tracing::debug!("dragonsmouth subscribe request received");
                     self.subscribe_request = subscribe_request
                 }
                 control_response = self.control_plane_rx.recv() => {
                     match control_response {
                         Some(Ok(control_response)) => {
-                            tracing::trace!("control response received");
                             self.handle_control_response(control_response);
                         }
                         Some(Err(e)) => {
@@ -443,7 +508,7 @@ impl TokioFumeDragonsmouthRuntime {
                             return Err(Box::new(RuntimeError::GrpcError(e)));
                         }
                         None => {
-                            tracing::trace!("control plane disconnected");
+                            tracing::debug!("control plane disconnected");
                             break;
                         }
                     }
@@ -461,11 +526,13 @@ impl TokioFumeDragonsmouthRuntime {
                 }
 
                 _ = tokio::time::sleep_until(commit_deadline.into()) => {
+                    tracing::debug!("commit deadline reached");
                     self.commit_offset().await;
                 }
             }
             self.drain_slot_status().await;
         }
+        tracing::debug!("fumarole runtime exiting");
         Ok(())
     }
 }
