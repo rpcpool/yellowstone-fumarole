@@ -3,10 +3,22 @@
 ///
 pub mod config;
 
+pub(crate) mod runtime;
+pub(crate) mod util;
+
 use {
     config::FumaroleConfig,
-    solana_sdk::pubkey::Pubkey,
-    std::collections::HashMap,
+    proto::control_response::Response,
+    runtime::{
+        tokio::{DataPlaneBidi, DataPlaneBidiFactory, TokioFumeDragonsmouthRuntime},
+        FumaroleSM,
+    },
+    std::{
+        collections::{HashMap, VecDeque},
+        num::NonZeroU8,
+        sync::Arc,
+        time::{Duration, Instant},
+    },
     tokio::sync::mpsc,
     tokio_stream::wrappers::ReceiverStream,
     tonic::{
@@ -14,16 +26,13 @@ use {
             errors::{InvalidMetadataKey, InvalidMetadataValue},
             Ascii, MetadataKey, MetadataValue,
         },
-        service::Interceptor,
+        service::{interceptor::InterceptedService, Interceptor},
         transport::{Channel, ClientTlsConfig},
     },
-    tower::{util::BoxService, ServiceBuilder, ServiceExt},
-    yellowstone_grpc_proto::geyser::{
-        SubscribeRequestFilterAccounts, SubscribeRequestFilterTransactions,
-    },
+    util::grpc::into_bounded_mpsc_rx,
 };
 
-pub(crate) mod solana {
+mod solana {
     #[allow(unused_imports)]
     pub use yellowstone_grpc_proto::solana::{
         storage,
@@ -31,39 +40,31 @@ pub(crate) mod solana {
     };
 }
 
-pub(crate) mod geyser {
+mod geyser {
     pub use yellowstone_grpc_proto::geyser::*;
 }
 
+#[allow(clippy::missing_const_for_fn)]
+#[allow(clippy::all)]
 pub mod proto {
-    include!(concat!(env!("OUT_DIR"), "/fumarole.rs"));
+    include!(concat!(env!("OUT_DIR"), "/fumarole_v2.rs"));
 }
 
 use proto::fumarole_client::FumaroleClient as TonicFumaroleClient;
 
 #[derive(Clone)]
-struct TritonAuthInterceptor {
-    x_token: MetadataValue<Ascii>,
-}
-
-#[derive(Clone)]
-struct AsciiMetadataInterceptor {
+struct FumeInterceptor {
+    x_token: Option<MetadataValue<Ascii>>,
     metadata: HashMap<MetadataKey<Ascii>, MetadataValue<Ascii>>,
 }
 
-impl Interceptor for TritonAuthInterceptor {
+impl Interceptor for FumeInterceptor {
     fn call(&mut self, request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
         let mut request = request;
         let metadata = request.metadata_mut();
-        metadata.insert("x-token", self.x_token.clone());
-        Ok(request)
-    }
-}
-
-impl Interceptor for AsciiMetadataInterceptor {
-    fn call(&mut self, request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
-        let mut request = request;
-        let metadata = request.metadata_mut();
+        if let Some(x_token) = &self.x_token {
+            metadata.insert("x-token", x_token.clone());
+        }
         for (key, value) in &self.metadata {
             metadata.insert(key.clone(), value.clone());
         }
@@ -81,6 +82,14 @@ pub struct FumaroleClientBuilder {
 }
 
 #[derive(Debug, thiserror::Error)]
+pub enum InvalidMetadataHeader {
+    #[error(transparent)]
+    InvalidMetadataKey(#[from] InvalidMetadataKey),
+    #[error(transparent)]
+    InvalidMetadataValue(#[from] InvalidMetadataValue),
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
     #[error(transparent)]
     InvalidUri(#[from] http::uri::InvalidUri),
@@ -88,49 +97,272 @@ pub enum ConnectError {
     TransportError(#[from] tonic::transport::Error),
     #[error(transparent)]
     InvalidXToken(#[from] tonic::metadata::errors::InvalidMetadataValue),
+    #[error(transparent)]
+    InvalidMetadataHeader(#[from] InvalidMetadataHeader),
 }
 
-pub type FumaroleBoxedChannel = BoxService<
-    hyper::Request<tonic::body::BoxBody>,
-    hyper::Response<tonic::body::BoxBody>,
-    tonic::transport::Error,
->;
+///
+/// Default gRPC buffer capacity
+///
+pub const DEFAULT_DRAGONSMOUTH_CAPACITY: usize = 10000;
 
-pub type BoxedTonicFumaroleClient = TonicFumaroleClient<FumaroleBoxedChannel>;
+///
+/// Default Fumarole commit offset interval
+///
+pub const DEFAULT_COMMIT_INTERVAL: Duration = Duration::from_secs(60);
+
+pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: u8 = 3;
+
+///
+/// Default number of parallel data streams
+///
+pub const DEFAULT_PARA_DATA_STREAMS: u8 = 1;
 
 ///
 /// Yellowstone Fumarole gRPC Client
 ///
+#[derive(Clone)]
 pub struct FumaroleClient {
-    inner: BoxedTonicFumaroleClient,
+    inner: TonicFumaroleClient<InterceptedService<Channel, FumeInterceptor>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DragonsmouthSubscribeError {
+    #[error(transparent)]
+    GrpcStatus(#[from] tonic::Status),
+    #[error("grpc stream closed")]
+    StreamClosed,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FumaroleStreamError {
+    #[error(transparent)]
+    Custom(Box<dyn std::error::Error + Send + Sync>),
+    #[error("grpc stream closed")]
+    StreamClosed,
+}
+
+///
+/// Configuration for the Fumarole subscription session
+///
+pub struct FumaroleSubscribeConfig {
+    ///
+    /// Number of parallel data streams to open to fumarole
+    ///
+    pub num_data_streams: NonZeroU8,
+    ///
+    /// Commit interval for the fumarole client
+    ///
+    pub commit_interval: Duration,
+    ///
+    /// Maximum number of consecutive failed slot download attempts before failing the fumarole session.
+    ///
+    pub max_failed_slot_download_attempt: u8,
+    ///
+    /// Capacity of each data channel for the fumarole client
+    ///
+    pub data_channel_capacity: usize,
+}
+
+impl Default for FumaroleSubscribeConfig {
+    fn default() -> Self {
+        Self {
+            num_data_streams: NonZeroU8::new(DEFAULT_PARA_DATA_STREAMS).unwrap(),
+            commit_interval: DEFAULT_COMMIT_INTERVAL,
+            max_failed_slot_download_attempt: DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT,
+            data_channel_capacity: DEFAULT_DRAGONSMOUTH_CAPACITY,
+        }
+    }
+}
+
+pub enum FumeControlPlaneError {
+    Disconnected,
+}
+
+pub enum FumeDataPlaneError {
+    Disconnected,
+}
+
+pub enum FumaroleError {
+    ControlPlaneDisconnected,
+    DataPlaneDisconnected,
+    InvalidSubscribeRequest,
+}
+
+impl From<tonic::Status> for FumaroleError {
+    fn from(status: tonic::Status) -> Self {
+        match status.code() {
+            tonic::Code::Unavailable => FumaroleError::ControlPlaneDisconnected,
+            tonic::Code::Internal => FumaroleError::DataPlaneDisconnected,
+            _ => FumaroleError::InvalidSubscribeRequest,
+        }
+    }
+}
+
+///
+/// Dragonsmouth flavor fumarole session.
+/// Mimics the same API as dragonsmouth but uses fumarole as the backend.
+///
+pub struct DragonsmouthAdapterSession {
+    ///
+    /// Channel to send requests to the fumarole service.
+    /// If you don't need to change the subscribe request, you can drop this channel.
+    ///
+    pub sink: mpsc::Sender<geyser::SubscribeRequest>,
+    ///
+    /// Channel to receive updates from the fumarole service.
+    /// Dropping this channel will stop the fumarole session.
+    ///
+    pub source: mpsc::Receiver<Result<geyser::SubscribeUpdate, tonic::Status>>,
+    ///
+    /// Handle to the fumarole session client runtime.
+    /// Dropping this handle does not stop the fumarole session.
+    ///
+    /// If you want to stop the fumarole session, you need to drop the [`DragonsmouthAdapterSession::source`] channel,
+    /// then you could wait for the handle to finish.
+    ///
+    pub runtime_handle:
+        tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+}
+
+fn string_pairs_to_metadata_header(
+    headers: impl IntoIterator<Item = (impl AsRef<str>, impl AsRef<str>)>,
+) -> Result<HashMap<MetadataKey<Ascii>, MetadataValue<Ascii>>, InvalidMetadataHeader> {
+    headers
+        .into_iter()
+        .map(|(k, v)| {
+            let key = MetadataKey::from_bytes(k.as_ref().as_bytes())?;
+            let value: MetadataValue<Ascii> = v.as_ref().try_into()?;
+            Ok((key, value))
+        })
+        .collect()
 }
 
 impl FumaroleClient {
-    pub async fn subscribe_with_request(
-        &mut self,
-        request: proto::SubscribeRequest,
-    ) -> Result<tonic::Response<tonic::codec::Streaming<geyser::SubscribeUpdate>>, tonic::Status>
-    {
-        let (tx, rx) = mpsc::channel(100);
-        let rx = ReceiverStream::new(rx);
+    pub async fn connect(config: FumaroleConfig) -> Result<FumaroleClient, ConnectError> {
+        let channel = Channel::from_shared(config.endpoint.clone())?
+            .tls_config(ClientTlsConfig::new().with_native_roots())?
+            .connect()
+            .await?;
 
-        // NOTE: Make sure send request before giving the stream to the service
-        // Otherwise, the service will not be able to send the response
-        // This is due to how fumarole works in the background for auto-commit offset management.
-        tx.send(request)
-            .await
-            .expect("Failed to send request to Fumarole service");
-        self.inner.subscribe(rx).await
+        Self::connect_with_channel(config, channel).await
     }
 
-    pub async fn list_available_commitment_levels(
+    pub async fn connect_with_channel(
+        config: FumaroleConfig,
+        channel: tonic::transport::Channel,
+    ) -> Result<FumaroleClient, ConnectError> {
+        let interceptor = FumeInterceptor {
+            x_token: config
+                .x_token
+                .map(|token: String| token.try_into())
+                .transpose()?,
+            metadata: string_pairs_to_metadata_header(config.x_metadata)?,
+        };
+
+        let client = TonicFumaroleClient::with_interceptor(channel, interceptor)
+            .max_decoding_message_size(config.max_decoding_message_size_bytes);
+
+        Ok(FumaroleClient { inner: client })
+    }
+
+    ///
+    /// Subscribe to a stream of updates from the Fumarole service
+    ///
+    #[cfg(feature = "tokio")]
+    pub async fn dragonsmouth_subscribe<S>(
         &mut self,
-        request: impl tonic::IntoRequest<proto::ListAvailableCommitmentLevelsRequest>,
-    ) -> std::result::Result<
-        tonic::Response<proto::ListAvailableCommitmentLevelsResponse>,
-        tonic::Status,
-    > {
-        self.inner.list_available_commitment_levels(request).await
+        consumer_group_name: S,
+        request: geyser::SubscribeRequest,
+        config: FumaroleSubscribeConfig,
+    ) -> Result<DragonsmouthAdapterSession, tonic::Status>
+    where
+        S: AsRef<str>,
+    {
+        let handle = tokio::runtime::Handle::current();
+        self.dragonsmouth_subscribe_on(consumer_group_name, request, config, handle)
+            .await
+    }
+
+    ///
+    /// Same as [`FumaroleClient::dragonsmouth_subscribe`] but allows you to specify a custom runtime handle
+    /// the underlying fumarole runtie will use
+    ///
+    #[cfg(feature = "tokio")]
+    pub async fn dragonsmouth_subscribe_on<S>(
+        &mut self,
+        consumer_group_name: S,
+        request: geyser::SubscribeRequest,
+        config: FumaroleSubscribeConfig,
+        handle: tokio::runtime::Handle,
+    ) -> Result<DragonsmouthAdapterSession, tonic::Status>
+    where
+        S: AsRef<str>,
+    {
+        use runtime::tokio::DragonsmouthSubscribeRequestBidi;
+
+        let (dragonsmouth_outlet, dragonsmouth_inlet) =
+            mpsc::channel(DEFAULT_DRAGONSMOUTH_CAPACITY);
+        let (fume_control_plane_tx, fume_control_plane_rx) = mpsc::channel(100);
+
+        let resp = self
+            .inner
+            .subscribe(ReceiverStream::new(fume_control_plane_rx))
+            .await?;
+        let mut streaming = resp.into_inner();
+        let fume_control_plane_tx = fume_control_plane_tx.clone();
+        let control_response = streaming.message().await?.expect("none");
+        let fume_control_plane_rx = into_bounded_mpsc_rx(100, streaming);
+        let response = control_response.response.expect("none");
+        let Response::Init(initial_state) = response else {
+            panic!("unexpected initial response: {response:?}")
+        };
+
+        let sm = FumaroleSM::new(initial_state.last_committed_offset);
+        let data_bidi_factory = GrpcDataPlaneBidiFactory {
+            client: self.clone(),
+            channel_capacity: config.data_channel_capacity,
+        };
+
+        let mut data_bidi_vec = VecDeque::with_capacity(config.num_data_streams.get() as usize);
+        for _ in 0..config.num_data_streams.get() {
+            let data_bidi = data_bidi_factory.build().await;
+            data_bidi_vec.push_back(data_bidi);
+        }
+
+        let (dm_tx, dm_rx) = mpsc::channel(100);
+        let dm_bidi = DragonsmouthSubscribeRequestBidi {
+            tx: dm_tx.clone(),
+            rx: dm_rx,
+        };
+
+        let tokio_rt = TokioFumeDragonsmouthRuntime {
+            rt: handle.clone(),
+            sm,
+            data_plane_bidi_factory: Arc::new(data_bidi_factory),
+            dragonsmouth_bidi: dm_bidi,
+            subscribe_request: request,
+            consumer_group_name: consumer_group_name.as_ref().to_string(),
+            control_plane_tx: fume_control_plane_tx,
+            control_plane_rx: fume_control_plane_rx,
+            data_plane_bidi_vec: data_bidi_vec,
+            data_plane_tasks: Default::default(),
+            data_plane_task_meta: Default::default(),
+            dragonsmouth_outlet,
+            download_to_retry: Default::default(),
+            download_attempts: Default::default(),
+            max_slot_download_attempt: config.max_failed_slot_download_attempt,
+            commit_interval: config.commit_interval,
+            last_commit: Instant::now(),
+        };
+
+        let jh = handle.spawn(tokio_rt.run());
+        let dm_session = DragonsmouthAdapterSession {
+            sink: dm_tx,
+            source: dragonsmouth_inlet,
+            runtime_handle: jh,
+        };
+        Ok(dm_session)
     }
 
     pub async fn list_consumer_groups(
@@ -158,318 +390,35 @@ impl FumaroleClient {
 
     pub async fn create_consumer_group(
         &mut self,
-        request: impl tonic::IntoRequest<proto::CreateStaticConsumerGroupRequest>,
-    ) -> std::result::Result<tonic::Response<proto::CreateStaticConsumerGroupResponse>, tonic::Status>
+        request: impl tonic::IntoRequest<proto::CreateConsumerGroupRequest>,
+    ) -> std::result::Result<tonic::Response<proto::CreateConsumerGroupResponse>, tonic::Status>
     {
-        self.inner.create_static_consumer_group(request).await
+        self.inner.create_consumer_group(request).await
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum InvalidMetadataHeader {
-    #[error(transparent)]
-    InvalidMetadataKey(#[from] InvalidMetadataKey),
-    #[error(transparent)]
-    InvalidMetadataValue(#[from] InvalidMetadataValue),
+#[cfg(feature = "tokio")]
+pub(crate) struct GrpcDataPlaneBidiFactory {
+    client: FumaroleClient,
+    channel_capacity: usize,
 }
 
-///
-/// A builder for creating a FumaroleClient.
-///
-impl FumaroleClientBuilder {
-    ///
-    /// Add a metadata header to the client for each request.
-    ///
-    pub fn add_metadata_header(
-        mut self,
-        key: impl AsRef<str>,
-        value: impl AsRef<str>,
-    ) -> Result<Self, InvalidMetadataHeader> {
-        let key = MetadataKey::from_bytes(key.as_ref().as_bytes())?;
-        let value: MetadataValue<Ascii> = value.as_ref().try_into()?;
-        self.metadata.insert(key, value);
-        Ok(self)
-    }
+#[cfg(feature = "tokio")]
+#[async_trait::async_trait]
+impl DataPlaneBidiFactory for GrpcDataPlaneBidiFactory {
+    async fn build(&self) -> DataPlaneBidi {
+        let mut client = self.client.clone();
+        let (tx, rx) = mpsc::channel(self.channel_capacity);
+        let rx = ReceiverStream::new(rx);
+        let resp = client
+            .inner
+            .subscribe_data(rx)
+            .await
+            .expect("failed to subscribe");
+        let streaming = resp.into_inner();
 
-    ///
-    /// Add multiple metadata headers to the client for each request.
-    ///
-    pub fn add_metadata_headers<IT, KV>(self, headers: IT) -> Result<Self, InvalidMetadataHeader>
-    where
-        KV: AsRef<str>,
-        IT: IntoIterator<Item = (KV, KV)>,
-    {
-        headers
-            .into_iter()
-            .try_fold(self, |this, (k, v)| this.add_metadata_header(k, v))
-    }
+        let rx = into_bounded_mpsc_rx(self.channel_capacity, streaming);
 
-    ///
-    /// Enable compression for the client.
-    ///
-    pub const fn enable_compression(mut self) -> Self {
-        self.with_compression = true;
-        self
-    }
-
-    ///
-    /// Disable compression for the client.
-    ///
-    pub const fn disable_compression(mut self) -> Self {
-        self.with_compression = false;
-        self
-    }
-
-    ///
-    /// Connect to a Fumarole service.
-    ///
-    pub async fn connect(self, config: FumaroleConfig) -> Result<FumaroleClient, ConnectError> {
-        let tls_config = ClientTlsConfig::new().with_native_roots();
-        let channel = Channel::from_shared(config.endpoint.clone())?
-            .tls_config(tls_config)?
-            .connect()
-            .await?;
-        self.connect_with_channel(config, channel).await
-    }
-
-    ///
-    /// Connect to a Fumarole service with an existing channel.
-    ///
-    pub async fn connect_with_channel(
-        self,
-        config: FumaroleConfig,
-        channel: tonic::transport::Channel,
-    ) -> Result<FumaroleClient, ConnectError> {
-        let x_token_layer = if let Some(x_token) = config.x_token {
-            let metadata = x_token.try_into()?;
-            let interceptor = TritonAuthInterceptor { x_token: metadata };
-            Some(tonic::service::interceptor(interceptor))
-        } else {
-            None
-        };
-
-        let metadata_layer = if self.metadata.is_empty() {
-            None
-        } else {
-            let interceptor = AsciiMetadataInterceptor {
-                metadata: self.metadata,
-            };
-            Some(tonic::service::interceptor(interceptor))
-        };
-
-        let svc = ServiceBuilder::new()
-            .option_layer(x_token_layer)
-            .option_layer(metadata_layer)
-            .service(channel)
-            .boxed();
-
-        let tonic_client = TonicFumaroleClient::new(svc)
-            .max_decoding_message_size(config.max_decoding_message_size_bytes);
-
-        let tonic_client = if self.with_compression {
-            tonic_client
-                .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
-                .send_compressed(tonic::codec::CompressionEncoding::Gzip)
-        } else {
-            tonic_client
-        };
-
-        Ok(FumaroleClient {
-            inner: tonic_client,
-        })
-    }
-}
-
-///
-/// A builder for creating a SubscribeRequest.
-///
-/// Example:
-///
-/// ```rust
-/// use yellowstone_fumarole_client::SubscribeRequestBuilder;
-/// use solana_sdk::pubkey::Pubkey;
-///
-/// let accounts = vec![Pubkey::new_keypair()];
-/// let owners = vec![Pubkey::new_keypair()];
-/// let tx_accounts = vec![Pubkey::new_keypair()];
-///
-/// let request = SubscribeRequestBuilder::default()
-///     .with_accounts(Some(accounts))
-///     .with_owners(Some(owners))
-///     .with_tx_accounts(Some(tx_accounts))
-///     .build("my_consumer".to_string());
-/// ```
-#[derive(Clone)]
-pub struct SubscribeRequestBuilder {
-    accounts: Option<Vec<Pubkey>>,
-    owners: Option<Vec<Pubkey>>,
-    tx_includes: Option<Vec<Pubkey>>,
-    tx_excludes: Option<Vec<Pubkey>>,
-    tx_requires: Option<Vec<Pubkey>>,
-    tx_fail: Option<bool>,
-    tx_vote: Option<bool>,
-}
-
-impl Default for SubscribeRequestBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SubscribeRequestBuilder {
-    pub const fn new() -> Self {
-        Self {
-            accounts: None,
-            owners: None,
-            tx_includes: None,
-            tx_excludes: None,
-            tx_requires: None,
-            tx_fail: None,
-            tx_vote: None,
-        }
-    }
-
-    ///
-    /// Sets the accounts to subscribe to.
-    ///
-    pub fn with_accounts(mut self, accounts: Option<Vec<Pubkey>>) -> Self {
-        self.accounts = accounts;
-        self
-    }
-
-    ///
-    /// Sets the owners of the accounts to subscribe to.
-    ///
-    pub fn with_owners(mut self, owners: Option<Vec<Pubkey>>) -> Self {
-        self.owners = owners;
-        self
-    }
-
-    ///
-    /// A transaction is included if it has at least one of the provided accounts in its list of instructions.
-    ///
-    pub fn with_tx_includes(mut self, tx_accounts: Option<Vec<Pubkey>>) -> Self {
-        self.tx_includes = tx_accounts;
-        self
-    }
-
-    ///
-    /// A transaction is excluded if it has at least one of the provided accounts in its list of instructions.
-    ///
-    pub fn with_tx_excludes(mut self, tx_excludes: Option<Vec<Pubkey>>) -> Self {
-        self.tx_includes = tx_excludes;
-        self
-    }
-
-    ///
-    /// A transaction is included if all of the provided accounts in its list of instructions.
-    ///
-    pub fn with_tx_requires(mut self, tx_requires: Option<Vec<Pubkey>>) -> Self {
-        self.tx_requires = tx_requires;
-        self
-    }
-
-    ///
-    /// Include failed transactions.
-    ///
-    pub const fn include_fail_tx(mut self) -> Self {
-        self.tx_fail = None;
-        self
-    }
-
-    ///
-    /// Include vote transactions.
-    ///
-    pub const fn include_vote_tx(mut self) -> Self {
-        self.tx_vote = None;
-        self
-    }
-
-    ///
-    /// Exclude failed transactions.
-    ///
-    pub const fn no_vote_tx(mut self) -> Self {
-        self.tx_vote = Some(false);
-        self
-    }
-
-    ///
-    /// Exclude vote transactions.
-    ///
-    pub const fn no_fail_tx(mut self) -> Self {
-        self.tx_fail = Some(false);
-        self
-    }
-
-    ///
-    /// Builds a SubscribeRequest.
-    ///
-    /// If the consumer index is not provided, it defaults to 0.
-    ///
-    pub fn build(self, consumer_group: String) -> proto::SubscribeRequest {
-        self.build_with_consumer_idx(consumer_group, 0)
-    }
-
-    ///
-    /// Builds a vector of SubscribeRequests where each request has a different consumer index.
-    ///
-    pub fn build_vec(self, consumer_group: String, counts: u32) -> Vec<proto::SubscribeRequest> {
-        (0..counts)
-            .map(|i| {
-                self.clone()
-                    .build_with_consumer_idx(consumer_group.clone(), i)
-            })
-            .collect()
-    }
-
-    ///
-    /// Builds a SubscribeRequest with a consumer index.
-    ///
-    pub fn build_with_consumer_idx(
-        self,
-        consumer_group: String,
-        consumer_idx: u32,
-    ) -> proto::SubscribeRequest {
-        let account = self
-            .accounts
-            .map(|vec| vec.into_iter().map(|pubkey| pubkey.to_string()).collect());
-
-        let owner = self
-            .owners
-            .map(|vec| vec.into_iter().map(|pubkey| pubkey.to_string()).collect());
-
-        let tx_includes = self
-            .tx_includes
-            .map(|vec| vec.iter().map(|pubkey| pubkey.to_string()).collect());
-
-        let tx_excludes = self
-            .tx_excludes
-            .map(|vec| vec.iter().map(|pubkey| pubkey.to_string()).collect());
-
-        let tx_requires = self
-            .tx_requires
-            .map(|vec| vec.iter().map(|pubkey| pubkey.to_string()).collect());
-
-        let tx_filter = SubscribeRequestFilterTransactions {
-            vote: self.tx_vote,
-            failed: self.tx_fail,
-            account_exclude: tx_excludes.unwrap_or_default(),
-            account_include: tx_includes.unwrap_or_default(),
-            account_required: tx_requires.unwrap_or_default(),
-            signature: None,
-        };
-
-        let account_filter = SubscribeRequestFilterAccounts {
-            account: account.unwrap_or_default(),
-            owner: owner.unwrap_or_default(),
-            ..Default::default()
-        };
-
-        proto::SubscribeRequest {
-            consumer_group_label: consumer_group,
-            consumer_id: Some(consumer_idx),
-            accounts: HashMap::from([("default".to_string(), account_filter)]),
-            transactions: HashMap::from([("default".to_string(), tx_filter)]),
-        }
+        DataPlaneBidi { tx, rx }
     }
 }

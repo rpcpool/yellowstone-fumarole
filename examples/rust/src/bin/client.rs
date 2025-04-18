@@ -1,12 +1,14 @@
 use {
     clap::Parser,
     solana_sdk::{bs58, pubkey::Pubkey},
-    std::path::PathBuf,
-    tokio::{sync::mpsc, task::JoinSet},
+    std::{collections::HashMap, path::PathBuf},
     yellowstone_fumarole_client::{
-        config::FumaroleConfig, proto::SubscribeRequest, FumaroleClient, FumaroleClientBuilder,
+        config::FumaroleConfig, DragonsmouthAdapterSession, FumaroleClient, FumaroleSubscribeConfig,
     },
-    yellowstone_grpc_proto::geyser::{SubscribeUpdateAccount, SubscribeUpdateTransaction},
+    yellowstone_grpc_proto::geyser::{
+        subscribe_update::UpdateOneof, SubscribeRequest, SubscribeRequestFilterAccounts,
+        SubscribeRequestFilterTransactions, SubscribeUpdateAccount, SubscribeUpdateTransaction,
+    },
 };
 
 #[derive(Debug, Clone, Parser)]
@@ -32,32 +34,6 @@ struct SubscribeArgs {
     #[clap(long)]
     cg_name: String,
 
-    /// List of account pubkeys that we want to suscribe to account updates
-    #[clap(long, required = false)]
-    accounts: Option<Vec<Pubkey>>,
-
-    /// List of owner pubkeys that we want to suscribe to account updates
-    #[clap(long, required = false)]
-    owners: Option<Vec<Pubkey>>,
-
-    /// A transaction is included if it has at least one of the provided accounts in its list of instructions
-    #[clap(long, required = false)]
-    tx_includes: Option<Vec<Pubkey>>,
-
-    /// A transaction is excluded if it has at least one of the provided accounts in its list of instructions
-    #[clap(long, required = false)]
-    tx_excludes: Option<Vec<Pubkey>>,
-
-    /// A transaction is included if all of the provided accounts in its list of instructions
-    #[clap(long, required = false)]
-    tx_requires: Option<Vec<Pubkey>>,
-
-    #[clap(long, required = false)]
-    include_vote_tx: Option<bool>,
-
-    #[clap(long, required = false)]
-    include_failed_tx: Option<bool>,
-
     /// Number of parallel streams to open: must be lower or equal to the size of your consumer group, otherwise the program will return an error
     #[clap(long)]
     par: Option<u32>,
@@ -78,101 +54,50 @@ fn summarize_tx(tx: SubscribeUpdateTransaction) -> Option<String> {
     Some(format!("tx,{slot},{sig}"))
 }
 
-async fn subscribe_with_request(
-    mut fumarole: FumaroleClient,
-    request: SubscribeRequest,
-    out_tx: mpsc::Sender<String>,
-) {
-    // NOTE: Make sure send request before giving the stream to the service
-    // Otherwise, the service will not be able to send the response
-    // This is due to how fumarole works in the background for auto-commit offset management.
-    let rx = fumarole
-        .subscribe_with_request(request)
-        .await
-        .expect("Failed to subscribe to Fumarole service");
-    println!("Subscribed to Fumarole service");
-    println!("Request sent");
-    let mut rx = rx.into_inner();
-
-    loop {
-        match rx.message().await {
-            Ok(Some(event)) => {
-                let message = if let Some(oneof) = event.update_oneof {
-                    match oneof {
-                        yellowstone_grpc_proto::geyser::subscribe_update::UpdateOneof::Account(account_update) => {
-                            summarize_account(account_update)
-                        }
-                        yellowstone_grpc_proto::geyser::subscribe_update::UpdateOneof::Transaction(tx) => {
-                            summarize_tx(tx)
-                        }
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                if let Some(message) = message {
-                    if out_tx.send(message).await.is_err() {
-                        break;
-                    }
-                }
-            }
-            Ok(None) => println!("Stream finished!"),
-            Err(e) => {
-                eprintln!("Error receiving event: {:?}", e);
-                break;
-            }
-        }
-    }
-}
-
 async fn subscribe(args: SubscribeArgs, config: FumaroleConfig) {
-    let accounts = args.accounts;
-    let owners = args.owners;
-    let tx_includes = args.tx_includes;
-    let tx_requires = args.tx_requires;
-    let tx_excludes = args.tx_excludes;
-    let requests = yellowstone_fumarole_client::SubscribeRequestBuilder::default()
-        .with_accounts(accounts)
-        .with_owners(owners)
-        .with_tx_includes(tx_includes)
-        .with_tx_requires(tx_requires)
-        .with_tx_excludes(tx_excludes)
-        .build_vec(args.cg_name, args.par.unwrap_or(1));
+    // This request listen for all account updates and transaction updates
+    let request = SubscribeRequest {
+        accounts: HashMap::from([("f1".to_owned(), SubscribeRequestFilterAccounts::default())]),
+        transactions: HashMap::from([(
+            "f1".to_owned(),
+            SubscribeRequestFilterTransactions::default(),
+        )]),
+        ..Default::default()
+    };
 
-    let mut task_set = JoinSet::new();
+    let mut fumarole_client = FumaroleClient::connect(config)
+        .await
+        .expect("Failed to connect to fumarole");
 
-    let (shared_tx, mut rx) = mpsc::channel(1000);
-    for request in requests {
-        let fumarole = FumaroleClientBuilder::default()
-            .add_metadata_headers(&config.x_metadata)
-            .expect("Failed to add metadata headers")
-            .enable_compression()
-            .connect(config.clone())
-            .await
-            .expect("Failed to connect to Fumarole service");
-        let tx = shared_tx.clone();
-        task_set.spawn(subscribe_with_request(fumarole, request, tx));
-    }
+    let subscribe_config = FumaroleSubscribeConfig {
+        ..Default::default()
+    };
+    let dragonsmouth_session = fumarole_client
+        .dragonsmouth_subscribe(args.cg_name, request, subscribe_config)
+        .await
+        .expect("Failed to subscribe");
 
-    loop {
-        tokio::select! {
-            maybe = task_set.join_next() => {
-                let result = maybe.expect("no task");
-                if let Err(e) = result {
-                    eprintln!("Task failed: {:?}", e);
-                }
-                break
+    let DragonsmouthAdapterSession {
+        sink: _,
+        mut source,
+        runtime_handle: _,
+    } = dragonsmouth_session;
+
+    while let Some(result) = source.recv().await {
+        let event = result.expect("Failed to receive event");
+
+        let message = if let Some(oneof) = event.update_oneof {
+            match oneof {
+                UpdateOneof::Account(account_update) => summarize_account(account_update),
+                UpdateOneof::Transaction(tx) => summarize_tx(tx),
+                _ => None,
             }
-            maybe = rx.recv() => {
-                match maybe {
-                    Some(message) => {
-                        println!("{}", message);
-                    }
-                    None => {
-                        break;
-                    }
-                }
-            }
+        } else {
+            None
+        };
+
+        if let Some(message) = message {
+            println!("{}", message);
         }
     }
 }
