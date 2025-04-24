@@ -1,6 +1,113 @@
-///
-/// Fumarole's client library.
-///
+//!
+//! A Rust implementation of the Yellowstone Fumarole Client using Tokio and Tonic.
+//!
+//! Fumarole Client uses gRPC connections to communicate with the Fumarole service.
+//!
+//! # Yellowstone-GRPC vs Yellowstone-Fumarole
+//!
+//! For the most part, the API is similar to the original [`yellowstone-grpc`] client.
+//!
+//! However, there are some differences:
+//!
+//! - The `yellowstone-fumarole` client uses multiple gRPC connections to communicate with the Fumarole service : avoids [`HoL`] blocking.
+//! - The `yellowstone-fumarole` subscribers are persistent and can be reused across multiple sessions (not computer).
+//! - The `yellowstone-fumarole` can reconnect to the Fumarole service if the connection is lost.
+//!
+//! # Examples
+//!
+//! Examples can be found in the [`examples`] directory.
+//!
+//! ## Create a `FumaroleClient`
+//!
+//! ```ignore
+//! use yellowstone_fumarole_client::FumaroleClient;
+//! use yellowstone_fumarole_client::config::FumaroleConfig;
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     let config = FumaroleConfig {
+//!         endpoint: "https://example.com".to_string(),
+//!         x_token: Some("00000000-0000-0000-0000-000000000000".to_string()),
+//!         max_decoding_message_size_bytes: FumaroleConfig::default_max_decoding_message_size_bytes(),
+//!         x_metadata: Default::default(),
+//!     };
+//!     let fumarole_client = FumaroleClient::connect(config)
+//!         .await
+//!         .expect("Failed to connect to fumarole");
+//! }
+//! ```
+//!
+//! **NOTE**: The struct `FumaroleConfig` supports deserialization from a YAML file.
+//!
+//! Here's an example of a YAML file:
+//!
+//! ```yaml
+//! endpoint: https://example.com
+//! x-token: 00000000-0000-0000-0000-000000000000
+//! ```
+//! ## Dragonsmouth-like Subscribe
+//!
+//! ```ignore
+//! use yellowstone_fumarole_client::FumaroleClient;
+//!
+//!
+//! let mut client = FumaroleClient::connect(config).await.unwrap();
+//!
+//! let request = geyser::SubscribeRequest {
+//!     accounts: HashMap::from([("f1".to_owned(), SubscribeRequestFilterAccounts::default())]),
+//!     transactions: HashMap::from([("f1".to_owned(), SubscribeRequestFilterTransactions::default())]),
+//!     ..Default::default()
+//! };
+//!
+//!
+//! let dragonsmouth_adapter = client.dragonsmouth_subscribe("my-consumer-group", request).await.unwrap();
+//!
+//! let DragonsmouthAdapterSession {
+//!     sink: _, // Channel to update [`SubscribeRequest`] requests to the fumarole service
+//!     mut source, // Channel to receive updates from the fumarole service
+//!     runtime_handle: _, // Handle to the fumarole session client runtime
+//! } = dragonsmouth_adapter;
+//!
+//! while let Some(result) = source.recv().await {
+//!    let event = result.expect("Failed to receive event");
+//!    // ... do something with the event
+//! }
+//! ```
+//!
+//! ## Enable Prometheus Metrics
+//!
+//! To enable Prometheus metrics, add the `features = [prometheus]` to your `Cargo.toml` file:
+//! ```toml
+//! [dependencies]
+//! yellowstone-fumarole-client = { version = "x.y.z", features = ["prometheus"] }
+//! ```
+//!
+//! Then, you can use the `metrics` module to register and expose metrics:
+//!
+//! ```rust
+//! use yellowstone_fumarole_client::metrics;
+//! use prometheus::{Registry};
+//!
+//! let r = Registry::new();
+//!
+//! metrics::register_metrics(&r);
+//!
+//! // After registering, you should see `fumarole_` prefixed metrics in the registry.
+//! ```
+//!
+//! # Getting Started
+//!
+//! Follows the instruction in the [`README`] file to get started.
+//!
+//! # Feature Flags
+//!
+//! - `prometheus`: Enables Prometheus metrics for the Fumarole client.
+//!
+//! [`examples`]: https://github.com/rpcpool/yellowstone-fumarole/tree/main/examples
+//! [`README`]: https://github.com/rpcpool/yellowstone-fumarole/tree/main/README.md
+//! [`yellowstone-grpc`]: https://github.com/rpcpool/yellowstone-grpc
+//! [`HoL`]: https://en.wikipedia.org/wiki/Head-of-line_blocking
+
 pub mod config;
 
 #[cfg(feature = "prometheus")]

@@ -26,7 +26,7 @@ impl FumaroleConfig {
     ///
     /// Returns the default maximum size of a message that can be decoded
     ///  
-    const fn default_max_decoding_message_size_bytes() -> usize {
+    pub const fn default_max_decoding_message_size_bytes() -> usize {
         512_000_000
     }
 }
