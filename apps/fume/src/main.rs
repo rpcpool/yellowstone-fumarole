@@ -5,6 +5,7 @@ use {
     std::{
         collections::HashMap,
         io::{stderr, stdout, IsTerminal},
+        num::{NonZeroU8, NonZeroUsize},
         path::PathBuf,
     },
     tabled::{builder::Builder, Table},
@@ -20,7 +21,7 @@ use {
             ConsumerGroupInfo, CreateConsumerGroupRequest, DeleteConsumerGroupRequest,
             GetConsumerGroupInfoRequest, InitialOffsetPolicy, ListConsumerGroupsRequest,
         },
-        DragonsmouthAdapterSession, FumaroleClient,
+        DragonsmouthAdapterSession, FumaroleClient, FumaroleSubscribeConfig,
     },
     yellowstone_grpc_proto::geyser::{
         subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
@@ -293,8 +294,13 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     };
 
     println!("Subscribing to consumer group {}", cg_name);
+    let subscribe_config = FumaroleSubscribeConfig {
+        num_data_plane_tcp_connections: NonZeroU8::new(1).unwrap(),
+        concurrent_download_limit_per_tcp: NonZeroUsize::new(1).unwrap(),
+        ..Default::default()
+    };
     let dragonsmouth_session = client
-        .dragonsmouth_subscribe(cg_name.clone(), request)
+        .dragonsmouth_subscribe_with_config(cg_name.clone(), request, subscribe_config)
         .await
         .expect("Failed to subscribe");
     println!("Subscribed to consumer group {}", cg_name);

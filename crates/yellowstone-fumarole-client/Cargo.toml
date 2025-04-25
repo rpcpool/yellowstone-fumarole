@@ -20,7 +20,6 @@ include = [
     "yellowstone-grpc-proto/**",
 ]
 
-
 [dependencies]
 async-trait = { workspace = true }
 futures = { workspace = true }

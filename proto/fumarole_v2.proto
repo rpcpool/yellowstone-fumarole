@@ -10,6 +10,8 @@ service Fumarole {
   rpc DeleteConsumerGroup(DeleteConsumerGroupRequest) returns (DeleteConsumerGroupResponse) {}
   rpc CreateConsumerGroup(CreateConsumerGroupRequest) returns (CreateConsumerGroupResponse) {}
 
+  rpc DownloadBlock(DownloadBlockShard) returns (stream DataResponse) {}
+
   // Represents subscription to the data plane
   rpc SubscribeData(stream DataCommand) returns (stream DataResponse) {}
 
@@ -51,7 +53,6 @@ message BlockFilters {
     map<string, geyser.SubscribeRequestFilterTransactions> transactions = 2;
     map<string, geyser.SubscribeRequestFilterEntry> entries = 3;
     map<string, geyser.SubscribeRequestFilterBlocksMeta> blocks_meta = 4;
-    optional geyser.CommitmentLevel commitment_level = 5;
 }
 
 message DownloadBlockShard {
@@ -77,11 +78,7 @@ message DataCommand {
   } 
 }
 
-message BlockShardDownloadFinish {
-  bytes blockchain_id = 1;
-  bytes block_uid = 2;
-  int32 shard_idx = 3;
-}
+message BlockShardDownloadFinish {}
 
 message BlockNotFound {
   bytes blockchain_id = 1;
@@ -99,8 +96,6 @@ message DataResponse {
   oneof response {
     geyser.SubscribeUpdate update = 1;
     BlockShardDownloadFinish block_shard_download_finish = 2;
-    DataError error = 3;
-    Pong pong = 4;
   }
 }
 
@@ -145,6 +140,16 @@ message ControlCommand {
     }
 }
 
+message ControlResponse {
+    oneof response {
+        InitialConsumerGroupState init = 1;
+        CommitOffsetResult commit_offset = 2;
+        BlockchainHistory poll_hist = 3;
+        Pong pong = 4;
+    }
+}
+
+
 message CommitOffsetResult {
   int64 offset = 1;
   int32 shard_id = 2;
@@ -155,14 +160,6 @@ message InitialConsumerGroupState {
   map<int32, int64> last_committed_offsets = 2; 
 }
 
-message ControlResponse {
-    oneof response {
-        InitialConsumerGroupState init = 1;
-        CommitOffsetResult commit_offset = 2;
-        BlockchainHistory poll_next = 3;
-        Pong pong = 4;
-    }
-}
 
 message CreateConsumerGroupResponse {
   string consumer_group_id = 1;

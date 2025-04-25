@@ -119,14 +119,10 @@ pub(crate) mod util;
 use {
     config::FumaroleConfig,
     proto::control_response::Response,
-    runtime::{
-        tokio::{DataPlaneBidi, DataPlaneBidiFactory, TokioFumeDragonsmouthRuntime},
-        FumaroleSM,
-    },
+    runtime::{tokio::TokioFumeDragonsmouthRuntime, FumaroleSM},
     std::{
-        collections::{HashMap, VecDeque},
-        num::NonZeroU8,
-        sync::Arc,
+        collections::HashMap,
+        num::{NonZeroU8, NonZeroUsize},
         time::{Duration, Instant},
     },
     tokio::sync::mpsc,
@@ -160,7 +156,11 @@ pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/fumarole_v2.rs"));
 }
 
-use proto::{fumarole_client::FumaroleClient as TonicFumaroleClient, JoinControlPlane};
+use {
+    proto::{fumarole_client::FumaroleClient as TonicFumaroleClient, JoinControlPlane},
+    runtime::tokio::DataPlaneConn,
+    tonic::transport::Endpoint,
+};
 
 #[derive(Clone)]
 struct FumeInterceptor {
@@ -232,11 +232,19 @@ pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: u8 = 3;
 pub const DEFAULT_PARA_DATA_STREAMS: u8 = 3;
 
 ///
-/// Yellowstone Fumarole gRPC Client
+/// Default maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
+///
+pub const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP: usize = 10;
+
+pub(crate) type GrpcFumaroleClient =
+    TonicFumaroleClient<InterceptedService<Channel, FumeInterceptor>>;
+///
+/// Yellowstone Fumarole SDK.
 ///
 #[derive(Clone)]
 pub struct FumaroleClient {
-    inner: TonicFumaroleClient<InterceptedService<Channel, FumeInterceptor>>,
+    connector: FumaroleGrpcConnector,
+    inner: GrpcFumaroleClient,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -262,28 +270,40 @@ pub struct FumaroleSubscribeConfig {
     ///
     /// Number of parallel data streams (TCP connections) to open to fumarole
     ///
-    pub num_data_streams: NonZeroU8,
+    pub num_data_plane_tcp_connections: NonZeroU8,
+
+    ///
+    /// Maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
+    ///
+    pub concurrent_download_limit_per_tcp: NonZeroUsize,
+
     ///
     /// Commit interval for the fumarole client
     ///
     pub commit_interval: Duration,
+
     ///
     /// Maximum number of consecutive failed slot download attempts before failing the fumarole session.
     ///
     pub max_failed_slot_download_attempt: u8,
+
     ///
     /// Capacity of each data channel for the fumarole client
     ///
-    pub data_channel_capacity: usize,
+    pub data_channel_capacity: NonZeroUsize,
 }
 
 impl Default for FumaroleSubscribeConfig {
     fn default() -> Self {
         Self {
-            num_data_streams: NonZeroU8::new(DEFAULT_PARA_DATA_STREAMS).unwrap(),
+            num_data_plane_tcp_connections: NonZeroU8::new(DEFAULT_PARA_DATA_STREAMS).unwrap(),
+            concurrent_download_limit_per_tcp: NonZeroUsize::new(
+                DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
+            )
+            .unwrap(),
             commit_interval: DEFAULT_COMMIT_INTERVAL,
             max_failed_slot_download_attempt: DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT,
-            data_channel_capacity: DEFAULT_DRAGONSMOUTH_CAPACITY,
+            data_channel_capacity: NonZeroUsize::new(DEFAULT_DRAGONSMOUTH_CAPACITY).unwrap(),
         }
     }
 }
@@ -353,30 +373,19 @@ fn string_pairs_to_metadata_header(
 
 impl FumaroleClient {
     pub async fn connect(config: FumaroleConfig) -> Result<FumaroleClient, ConnectError> {
-        let channel = Channel::from_shared(config.endpoint.clone())?
-            .tls_config(ClientTlsConfig::new().with_native_roots())?
-            .connect()
-            .await?;
+        let endpoint = Endpoint::from_shared(config.endpoint.clone())?
+            .tls_config(ClientTlsConfig::new().with_native_roots())?;
 
-        Self::connect_with_channel(config, channel).await
-    }
-
-    pub async fn connect_with_channel(
-        config: FumaroleConfig,
-        channel: tonic::transport::Channel,
-    ) -> Result<FumaroleClient, ConnectError> {
-        let interceptor = FumeInterceptor {
-            x_token: config
-                .x_token
-                .map(|token: String| token.try_into())
-                .transpose()?,
-            metadata: string_pairs_to_metadata_header(config.x_metadata)?,
+        let connector = FumaroleGrpcConnector {
+            config: config.clone(),
+            endpoint: endpoint.clone(),
         };
 
-        let client = TonicFumaroleClient::with_interceptor(channel, interceptor)
-            .max_decoding_message_size(config.max_decoding_message_size_bytes);
-
-        Ok(FumaroleClient { inner: client })
+        let client = connector.connect().await?;
+        Ok(FumaroleClient {
+            connector,
+            inner: client,
+        })
     }
 
     ///
@@ -473,16 +482,6 @@ impl FumaroleClient {
             .expect("no last committed offset");
 
         let sm = FumaroleSM::new(*last_committed_offset);
-        let data_bidi_factory = GrpcDataPlaneBidiFactory {
-            client: self.clone(),
-            channel_capacity: config.data_channel_capacity,
-        };
-
-        let mut data_bidi_vec = VecDeque::with_capacity(config.num_data_streams.get() as usize);
-        for _ in 0..config.num_data_streams.get() {
-            let data_bidi = data_bidi_factory.build().await;
-            data_bidi_vec.push_back(data_bidi);
-        }
 
         let (dm_tx, dm_rx) = mpsc::channel(100);
         let dm_bidi = DragonsmouthSubscribeRequestBidi {
@@ -490,16 +489,28 @@ impl FumaroleClient {
             rx: dm_rx,
         };
 
+        let mut data_plane_channel_vec =
+            Vec::with_capacity(config.num_data_plane_tcp_connections.get() as usize);
+        for _ in 0..config.num_data_plane_tcp_connections.get() {
+            let client = self
+                .connector
+                .connect()
+                .await
+                .expect("failed to connect to fumarole");
+            let conn = DataPlaneConn::new(client, config.concurrent_download_limit_per_tcp.get());
+            data_plane_channel_vec.push(conn);
+        }
+
         let tokio_rt = TokioFumeDragonsmouthRuntime {
             rt: handle.clone(),
             sm,
-            data_plane_bidi_factory: Arc::new(data_bidi_factory),
             dragonsmouth_bidi: dm_bidi,
             subscribe_request: request,
+            fumarole_connector: self.connector.clone(),
             consumer_group_name: consumer_group_name.as_ref().to_string(),
             control_plane_tx: fume_control_plane_tx,
             control_plane_rx: fume_control_plane_rx,
-            data_plane_bidi_vec: data_bidi_vec,
+            data_plane_channel_vec,
             data_plane_tasks: Default::default(),
             data_plane_task_meta: Default::default(),
             dragonsmouth_outlet,
@@ -551,26 +562,31 @@ impl FumaroleClient {
     }
 }
 
-pub(crate) struct GrpcDataPlaneBidiFactory {
-    client: FumaroleClient,
-    channel_capacity: usize,
+#[derive(Clone)]
+pub(crate) struct FumaroleGrpcConnector {
+    config: FumaroleConfig,
+    endpoint: Endpoint,
 }
 
-#[async_trait::async_trait]
-impl DataPlaneBidiFactory for GrpcDataPlaneBidiFactory {
-    async fn build(&self) -> DataPlaneBidi {
-        let mut client = self.client.clone();
-        let (tx, rx) = mpsc::channel(self.channel_capacity);
-        let rx = ReceiverStream::new(rx);
-        let resp = client
-            .inner
-            .subscribe_data(rx)
-            .await
-            .expect("failed to subscribe");
-        let streaming = resp.into_inner();
-
-        let rx = into_bounded_mpsc_rx(self.channel_capacity, streaming);
-
-        DataPlaneBidi { tx, rx }
+impl FumaroleGrpcConnector {
+    async fn connect(
+        &self,
+    ) -> Result<
+        TonicFumaroleClient<InterceptedService<Channel, FumeInterceptor>>,
+        tonic::transport::Error,
+    > {
+        let channel = self.endpoint.connect().await?;
+        let interceptor = FumeInterceptor {
+            x_token: self
+                .config
+                .x_token
+                .as_ref()
+                .map(|token| token.try_into())
+                .transpose()
+                .unwrap(),
+            metadata: string_pairs_to_metadata_header(self.config.x_metadata.clone()).unwrap(),
+        };
+        Ok(TonicFumaroleClient::with_interceptor(channel, interceptor)
+            .max_decoding_message_size(self.config.max_decoding_message_size_bytes))
     }
 }

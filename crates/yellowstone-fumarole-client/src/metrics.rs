@@ -75,6 +75,20 @@ lazy_static! {
         &["runtime"],
     )
     .unwrap();
+    pub(crate) static ref TOTAL_EVENT_DOWNLOADED: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "fumarole_total_event_downloaded",
+            "Total number of events downloaded from Fumarole",
+        ),
+        &["runtime"],
+    )
+    .unwrap();
+}
+
+pub(crate) fn inc_total_event_downloaded(name: impl AsRef<str>, amount: usize) {
+    TOTAL_EVENT_DOWNLOADED
+        .with_label_values(&[name.as_ref()])
+        .inc_by(amount as u64);
 }
 
 pub(crate) fn set_max_slot_detected(name: impl AsRef<str>, slot: u64) {
@@ -149,5 +163,8 @@ pub fn register_metrics(registry: &prometheus::Registry) {
         .unwrap();
     registry
         .register(Box::new(FAILED_SLOT_DOWNLOAD_ATTEMPT.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(TOTAL_EVENT_DOWNLOADED.clone()))
         .unwrap();
 }

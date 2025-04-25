@@ -133,8 +133,8 @@ impl SlotDownloadProgress {
 pub(crate) struct FumaroleSM {
     /// The last committed offset
     pub last_committed_offset: FumeOffset,
-    /// Slot that have been downloaded in the current session along side slot status update
-    slot_downloaded: BTreeMap<Slot, SlotInfoProcessed>,
+    /// As we download and process slot status, we keep track of the progression of each slot here.
+    slot_progression: BTreeMap<Slot, SlotInfoProcessed>,
     /// Inlfight slot download
     inflight_slot_shard_download: HashMap<Slot, SlotDownloadProgress>,
     /// Slot download queue
@@ -162,7 +162,7 @@ impl FumaroleSM {
     pub fn new(last_committed_offset: FumeOffset) -> Self {
         Self {
             last_committed_offset,
-            slot_downloaded: Default::default(),
+            slot_progression: Default::default(),
             inflight_slot_shard_download: Default::default(),
             slot_download_queue: Default::default(),
             blocked_slot_status_update: Default::default(),
@@ -226,7 +226,7 @@ impl FumaroleSM {
                 self.max_slot_detected = slot;
             }
             // We don't download the same slot twice in the same session.
-            if !self.slot_downloaded.contains_key(&slot) {
+            if !self.slot_progression.contains_key(&slot) {
                 // if the slot is already in-download, we don't need to schedule it for download again
                 if !self.inflight_slot_shard_download.contains_key(&slot) {
                     let download_request = FumeDownloadRequest {
@@ -284,7 +284,7 @@ impl FumaroleSM {
         if matches!(download_state, SlotDownloadState::Done) {
             // all shards downloaded
             self.inflight_slot_shard_download.remove(&slot);
-            self.slot_downloaded.insert(slot, Default::default());
+            self.slot_progression.insert(slot, Default::default());
 
             let blocked_slot_status = self
                 .blocked_slot_status_update
@@ -299,7 +299,7 @@ impl FumaroleSM {
     ///
     pub fn pop_next_slot_status(&mut self) -> Option<FumeSlotStatus> {
         let slot_status = self.slot_status_update_queue.pop_front()?;
-        let info = self.slot_downloaded.get_mut(&slot_status.slot)?;
+        let info = self.slot_progression.get_mut(&slot_status.slot)?;
         if info
             .processed_commitment_levels
             .insert(slot_status.commitment_level)
