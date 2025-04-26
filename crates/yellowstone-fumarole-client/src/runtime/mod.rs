@@ -4,16 +4,13 @@
 pub(crate) mod tokio;
 
 use {
-    crate::{
-        proto::{self, BlockchainEvent},
-        util::collections::KeyedVecDeque,
-    },
+    crate::proto::{self, BlockchainEvent},
     solana_sdk::clock::Slot,
     std::{
         cmp::Reverse,
-        collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque},
+        collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque},
     },
-    yellowstone_grpc_proto::geyser,
+    yellowstone_grpc_proto::geyser::{self, CommitmentLevel},
 };
 
 pub(crate) type FumeBlockchainId = [u8; 16];
@@ -28,23 +25,25 @@ pub(crate) type FumeOffset = i64;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FumeDownloadRequest {
-    pub(crate) slot: Slot,
-    pub(crate) blockchain_id: FumeBlockchainId,
-    pub(crate) block_uid: FumeBlockUID,
-    pub(crate) num_shards: FumeNumShards, // First version of fumarole, it should always be 1
+    pub slot: Slot,
+    pub blockchain_id: FumeBlockchainId,
+    pub block_uid: FumeBlockUID,
+    pub num_shards: FumeNumShards, // First version of fumarole, it should always be 1
+    #[allow(dead_code)]
+    pub commitment_level: geyser::CommitmentLevel,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct FumeSlotStatus {
-    pub(crate) offset: FumeOffset,
-    pub(crate) slot: Slot,
-    pub(crate) parent_slot: Option<Slot>,
-    pub(crate) commitment_level: geyser::CommitmentLevel,
-    pub(crate) dead_error: Option<String>,
+    pub offset: FumeOffset,
+    pub slot: Slot,
+    pub parent_slot: Option<Slot>,
+    pub commitment_level: geyser::CommitmentLevel,
+    pub dead_error: Option<String>,
 }
 
 #[derive(Debug, Default)]
-struct SlotInfoProcessed {
+struct SlotCommitmentProgression {
     processed_commitment_levels: HashSet<geyser::CommitmentLevel>,
 }
 
@@ -53,7 +52,8 @@ struct SlotDownloadProgress {
     shard_remaining: Vec<bool>,
 }
 
-enum SlotDownloadState {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotDownloadState {
     Downloading,
     Done,
 }
@@ -133,12 +133,11 @@ impl SlotDownloadProgress {
 pub(crate) struct FumaroleSM {
     /// The last committed offset
     pub last_committed_offset: FumeOffset,
+    slot_commitment_progression: BTreeMap<Slot, SlotCommitmentProgression>,
     /// As we download and process slot status, we keep track of the progression of each slot here.
-    slot_progression: BTreeMap<Slot, SlotInfoProcessed>,
+    downloaded_slot: BTreeSet<Slot>,
     /// Inlfight slot download
     inflight_slot_shard_download: HashMap<Slot, SlotDownloadProgress>,
-    /// Slot download queue
-    slot_download_queue: KeyedVecDeque<Slot, FumeDownloadRequest>,
     /// Slot blocked by a slot download (inflight or in queue)
     blocked_slot_status_update: HashMap<Slot, VecDeque<FumeSlotStatus>>,
     /// Slot status queue whose slot have been completely downloaded in the current session.
@@ -156,20 +155,24 @@ pub(crate) struct FumaroleSM {
     /// This is used to detect rough slot lag.
     /// this slot is not necessarily processed by the underlying runtime yet.
     pub max_slot_detected: Slot,
+
+    /// Unprocessed blockchain events
+    unprocessed_blockchain_event: VecDeque<proto::BlockchainEvent>,
 }
 
 impl FumaroleSM {
     pub fn new(last_committed_offset: FumeOffset) -> Self {
         Self {
             last_committed_offset,
-            slot_progression: Default::default(),
+            slot_commitment_progression: Default::default(),
+            downloaded_slot: Default::default(),
             inflight_slot_shard_download: Default::default(),
-            slot_download_queue: Default::default(),
             blocked_slot_status_update: Default::default(),
             slot_status_update_queue: Default::default(),
             processed_offset: Default::default(),
             committable_offset: last_committed_offset,
             max_slot_detected: 0,
+            unprocessed_blockchain_event: Default::default(),
         }
     }
 
@@ -184,96 +187,48 @@ impl FumaroleSM {
         self.last_committed_offset = offset;
     }
 
-    ///
-    /// Queues incoming **ordered** blockchain events
     pub fn queue_blockchain_event<IT>(&mut self, events: IT)
     where
         IT: IntoIterator<Item = proto::BlockchainEvent>,
     {
-        let mut last_offset = self.last_committed_offset;
-        for events in events {
-            let BlockchainEvent {
-                offset,
-                blockchain_id,
-                block_uid,
-                num_shards,
-                slot,
-                parent_slot,
-                commitment_level,
-                blockchain_shard_id: _, /*First version this is value does not mean nothing */
-                dead_error,
-            } = events;
-
-            if offset < last_offset {
+        for event in events {
+            if event.offset < self.last_committed_offset {
                 continue;
             }
-            let blockchain_id: [u8; 16] = blockchain_id
-                .try_into()
-                .expect("blockchain_id must be 16 bytes");
-            let block_uid: [u8; 16] = block_uid.try_into().expect("block_uid must be 16 bytes");
-
-            let cl = geyser::CommitmentLevel::try_from(commitment_level)
-                .expect("invalid commitment level");
-            let fume_slot_status = FumeSlotStatus {
-                offset,
-                slot,
-                parent_slot,
-                commitment_level: cl,
-                dead_error,
-            };
-            last_offset = offset;
-            if slot > self.max_slot_detected {
-                self.max_slot_detected = slot;
-            }
-            // We don't download the same slot twice in the same session.
-            if !self.slot_progression.contains_key(&slot) {
-                // if the slot is already in-download, we don't need to schedule it for download again
-                if !self.inflight_slot_shard_download.contains_key(&slot) {
-                    let download_request = FumeDownloadRequest {
-                        slot,
-                        blockchain_id,
-                        block_uid,
-                        num_shards,
-                    };
-                    self.slot_download_queue.push_back(slot, download_request);
+            if self.downloaded_slot.contains(&event.slot) {
+                let fume_status = FumeSlotStatus {
+                    offset: event.offset,
+                    slot: event.slot,
+                    parent_slot: event.parent_slot,
+                    commitment_level: geyser::CommitmentLevel::try_from(event.commitment_level)
+                        .expect("invalid commitment level"),
+                    dead_error: event.dead_error,
+                };
+                if self.inflight_slot_shard_download.contains_key(&event.slot) {
+                    // This event is blocked by a slot download currently in progress
+                    self.blocked_slot_status_update
+                        .entry(event.slot)
+                        .or_default()
+                        .push_back(fume_status);
+                } else {
+                    // Fast track this event, since the slot has been downloaded in the current session
+                    // and we are not waiting for any shard to be downloaded.
+                    self.slot_status_update_queue.push_back(fume_status);
                 }
-                self.blocked_slot_status_update
-                    .entry(slot)
-                    .or_default()
-                    .push_back(fume_slot_status);
             } else {
-                self.slot_status_update_queue.push_back(fume_slot_status);
+                self.unprocessed_blockchain_event.push_back(event);
             }
         }
     }
 
     ///
-    /// Returns the [`Some(FumeDownloadRequest)`]  to download if any, otherwise `None`.
-    ///
-    pub(crate) fn pop_slot_to_download(&mut self) -> Option<FumeDownloadRequest> {
-        let download_req = self.slot_download_queue.pop_front()?;
-        let download_progress = SlotDownloadProgress {
-            num_shards: download_req.num_shards,
-            shard_remaining: vec![false; download_req.num_shards as usize],
-        };
-        let old = self
-            .inflight_slot_shard_download
-            .insert(download_req.slot, download_progress);
-        assert!(old.is_none(), "slot already in download");
-        Some(download_req)
-    }
-
-    ///
-    /// Returns the number of slots in the download queue
-    ///
-    pub fn slot_download_queue_size(&self) -> usize {
-        self.slot_download_queue.len()
-    }
-
-    ///
     /// Update download progression for a given `Slot` download
     ///
-    pub fn make_slot_download_progress(&mut self, slot: Slot, shard_idx: FumeShardIdx) {
+    pub fn make_slot_download_progress(
+        &mut self,
+        slot: Slot,
+        shard_idx: FumeShardIdx,
+    ) -> SlotDownloadState {
         let download_progress = self
             .inflight_slot_shard_download
             .get_mut(&slot)
@@ -284,7 +239,8 @@ impl FumaroleSM {
         if matches!(download_state, SlotDownloadState::Done) {
             // all shards downloaded
             self.inflight_slot_shard_download.remove(&slot);
-            self.slot_progression.insert(slot, Default::default());
+            self.downloaded_slot.insert(slot);
+            self.slot_commitment_progression.entry(slot).or_default();
 
             let blocked_slot_status = self
                 .blocked_slot_status_update
@@ -292,22 +248,132 @@ impl FumaroleSM {
                 .unwrap_or_default();
             self.slot_status_update_queue.extend(blocked_slot_status);
         }
+        download_state
+    }
+
+    pub fn pop_next_slot_status(&mut self) -> Option<FumeSlotStatus> {
+        loop {
+            let slot_status = self.slot_status_update_queue.pop_front()?;
+            if let Some(commitment_history) =
+                self.slot_commitment_progression.get_mut(&slot_status.slot)
+            {
+                if commitment_history
+                    .processed_commitment_levels
+                    .insert(slot_status.commitment_level)
+                {
+                    return Some(slot_status);
+                } else {
+                    // We already processed this commitment level
+                    continue;
+                }
+            } else {
+                // This slot has not been downloaded yet, but still has a status to process
+                unreachable!("slot status should not be available here");
+            }
+        }
+    }
+
+    fn make_sure_slot_commitment_progression_exists(
+        &mut self,
+        slot: Slot,
+    ) -> &mut SlotCommitmentProgression {
+        self.slot_commitment_progression.entry(slot).or_default()
     }
 
     ///
     /// Pop next slot status to process
     ///
-    pub fn pop_next_slot_status(&mut self) -> Option<FumeSlotStatus> {
-        let slot_status = self.slot_status_update_queue.pop_front()?;
-        let info = self.slot_progression.get_mut(&slot_status.slot)?;
-        if info
-            .processed_commitment_levels
-            .insert(slot_status.commitment_level)
-        {
-            // We handle duplicate slot status event here.
-            Some(slot_status)
-        } else {
-            None
+    pub fn pop_slot_to_download(
+        &mut self,
+        commitment: Option<CommitmentLevel>,
+    ) -> Option<FumeDownloadRequest> {
+        loop {
+            let min_commitment = commitment.unwrap_or(CommitmentLevel::Processed);
+            let BlockchainEvent {
+                offset,
+                blockchain_id,
+                block_uid,
+                num_shards,
+                slot,
+                parent_slot,
+                commitment_level,
+                blockchain_shard_id: _,
+                dead_error,
+            } = self.unprocessed_blockchain_event.pop_front()?;
+
+            let event_cl = geyser::CommitmentLevel::try_from(commitment_level)
+                .expect("invalid commitment level");
+
+            if event_cl < min_commitment {
+                self.slot_status_update_queue.push_back(FumeSlotStatus {
+                    offset,
+                    slot,
+                    parent_slot,
+                    commitment_level: event_cl,
+                    dead_error,
+                });
+                self.make_sure_slot_commitment_progression_exists(slot);
+                continue;
+            }
+
+            if self.downloaded_slot.contains(&slot) {
+                // This slot has been fully downloaded by the runtime
+                self.make_sure_slot_commitment_progression_exists(slot);
+                let Some(progression) = self.slot_commitment_progression.get_mut(&slot) else {
+                    unreachable!("slot status should not be available here");
+                };
+
+                if progression.processed_commitment_levels.contains(&event_cl) {
+                    // We already processed this commitment level
+                    self.mark_offset_as_processed(offset);
+                    continue;
+                }
+
+                // We have a new commitment level for this slot and slot has been downloaded in the current session.
+                self.slot_status_update_queue.push_back(FumeSlotStatus {
+                    offset,
+                    slot,
+                    parent_slot,
+                    commitment_level: event_cl,
+                    dead_error,
+                });
+            } else {
+                // This slot has not been downloaded yet
+                let blockchain_id: [u8; 16] = blockchain_id
+                    .try_into()
+                    .expect("blockchain_id must be 16 bytes");
+                let block_uid: [u8; 16] = block_uid.try_into().expect("block_uid must be 16 bytes");
+
+                // We have a new commitment level for this slot and slot has not been downloaded in the current session.
+                self.blocked_slot_status_update
+                    .entry(slot)
+                    .or_default()
+                    .push_back(FumeSlotStatus {
+                        offset,
+                        slot,
+                        parent_slot,
+                        commitment_level: event_cl,
+                        dead_error,
+                    });
+
+                if !self.inflight_slot_shard_download.contains_key(&slot) {
+                    // This slot has not been schedule for download yet
+                    let download_request = FumeDownloadRequest {
+                        slot,
+                        blockchain_id,
+                        block_uid,
+                        num_shards,
+                        commitment_level: event_cl,
+                    };
+                    let download_progress = SlotDownloadProgress {
+                        num_shards,
+                        shard_remaining: vec![false; num_shards as usize],
+                    };
+                    self.inflight_slot_shard_download
+                        .insert(slot, download_progress);
+                    return Some(download_request);
+                }
+            }
         }
     }
 
@@ -382,15 +448,15 @@ mod tests {
         sm.queue_blockchain_event(vec![event.clone()]);
 
         // Slot status should not be available, since we didn't download it yet.
-        assert!(sm.pop_next_slot_status().is_none());
-
-        let download_req = sm.pop_slot_to_download().unwrap();
+        let download_req = sm.pop_slot_to_download(None).unwrap();
 
         assert_eq!(download_req.slot, 1);
 
-        assert!(sm.pop_slot_to_download().is_none());
+        assert!(sm.pop_slot_to_download(None).is_none());
+        assert!(sm.pop_next_slot_status().is_none());
 
-        sm.make_slot_download_progress(1, 0);
+        let download_state = sm.make_slot_download_progress(1, 0);
+        assert_eq!(download_state, SlotDownloadState::Done);
 
         let status = sm.pop_next_slot_status().unwrap();
 
@@ -405,7 +471,7 @@ mod tests {
         sm.queue_blockchain_event(vec![event2.clone()]);
 
         // It should not cause new slot download request
-        assert!(sm.pop_slot_to_download().is_none());
+        assert!(sm.pop_slot_to_download(None).is_none());
 
         let status = sm.pop_next_slot_status().unwrap();
         assert_eq!(status.slot, 1);
@@ -425,11 +491,11 @@ mod tests {
         // Slot status should not be available, since we didn't download it yet.
         assert!(sm.pop_next_slot_status().is_none());
 
-        let download_req = sm.pop_slot_to_download().unwrap();
+        let download_req = sm.pop_slot_to_download(None).unwrap();
 
         assert_eq!(download_req.slot, 1);
 
-        assert!(sm.pop_slot_to_download().is_none());
+        assert!(sm.pop_slot_to_download(None).is_none());
 
         sm.make_slot_download_progress(1, 0);
 
@@ -441,7 +507,30 @@ mod tests {
         // Putting the same event back should be ignored
         sm.queue_blockchain_event(vec![event]);
 
+        assert!(sm.pop_slot_to_download(None).is_none());
         assert!(sm.pop_next_slot_status().is_none());
-        assert!(sm.pop_slot_to_download().is_none());
+    }
+
+    #[test]
+    fn it_should_handle_min_commitment_level() {
+        let mut sm = FumaroleSM::new(0);
+
+        let event = random_blockchain_event(1, 1, CommitmentLevel::Processed);
+        sm.queue_blockchain_event(vec![event.clone()]);
+
+        // Slot status should not be available, since we didn't download it yet.
+        assert!(sm.pop_next_slot_status().is_none());
+
+        // Use finalized commitment level here
+        let download_req = sm.pop_slot_to_download(Some(CommitmentLevel::Finalized));
+        assert!(download_req.is_none());
+
+        assert!(sm.pop_slot_to_download(None).is_none());
+
+        // It should not cause the slot status to be available here even if we have a finalized commitment level filtered out before
+        let status = sm.pop_next_slot_status().unwrap();
+
+        assert_eq!(status.slot, 1);
+        assert_eq!(status.commitment_level, CommitmentLevel::Processed);
     }
 }

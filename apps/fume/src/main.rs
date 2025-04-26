@@ -290,6 +290,7 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
             SubscribeRequestFilterTransactions::default(),
         )]),
         slots: HashMap::from([("f1".to_owned(), SubscribeRequestFilterSlots::default())]),
+        commitment: Some(CommitmentLevel::Finalized.into()),
         ..Default::default()
     };
 

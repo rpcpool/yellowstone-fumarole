@@ -27,7 +27,7 @@ use {
     },
     tonic::Code,
     yellowstone_grpc_proto::geyser::{
-        self, SubscribeRequest, SubscribeUpdate, SubscribeUpdateSlot,
+        self, CommitmentLevel, SubscribeRequest, SubscribeUpdate, SubscribeUpdateSlot,
     },
 };
 
@@ -292,6 +292,12 @@ impl TokioFumeDragonsmouthRuntime {
             .map(|(idx, _)| idx)
     }
 
+    fn commitment_level(&self) -> Option<geyser::CommitmentLevel> {
+        self.subscribe_request
+            .commitment
+            .map(|cl| CommitmentLevel::try_from(cl).expect("invalid commitment level"))
+    }
+
     fn schedule_download_task_if_any(&mut self) {
         // This loop drains as many download slot request as possible,
         // limited to available [`DataPlaneBidi`].
@@ -303,7 +309,7 @@ impl TokioFumeDragonsmouthRuntime {
             let maybe_download_request = self
                 .download_to_retry
                 .pop_front()
-                .or_else(|| self.sm.pop_slot_to_download());
+                .or_else(|| self.sm.pop_slot_to_download(self.commitment_level()));
 
             let Some(download_request) = maybe_download_request else {
                 break;
@@ -349,12 +355,6 @@ impl TokioFumeDragonsmouthRuntime {
             {
                 inc_inflight_slot_download(Self::RUNTIME_NAME);
             }
-        }
-
-        #[cfg(feature = "prometheus")]
-        {
-            let size = self.sm.slot_download_queue_size() + self.download_to_retry.len();
-            set_slot_download_queue_size(Self::RUNTIME_NAME, size);
         }
     }
 
@@ -512,8 +512,9 @@ impl TokioFumeDragonsmouthRuntime {
                 if self.dragonsmouth_outlet.send(Ok(update)).await.is_err() {
                     return;
                 }
-                self.sm.mark_offset_as_processed(slot_status.offset);
             }
+
+            self.sm.mark_offset_as_processed(slot_status.offset);
         }
     }
 
