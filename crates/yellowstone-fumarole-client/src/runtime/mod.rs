@@ -28,6 +28,7 @@ pub(crate) struct FumeDownloadRequest {
     pub slot: Slot,
     pub blockchain_id: FumeBlockchainId,
     pub block_uid: FumeBlockUID,
+    #[allow(dead_code)]
     pub num_shards: FumeNumShards, // First version of fumarole, it should always be 1
     #[allow(dead_code)]
     pub commitment_level: geyser::CommitmentLevel,

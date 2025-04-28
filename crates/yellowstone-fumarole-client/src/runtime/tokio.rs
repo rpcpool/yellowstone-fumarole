@@ -5,7 +5,7 @@ use crate::metrics::{
     set_max_slot_detected, set_slot_download_queue_size,
 };
 use {
-    super::{FumaroleSM, FumeDownloadRequest, FumeOffset},
+    super::{FumaroleSM, FumeDownloadRequest, FumeOffset, FumeShardIdx},
     crate::{
         metrics::inc_total_event_downloaded,
         proto::{
@@ -18,11 +18,10 @@ use {
     solana_sdk::clock::Slot,
     std::{
         collections::{HashMap, VecDeque},
-        sync::Arc,
         time::{Duration, Instant},
     },
     tokio::{
-        sync::{mpsc, Semaphore},
+        sync::mpsc::{self, error::TrySendError},
         task::{self, JoinSet},
     },
     tonic::Code,
@@ -34,13 +33,14 @@ use {
 ///
 /// Holds information about on-going data plane task.
 ///
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct DataPlaneTaskMeta {
-    download_request: FumeDownloadRequest,
-    scheduled_at: Instant,
-    download_attempt: u8,
-    client_rev: u64,
     client_idx: usize,
+    request: FumeDownloadRequest,
+    filters: Option<BlockFilters>,
+    dragonsmouth_outlet: mpsc::Sender<Result<geyser::SubscribeUpdate, tonic::Status>>,
+    scheduled_at: Instant,
+    client_rev: u64,
 }
 
 ///
@@ -52,39 +52,40 @@ pub struct DragonsmouthSubscribeRequestBidi {
     pub rx: mpsc::Receiver<SubscribeRequest>,
 }
 
-pub(crate) struct DataPlaneConn {
-    sem: Arc<Semaphore>,
-    client: GrpcFumaroleClient,
-    rev: u64,
-}
-
-struct ProtectedGrpcFumaroleClient {
-    client: GrpcFumaroleClient,
-    _permit: tokio::sync::OwnedSemaphorePermit,
-}
-
 impl DataPlaneConn {
     pub fn new(client: GrpcFumaroleClient, concurrency_limit: usize) -> Self {
         Self {
-            sem: Arc::new(Semaphore::new(concurrency_limit)),
+            permits: concurrency_limit,
             client,
             rev: 0,
         }
     }
 
     fn has_permit(&self) -> bool {
-        self.sem.available_permits() > 0
+        self.permits > 0
     }
+}
 
-    fn acquire(&mut self) -> ProtectedGrpcFumaroleClient {
-        let permit = Arc::clone(&self.sem)
-            .try_acquire_owned()
-            .expect("failed to acquire semaphore permit");
-        ProtectedGrpcFumaroleClient {
-            client: self.client.clone(),
-            _permit: permit,
+pub enum DownloadTaskSenderError {
+    NoPermit,
+    Disconnected,
+}
+
+pub struct DownloadPermit {
+    drop: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl Drop for DownloadPermit {
+    fn drop(&mut self) {
+        if let Some(drop) = self.drop.take() {
+            drop();
         }
     }
+}
+
+pub enum DownloadTaskResult {
+    Ok(CompletedDownloadBlockTask),
+    Err { slot: Slot, err: DownloadBlockError },
 }
 
 ///
@@ -93,20 +94,14 @@ impl DataPlaneConn {
 pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub rt: tokio::runtime::Handle,
     pub sm: FumaroleSM,
+    pub download_task_runner_chans: DownloadTaskRunnerChannels,
     pub dragonsmouth_bidi: DragonsmouthSubscribeRequestBidi,
     pub subscribe_request: SubscribeRequest,
-    pub fumarole_connector: FumaroleGrpcConnector,
     #[allow(dead_code)]
     pub consumer_group_name: String,
     pub control_plane_tx: mpsc::Sender<proto::ControlCommand>,
     pub control_plane_rx: mpsc::Receiver<Result<proto::ControlResponse, tonic::Status>>,
-    pub data_plane_channel_vec: Vec<DataPlaneConn>,
-    pub data_plane_tasks: JoinSet<Result<CompletedDownloadBlockTask, DownloadBlockError>>,
-    pub data_plane_task_meta: HashMap<tokio::task::Id, DataPlaneTaskMeta>,
     pub dragonsmouth_outlet: mpsc::Sender<Result<geyser::SubscribeUpdate, tonic::Status>>,
-    pub download_to_retry: VecDeque<FumeDownloadRequest>,
-    pub download_attempts: HashMap<Slot, u8>,
-    pub max_slot_download_attempt: u8,
     pub commit_interval: Duration,
     pub last_commit: Instant,
 }
@@ -132,97 +127,6 @@ const fn build_commit_offset_cmd(offset: FumeOffset) -> ControlCommand {
                 shard_id: 0, /*ALWAYS 0-FOR FIRST VERSION OF FUMAROLE */
             },
         )),
-    }
-}
-
-pub(crate) struct DownloadBlockTask {
-    download_request: FumeDownloadRequest,
-    protected: ProtectedGrpcFumaroleClient,
-    filters: Option<BlockFilters>,
-    dragonsmouth_oulet: mpsc::Sender<Result<SubscribeUpdate, tonic::Status>>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum DownloadBlockError {
-    #[error("download block task disconnected")]
-    Disconnected,
-    #[error("dragonsmouth outlet disconnected")]
-    OutletDisconnected,
-    #[error("block shard not found")]
-    BlockShardNotFound,
-    #[error("error during transportation or processing")]
-    FailedDownload,
-    #[error("unknown error: {0}")]
-    Fatal(#[from] tonic::Status),
-}
-
-fn map_tonic_error_code_to_download_block_error(code: Code) -> DownloadBlockError {
-    match code {
-        Code::NotFound => DownloadBlockError::BlockShardNotFound,
-        Code::Unavailable => DownloadBlockError::Disconnected,
-        Code::Internal
-        | Code::Aborted
-        | Code::DataLoss
-        | Code::ResourceExhausted
-        | Code::Unknown
-        | Code::Cancelled => DownloadBlockError::FailedDownload,
-        Code::Ok => {
-            unreachable!("ok")
-        }
-        Code::InvalidArgument => {
-            panic!("invalid argument");
-        }
-        Code::DeadlineExceeded => DownloadBlockError::FailedDownload,
-        rest => DownloadBlockError::Fatal(tonic::Status::new(rest, "unknown error")),
-    }
-}
-
-pub(crate) struct CompletedDownloadBlockTask {
-    total_event_downloaded: usize,
-}
-
-impl DownloadBlockTask {
-    async fn run(mut self) -> Result<CompletedDownloadBlockTask, DownloadBlockError> {
-        let request = DownloadBlockShard {
-            blockchain_id: self.download_request.blockchain_id.to_vec(),
-            block_uid: self.download_request.block_uid.to_vec(),
-            shard_idx: 0,
-            block_filters: self.filters,
-        };
-        let resp = self.protected.client.download_block(request).await;
-
-        let mut rx = match resp {
-            Ok(resp) => resp.into_inner(),
-            Err(e) => {
-                return Err(map_tonic_error_code_to_download_block_error(e.code()));
-            }
-        };
-        let mut total_event_downloaded = 0;
-        while let Some(data) = rx.next().await {
-            let resp = data
-                .map_err(|e| {
-                    let code = e.code();
-                    tracing::error!("download block error: {code:?}");
-                    map_tonic_error_code_to_download_block_error(code)
-                })?
-                .response
-                .expect("missing response");
-
-            match resp {
-                data_response::Response::Update(update) => {
-                    total_event_downloaded += 1;
-                    if self.dragonsmouth_oulet.send(Ok(update)).await.is_err() {
-                        return Err(DownloadBlockError::OutletDisconnected);
-                    }
-                }
-                data_response::Response::BlockShardDownloadFinish(_) => {
-                    return Ok(CompletedDownloadBlockTask {
-                        total_event_downloaded,
-                    });
-                }
-            }
-        }
-        Err(DownloadBlockError::FailedDownload)
     }
 }
 
@@ -283,15 +187,6 @@ impl TokioFumeDragonsmouthRuntime {
         }
     }
 
-    fn find_most_under_utilized_data_plane_client(&self) -> Option<usize> {
-        self.data_plane_channel_vec
-            .iter()
-            .enumerate()
-            .filter(|(_, conn)| conn.has_permit())
-            .max_by_key(|(_, conn)| conn.sem.available_permits())
-            .map(|(idx, _)| idx)
-    }
-
     fn commitment_level(&self) -> Option<geyser::CommitmentLevel> {
         self.subscribe_request
             .commitment
@@ -302,159 +197,49 @@ impl TokioFumeDragonsmouthRuntime {
         // This loop drains as many download slot request as possible,
         // limited to available [`DataPlaneBidi`].
         loop {
-            let Some(client_idx) = self.find_most_under_utilized_data_plane_client() else {
-                break;
+            let result = self
+                .download_task_runner_chans
+                .download_task_queue_tx
+                .try_reserve();
+            let permit = match result {
+                Ok(permit) => permit,
+                Err(TrySendError::Full(_)) => {
+                    break;
+                }
+                Err(TrySendError::Closed(_)) => {
+                    panic!("download task runner closed unexpectedly")
+                }
             };
 
-            let maybe_download_request = self
-                .download_to_retry
-                .pop_front()
-                .or_else(|| self.sm.pop_slot_to_download(self.commitment_level()));
-
-            let Some(download_request) = maybe_download_request else {
+            let Some(download_request) = self.sm.pop_slot_to_download(self.commitment_level())
+            else {
                 break;
             };
-
-            assert!(download_request.num_shards == 1, "this client is incompatible with remote server since it does not support sharded block download");
-            let client = self
-                .data_plane_channel_vec
-                .get_mut(client_idx)
-                .expect("should not be none");
-            let permit = client.acquire();
-            let client_rev = client.rev;
-            let download_task = DownloadBlockTask {
-                download_request: download_request.clone(),
-                protected: permit,
+            let download_task_args = DownloadTaskArgs {
+                download_request,
                 filters: Some(self.subscribe_request.clone().into()),
-                dragonsmouth_oulet: self.dragonsmouth_outlet.clone(),
+                dragonsmouth_outlet: self.dragonsmouth_outlet.clone(),
             };
-
-            let download_attempts = self
-                .download_attempts
-                .entry(download_request.slot)
-                .or_default();
-
-            *download_attempts += 1;
-
-            let ah = self
-                .data_plane_tasks
-                .spawn_on(download_task.run(), &self.rt);
-            tracing::debug!("download task scheduled for slot {}", download_request.slot);
-            self.data_plane_task_meta.insert(
-                ah.id(),
-                DataPlaneTaskMeta {
-                    download_request,
-                    scheduled_at: Instant::now(),
-                    download_attempt: *download_attempts,
-                    client_rev,
-                    client_idx,
-                },
-            );
-
-            #[cfg(feature = "prometheus")]
-            {
-                inc_inflight_slot_download(Self::RUNTIME_NAME);
-            }
+            permit.send(download_task_args);
         }
     }
 
-    async fn handle_data_plane_task_result(
-        &mut self,
-        task_id: task::Id,
-        result: Result<CompletedDownloadBlockTask, DownloadBlockError>,
-    ) -> Result<(), DownloadBlockError> {
-        let Some(task_meta) = self.data_plane_task_meta.remove(&task_id) else {
-            panic!("missing task meta")
-        };
-
-        #[cfg(feature = "prometheus")]
-        {
-            dec_inflight_slot_download(Self::RUNTIME_NAME);
-        }
-
-        let slot = task_meta.download_request.slot;
-        tracing::debug!("download task result received for slot {}", slot);
-        match result {
-            Ok(completed) => {
+    fn handle_download_result(&mut self, download_result: DownloadTaskResult) {
+        match download_result {
+            DownloadTaskResult::Ok(completed) => {
                 let CompletedDownloadBlockTask {
-                    total_event_downloaded,
+                    slot,
+                    block_uid: _,
+                    shard_idx,
+                    total_event_downloaded: _,
                 } = completed;
-                let elapsed = task_meta.scheduled_at.elapsed();
-
-                #[cfg(feature = "prometheus")]
-                {
-                    observe_slot_download_duration(Self::RUNTIME_NAME, elapsed);
-                    inc_slot_download_count(Self::RUNTIME_NAME);
-                    inc_total_event_downloaded(Self::RUNTIME_NAME, total_event_downloaded);
-                }
-
-                tracing::debug!(
-                    "downloaded slot {slot} in {elapsed:?}, total events: {total_event_downloaded}"
-                );
-                let _ = self.download_attempts.remove(&slot);
-                // TODO: Add support for sharded progress
-                self.sm.make_slot_download_progress(slot, 0);
+                self.sm.make_slot_download_progress(slot, shard_idx);
             }
-            Err(e) => {
-                #[cfg(feature = "prometheus")]
-                {
-                    inc_failed_slot_download_attempt(Self::RUNTIME_NAME);
-                }
-
-                match e {
-                    x @ (DownloadBlockError::Disconnected | DownloadBlockError::FailedDownload) => {
-                        // We need to retry it
-                        if task_meta.download_attempt >= self.max_slot_download_attempt {
-                            tracing::error!(
-                                "download slot {slot} failed: {x:?}, max attempts reached"
-                            );
-                            return Err(x);
-                        }
-                        let remaining_attempt = self
-                            .max_slot_download_attempt
-                            .saturating_sub(task_meta.download_attempt);
-                        tracing::debug!(
-                            "download slot {slot} failed: {x:?}, remaining attempts: {remaining_attempt}"
-                        );
-                        // Recreate the data plane bidi
-                        let t = Instant::now();
-
-                        tracing::debug!("data plane bidi rebuilt in {:?}", t.elapsed());
-
-                        let conn = self
-                            .data_plane_channel_vec
-                            .get_mut(task_meta.client_idx)
-                            .expect("should not be none");
-
-                        if task_meta.client_rev == conn.rev {
-                            let new_client = self
-                                .fumarole_connector
-                                .connect()
-                                .await
-                                .expect("failed to reconnect data plane client");
-                            conn.client = new_client;
-                        }
-
-                        tracing::debug!("Download slot {slot} failed, rescheduling for retry...");
-                        self.download_to_retry.push_back(task_meta.download_request);
-                    }
-                    DownloadBlockError::OutletDisconnected => {
-                        // Will automatically be handled in the `run` main loop.
-                        // so nothing to do.
-                        tracing::debug!("dragonsmouth outlet disconnected");
-                    }
-                    DownloadBlockError::BlockShardNotFound => {
-                        // TODO: I don't think it should ever happen, but lets panic first so we get notified by client if it ever happens.
-                        tracing::error!("Slot {slot} not found");
-                        panic!("slot {slot} not found");
-                    }
-                    DownloadBlockError::Fatal(e) => {
-                        panic!("fatal error: {e}");
-                    }
-                }
+            DownloadTaskResult::Err { slot, err } => {
+                // TODO add option to let user decide what to do, by default let it crash
+                panic!("Failed to download slot {slot}: {err:?}")
             }
         }
-        Ok(())
     }
 
     async fn commit_offset(&mut self) {
@@ -518,17 +303,6 @@ impl TokioFumeDragonsmouthRuntime {
         }
     }
 
-    async fn unsafe_cancel_all_tasks(&mut self) {
-        tracing::debug!("aborting all data plane tasks");
-        self.data_plane_tasks.abort_all();
-        self.data_plane_task_meta.clear();
-        self.download_attempts.clear();
-
-        while (self.data_plane_tasks.join_next().await).is_some() {
-            // Drain all tasks
-        }
-    }
-
     pub(crate) async fn run(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let inital_load_history_cmd = build_poll_history_cmd(None);
         self.control_plane_tx
@@ -566,15 +340,14 @@ impl TokioFumeDragonsmouthRuntime {
                         }
                     }
                 }
-                Some(result) = self.data_plane_tasks.join_next_with_id() => {
-                    let (task_id, download_result) = result.expect("data plane task set");
-                    let result = self.handle_data_plane_task_result(task_id, download_result).await;
-                    if let Err(e) = result {
-                        self.unsafe_cancel_all_tasks().await;
-                        if let DownloadBlockError::Fatal(e) = e {
-                            let _ = self.dragonsmouth_outlet.send(Err(e)).await;
+                maybe = self.download_task_runner_chans.download_result_rx.recv() => {
+                    match maybe {
+                        Some(result) => {
+                            self.handle_download_result(result);
+                        },
+                        None => {
+                            panic!("download task runner channel closed")
                         }
-                        break;
                     }
                 }
 
@@ -587,5 +360,436 @@ impl TokioFumeDragonsmouthRuntime {
         }
         tracing::debug!("fumarole runtime exiting");
         Ok(())
+    }
+}
+
+///
+/// Channels to interact with a "download task runner".
+///
+/// Instead of using Trait which does not work very well for Asynchronous Specs,
+/// we use channels to create polymorphic behaviour (indirection-through-channels),
+/// similar to how actor-based programming works.
+///
+pub struct DownloadTaskRunnerChannels {
+    ///
+    /// Where you send download task request to.
+    ///
+    pub download_task_queue_tx: mpsc::Sender<DownloadTaskArgs>,
+
+    ///
+    /// Sends command the download task runner.
+    ///
+    pub cnc_tx: mpsc::Sender<DownloadTaskRunnerCommand>,
+
+    ///
+    /// Where you get back feedback from download task result.
+    pub download_result_rx: mpsc::Receiver<DownloadTaskResult>,
+}
+
+pub enum DownloadTaskRunnerCommand {}
+
+///
+/// Download task runner that use gRPC protocol to download slot content.
+///
+/// It manages concurrent [`GrpcDownloadBlockTaskRun`] instance and route back
+/// download result to the requestor.
+///
+pub struct GrpcDownloadTaskRunner {
+    /// Tokio runtime handle to spawn download task on.
+    rt: tokio::runtime::Handle,
+
+    ///
+    /// Pool of gRPC channels
+    ///
+    data_plane_channel_vec: Vec<DataPlaneConn>,
+
+    ///
+    /// gRPC channel connector
+    ///
+    connector: FumaroleGrpcConnector,
+
+    ///
+    /// Sets of inflight download tasks
+    ///
+    tasks: JoinSet<Result<CompletedDownloadBlockTask, DownloadBlockError>>,
+    ///
+    /// Inflight download task metadata index
+    ///
+    task_meta: HashMap<task::Id, DataPlaneTaskMeta>,
+
+    ///
+    /// Command-and-Control channel to send command to the runner
+    ///
+    cnc_rx: mpsc::Receiver<DownloadTaskRunnerCommand>,
+
+    ///
+    /// Download task queue
+    ///
+    download_task_queue: mpsc::Receiver<DownloadTaskArgs>,
+
+    ///
+    /// Current inflight slow download attempt
+    ///
+    download_attempts: HashMap<Slot, usize>,
+
+    ///
+    /// The sink to send download task result to.
+    ///
+    outlet: mpsc::Sender<DownloadTaskResult>,
+
+    ///
+    /// The maximum download attempt per slot (how many download failure do we allow)
+    ///
+    max_download_attempt_per_slot: usize,
+}
+
+///
+/// The download task specification to use by the runner.
+///
+#[derive(Debug, Clone)]
+pub struct DownloadTaskArgs {
+    pub download_request: FumeDownloadRequest,
+    pub filters: Option<BlockFilters>,
+    pub dragonsmouth_outlet: mpsc::Sender<Result<SubscribeUpdate, tonic::Status>>,
+}
+
+pub(crate) struct DataPlaneConn {
+    permits: usize,
+    client: GrpcFumaroleClient,
+    rev: u64,
+}
+
+impl GrpcDownloadTaskRunner {
+    const RUNTIME_NAME: &'static str = "tokio_grpc_task_runner";
+
+    pub fn new(
+        rt: tokio::runtime::Handle,
+        data_plane_channel_vec: Vec<DataPlaneConn>,
+        connector: FumaroleGrpcConnector,
+        cnc_rx: mpsc::Receiver<DownloadTaskRunnerCommand>,
+        download_task_queue: mpsc::Receiver<DownloadTaskArgs>,
+        outlet: mpsc::Sender<DownloadTaskResult>,
+        max_download_attempt_by_slot: usize,
+    ) -> Self {
+        Self {
+            rt,
+            data_plane_channel_vec,
+            connector,
+            tasks: JoinSet::new(),
+            task_meta: HashMap::new(),
+            cnc_rx,
+            download_task_queue,
+            download_attempts: HashMap::new(),
+            outlet,
+            max_download_attempt_per_slot: max_download_attempt_by_slot,
+        }
+    }
+
+    ///
+    /// Always pick the client with the highest permit limit (least used)
+    ///
+    fn find_most_underloaded_client(&self) -> Option<usize> {
+        self.data_plane_channel_vec
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, conn)| conn.permits)
+            .filter(|(_, conn)| conn.has_permit())
+            .map(|(idx, _)| idx)
+    }
+
+    async fn handle_data_plane_task_result(
+        &mut self,
+        task_id: task::Id,
+        result: Result<CompletedDownloadBlockTask, DownloadBlockError>,
+    ) -> Result<(), DownloadBlockError> {
+        let Some(task_meta) = self.task_meta.remove(&task_id) else {
+            panic!("missing task meta")
+        };
+
+        #[cfg(feature = "prometheus")]
+        {
+            dec_inflight_slot_download(Self::RUNTIME_NAME);
+        }
+
+        let slot = task_meta.request.slot;
+        tracing::debug!("download task result received for slot {}", slot);
+
+        let state = self
+            .data_plane_channel_vec
+            .get_mut(task_meta.client_idx)
+            .expect("should not be none");
+        state.permits += 1;
+
+        match result {
+            Ok(completed) => {
+                let CompletedDownloadBlockTask {
+                    total_event_downloaded,
+                    slot,
+                    block_uid: _,
+                    shard_idx: _,
+                } = completed;
+                let elapsed = task_meta.scheduled_at.elapsed();
+
+                #[cfg(feature = "prometheus")]
+                {
+                    observe_slot_download_duration(Self::RUNTIME_NAME, elapsed);
+                    inc_slot_download_count(Self::RUNTIME_NAME);
+                    inc_total_event_downloaded(Self::RUNTIME_NAME, total_event_downloaded);
+                }
+
+                tracing::debug!(
+                    "downloaded slot {slot} in {elapsed:?}, total events: {total_event_downloaded}"
+                );
+                let _ = self.download_attempts.remove(&slot);
+                let _ = self.outlet.send(DownloadTaskResult::Ok(completed)).await;
+            }
+            Err(e) => {
+                #[cfg(feature = "prometheus")]
+                {
+                    inc_failed_slot_download_attempt(Self::RUNTIME_NAME);
+                }
+                let download_attempt = self
+                    .download_attempts
+                    .get(&slot)
+                    .expect("should track download attempt");
+
+                match e {
+                    x @ (DownloadBlockError::Disconnected | DownloadBlockError::FailedDownload) => {
+                        // We need to retry it
+                        if *download_attempt >= self.max_download_attempt_per_slot {
+                            tracing::error!(
+                                "download slot {slot} failed: {x:?}, max attempts reached"
+                            );
+                            return Err(x);
+                        }
+                        let remaining_attempt = self
+                            .max_download_attempt_per_slot
+                            .saturating_sub(*download_attempt);
+                        tracing::debug!(
+                            "download slot {slot} failed: {x:?}, remaining attempts: {remaining_attempt}"
+                        );
+                        // Recreate the data plane bidi
+                        let t = Instant::now();
+
+                        tracing::debug!("data plane bidi rebuilt in {:?}", t.elapsed());
+                        let conn = self
+                            .data_plane_channel_vec
+                            .get_mut(task_meta.client_idx)
+                            .expect("should not be none");
+
+                        if task_meta.client_rev == conn.rev {
+                            let new_client = self
+                                .connector
+                                .connect()
+                                .await
+                                .expect("failed to reconnect data plane client");
+                            conn.client = new_client;
+                            conn.rev += 1;
+                        }
+
+                        tracing::debug!("Download slot {slot} failed, rescheduling for retry...");
+                        let task_spec = DownloadTaskArgs {
+                            download_request: task_meta.request,
+                            filters: task_meta.filters,
+                            dragonsmouth_outlet: task_meta.dragonsmouth_outlet,
+                        };
+                        // Reschedule download immediately
+                        self.spawn_grpc_download_task(task_meta.client_idx, task_spec);
+                    }
+                    DownloadBlockError::OutletDisconnected => {
+                        // Will automatically be handled in the `run` main loop.
+                        // so nothing to do.
+                        tracing::debug!("dragonsmouth outlet disconnected");
+                    }
+                    DownloadBlockError::BlockShardNotFound => {
+                        // TODO: I don't think it should ever happen, but lets panic first so we get notified by client if it ever happens.
+                        tracing::error!("Slot {slot} not found");
+                        let _ = self
+                            .outlet
+                            .send(DownloadTaskResult::Err {
+                                slot: slot,
+                                err: DownloadBlockError::BlockShardNotFound,
+                            })
+                            .await;
+                    }
+                    DownloadBlockError::Fatal(e) => return Err(DownloadBlockError::Fatal(e)),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn spawn_grpc_download_task(&mut self, client_idx: usize, task_spec: DownloadTaskArgs) {
+        let conn = self
+            .data_plane_channel_vec
+            .get_mut(client_idx)
+            .expect("should not be none");
+
+        let client = conn.client.clone();
+        let client_rev = conn.rev;
+
+        let DownloadTaskArgs {
+            download_request,
+            filters,
+            dragonsmouth_outlet,
+        } = task_spec;
+        let slot = download_request.slot;
+        let task = GrpcDownloadBlockTaskRun {
+            download_request: download_request.clone(),
+            client,
+            filters: filters.clone(),
+            dragonsmouth_oulet: dragonsmouth_outlet.clone(),
+        };
+        let ah = self.tasks.spawn_on(task.run(), &self.rt);
+        let task_meta = DataPlaneTaskMeta {
+            client_idx,
+            request: download_request.clone(),
+            filters,
+            dragonsmouth_outlet,
+            scheduled_at: Instant::now(),
+            client_rev,
+        };
+        self.download_attempts
+            .entry(slot)
+            .and_modify(|e| *e += 1)
+            .or_insert(1);
+        conn.permits.checked_sub(1).expect("underflow");
+        self.task_meta.insert(ah.id(), task_meta);
+    }
+
+    pub(crate) async fn run(mut self) -> Result<(), DownloadBlockError> {
+        while !self.outlet.is_closed() {
+            let maybe_available_client_idx = self.find_most_underloaded_client();
+            tokio::select! {
+                maybe = self.cnc_rx.recv() => {
+                    match maybe {
+                        Some(cmd) => {
+                            todo!()
+                        },
+                        None => {
+                            tracing::debug!("command channel disconnected");
+                            break;
+                        }
+                    }
+                }
+                maybe_download_task = self.download_task_queue.recv(), if maybe_available_client_idx.is_some() => {
+                    match maybe_download_task {
+                        Some(download_task) => {
+                            let Some(client_idx) = maybe_available_client_idx else {
+                                unreachable!("client idx is some")
+                            };
+                            self.spawn_grpc_download_task(client_idx, download_task);
+                        }
+                        None => {
+                            tracing::debug!("download task queue disconnected");
+                            break;
+                        }
+                    }
+                }
+                Some(result) = self.tasks.join_next_with_id() => {
+                    let (task_id, result) = result.expect("should never panic");
+                    self.handle_data_plane_task_result(task_id, result).await?;
+                }
+            }
+        }
+        tracing::debug!("Closing GrpcDownloadTaskRunner loop");
+        Ok(())
+    }
+}
+
+pub(crate) struct GrpcDownloadBlockTaskRun {
+    download_request: FumeDownloadRequest,
+    client: GrpcFumaroleClient,
+    filters: Option<BlockFilters>,
+    dragonsmouth_oulet: mpsc::Sender<Result<SubscribeUpdate, tonic::Status>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DownloadBlockError {
+    #[error("download block task disconnected")]
+    Disconnected,
+    #[error("dragonsmouth outlet disconnected")]
+    OutletDisconnected,
+    #[error("block shard not found")]
+    BlockShardNotFound,
+    #[error("error during transportation or processing")]
+    FailedDownload,
+    #[error("unknown error: {0}")]
+    Fatal(#[from] tonic::Status),
+}
+
+fn map_tonic_error_code_to_download_block_error(code: Code) -> DownloadBlockError {
+    match code {
+        Code::NotFound => DownloadBlockError::BlockShardNotFound,
+        Code::Unavailable => DownloadBlockError::Disconnected,
+        Code::Internal
+        | Code::Aborted
+        | Code::DataLoss
+        | Code::ResourceExhausted
+        | Code::Unknown
+        | Code::Cancelled => DownloadBlockError::FailedDownload,
+        Code::Ok => {
+            unreachable!("ok")
+        }
+        Code::InvalidArgument => {
+            panic!("invalid argument");
+        }
+        Code::DeadlineExceeded => DownloadBlockError::FailedDownload,
+        rest => DownloadBlockError::Fatal(tonic::Status::new(rest, "unknown error")),
+    }
+}
+
+pub(crate) struct CompletedDownloadBlockTask {
+    slot: u64,
+    block_uid: [u8; 16],
+    shard_idx: FumeShardIdx,
+    total_event_downloaded: usize,
+}
+
+impl GrpcDownloadBlockTaskRun {
+    async fn run(mut self) -> Result<CompletedDownloadBlockTask, DownloadBlockError> {
+        let request = DownloadBlockShard {
+            blockchain_id: self.download_request.blockchain_id.to_vec(),
+            block_uid: self.download_request.block_uid.to_vec(),
+            shard_idx: 0,
+            block_filters: self.filters,
+        };
+        let resp = self.client.download_block(request).await;
+
+        let mut rx = match resp {
+            Ok(resp) => resp.into_inner(),
+            Err(e) => {
+                return Err(map_tonic_error_code_to_download_block_error(e.code()));
+            }
+        };
+        let mut total_event_downloaded = 0;
+        while let Some(data) = rx.next().await {
+            let resp = data
+                .map_err(|e| {
+                    let code = e.code();
+                    tracing::error!("download block error: {code:?}");
+                    map_tonic_error_code_to_download_block_error(code)
+                })?
+                .response
+                .expect("missing response");
+
+            match resp {
+                data_response::Response::Update(update) => {
+                    total_event_downloaded += 1;
+                    if self.dragonsmouth_oulet.send(Ok(update)).await.is_err() {
+                        return Err(DownloadBlockError::OutletDisconnected);
+                    }
+                }
+                data_response::Response::BlockShardDownloadFinish(_) => {
+                    return Ok(CompletedDownloadBlockTask {
+                        slot: self.download_request.slot,
+                        block_uid: self.download_request.block_uid,
+                        shard_idx: 0,
+                        total_event_downloaded,
+                    });
+                }
+            }
+        }
+        Err(DownloadBlockError::FailedDownload)
     }
 }

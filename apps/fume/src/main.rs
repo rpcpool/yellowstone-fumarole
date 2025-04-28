@@ -284,13 +284,13 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
 
     // This request listen for all account updates and transaction updates
     let request = SubscribeRequest {
-        accounts: HashMap::from([("f1".to_owned(), SubscribeRequestFilterAccounts::default())]),
+        // accounts: HashMap::from([("f1".to_owned(), SubscribeRequestFilterAccounts::default())]),
         transactions: HashMap::from([(
             "f1".to_owned(),
             SubscribeRequestFilterTransactions::default(),
         )]),
         slots: HashMap::from([("f1".to_owned(), SubscribeRequestFilterSlots::default())]),
-        commitment: Some(CommitmentLevel::Finalized.into()),
+        // commitment: Some(CommitmentLevel::Finalized.into()),
         ..Default::default()
     };
 
@@ -308,7 +308,7 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     let DragonsmouthAdapterSession {
         sink: _,
         mut source,
-        runtime_handle: _,
+        fumarole_handle: _,
     } = dragonsmouth_session;
 
     let mut shutdown = create_shutdown();

@@ -118,8 +118,12 @@ pub(crate) mod util;
 
 use {
     config::FumaroleConfig,
+    futures::future::{select, Either},
     proto::control_response::Response,
-    runtime::{tokio::TokioFumeDragonsmouthRuntime, FumaroleSM},
+    runtime::{
+        tokio::{DownloadTaskRunnerChannels, GrpcDownloadTaskRunner, TokioFumeDragonsmouthRuntime},
+        FumaroleSM,
+    },
     std::{
         collections::HashMap,
         num::{NonZeroU8, NonZeroUsize},
@@ -224,7 +228,7 @@ pub const DEFAULT_COMMIT_INTERVAL: Duration = Duration::from_secs(5);
 ///
 /// Default maximum number of consecutive failed slot download attempts before failing the fumarole session.
 ///
-pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: u8 = 3;
+pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: usize = 3;
 
 ///
 /// Default number of parallel data streams (TCP connections) to open to fumarole.
@@ -285,7 +289,7 @@ pub struct FumaroleSubscribeConfig {
     ///
     /// Maximum number of consecutive failed slot download attempts before failing the fumarole session.
     ///
-    pub max_failed_slot_download_attempt: u8,
+    pub max_failed_slot_download_attempt: usize,
 
     ///
     /// Capacity of each data channel for the fumarole client
@@ -354,8 +358,7 @@ pub struct DragonsmouthAdapterSession {
     /// If you want to stop the fumarole session, you need to drop the [`DragonsmouthAdapterSession::source`] channel,
     /// then you could wait for the handle to finish.
     ///
-    pub runtime_handle:
-        tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+    pub fumarole_handle: tokio::task::JoinHandle<()>,
 }
 
 fn string_pairs_to_metadata_header(
@@ -501,31 +504,57 @@ impl FumaroleClient {
             data_plane_channel_vec.push(conn);
         }
 
+        let (download_task_runner_cnc_tx, download_task_runner_cnc_rx) = mpsc::channel(10);
+        // Make sure the channel capacity is really low, since the grpc runner already implements its own concurrency control
+        let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(10);
+        let (download_result_tx, download_result_rx) = mpsc::channel(10);
+        let grpc_download_task_runner = GrpcDownloadTaskRunner::new(
+            handle.clone(),
+            data_plane_channel_vec,
+            self.connector.clone(),
+            download_task_runner_cnc_rx,
+            download_task_queue_rx,
+            download_result_tx,
+            config.max_failed_slot_download_attempt,
+        );
+
+        let download_task_runner_chans = DownloadTaskRunnerChannels {
+            download_task_queue_tx,
+            cnc_tx: download_task_runner_cnc_tx,
+            download_result_rx,
+        };
+
         let tokio_rt = TokioFumeDragonsmouthRuntime {
             rt: handle.clone(),
             sm,
             dragonsmouth_bidi: dm_bidi,
             subscribe_request: request,
-            fumarole_connector: self.connector.clone(),
+            download_task_runner_chans,
             consumer_group_name: consumer_group_name.as_ref().to_string(),
             control_plane_tx: fume_control_plane_tx,
             control_plane_rx: fume_control_plane_rx,
-            data_plane_channel_vec,
-            data_plane_tasks: Default::default(),
-            data_plane_task_meta: Default::default(),
             dragonsmouth_outlet,
-            download_to_retry: Default::default(),
-            download_attempts: Default::default(),
-            max_slot_download_attempt: config.max_failed_slot_download_attempt,
             commit_interval: config.commit_interval,
             last_commit: Instant::now(),
         };
-
-        let jh = handle.spawn(tokio_rt.run());
+        let download_task_runner_jh = handle.spawn(grpc_download_task_runner.run());
+        let fumarole_rt_jh = handle.spawn(tokio_rt.run());
+        let fut = async move {
+            let either = select(download_task_runner_jh, fumarole_rt_jh).await;
+            match either {
+                Either::Left((result, _)) => {
+                    let _ = result.expect("fumarole download task runner failed");
+                }
+                Either::Right((result, _)) => {
+                    let _ = result.expect("fumarole runtime failed");
+                }
+            }
+        };
+        let fumarole_handle = handle.spawn(fut);
         let dm_session = DragonsmouthAdapterSession {
             sink: dm_tx,
             source: dragonsmouth_inlet,
-            runtime_handle: jh,
+            fumarole_handle,
         };
         Ok(dm_session)
     }

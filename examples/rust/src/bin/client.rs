@@ -77,7 +77,7 @@ async fn subscribe(args: SubscribeArgs, config: FumaroleConfig) {
     let DragonsmouthAdapterSession {
         sink: _,
         mut source,
-        runtime_handle: _,
+        fumarole_handle: _,
     } = dragonsmouth_session;
 
     while let Some(result) = source.recv().await {
