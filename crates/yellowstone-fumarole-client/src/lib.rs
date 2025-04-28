@@ -525,7 +525,6 @@ impl FumaroleClient {
         };
 
         let tokio_rt = TokioFumeDragonsmouthRuntime {
-            rt: handle.clone(),
             sm,
             dragonsmouth_bidi: dm_bidi,
             subscribe_request: request,

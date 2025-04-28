@@ -284,7 +284,7 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
 
     // This request listen for all account updates and transaction updates
     let request = SubscribeRequest {
-        // accounts: HashMap::from([("f1".to_owned(), SubscribeRequestFilterAccounts::default())]),
+        accounts: HashMap::from([("f1".to_owned(), SubscribeRequestFilterAccounts::default())]),
         transactions: HashMap::from([(
             "f1".to_owned(),
             SubscribeRequestFilterTransactions::default(),

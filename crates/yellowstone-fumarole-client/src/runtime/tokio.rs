@@ -31,19 +31,6 @@ use {
 };
 
 ///
-/// Holds information about on-going data plane task.
-///
-#[derive(Debug, Clone)]
-pub(crate) struct DataPlaneTaskMeta {
-    client_idx: usize,
-    request: FumeDownloadRequest,
-    filters: Option<BlockFilters>,
-    dragonsmouth_outlet: mpsc::Sender<Result<geyser::SubscribeUpdate, tonic::Status>>,
-    scheduled_at: Instant,
-    client_rev: u64,
-}
-
-///
 /// Mimics Dragonsmouth subscribe request bidirectional stream.
 ///
 pub struct DragonsmouthSubscribeRequestBidi {
@@ -66,23 +53,6 @@ impl DataPlaneConn {
     }
 }
 
-pub enum DownloadTaskSenderError {
-    NoPermit,
-    Disconnected,
-}
-
-pub struct DownloadPermit {
-    drop: Option<Box<dyn FnOnce() + Send>>,
-}
-
-impl Drop for DownloadPermit {
-    fn drop(&mut self) {
-        if let Some(drop) = self.drop.take() {
-            drop();
-        }
-    }
-}
-
 pub enum DownloadTaskResult {
     Ok(CompletedDownloadBlockTask),
     Err { slot: Slot, err: DownloadBlockError },
@@ -91,8 +61,9 @@ pub enum DownloadTaskResult {
 ///
 /// Fumarole runtime based on Tokio outputting Dragonsmouth only events.
 ///
+/// Drives the Fumarole State-Machine ([`FumaroleSM`]) using Async I/O.
+///
 pub(crate) struct TokioFumeDragonsmouthRuntime {
-    pub rt: tokio::runtime::Handle,
     pub sm: FumaroleSM,
     pub download_task_runner_chans: DownloadTaskRunnerChannels,
     pub dragonsmouth_bidi: DragonsmouthSubscribeRequestBidi,
@@ -387,6 +358,19 @@ pub struct DownloadTaskRunnerChannels {
 }
 
 pub enum DownloadTaskRunnerCommand {}
+
+///
+/// Holds information about on-going data plane task.
+///
+#[derive(Debug, Clone)]
+pub(crate) struct DataPlaneTaskMeta {
+    client_idx: usize,
+    request: FumeDownloadRequest,
+    filters: Option<BlockFilters>,
+    dragonsmouth_outlet: mpsc::Sender<Result<geyser::SubscribeUpdate, tonic::Status>>,
+    scheduled_at: Instant,
+    client_rev: u64,
+}
 
 ///
 /// Download task runner that use gRPC protocol to download slot content.
@@ -741,6 +725,7 @@ fn map_tonic_error_code_to_download_block_error(code: Code) -> DownloadBlockErro
 
 pub(crate) struct CompletedDownloadBlockTask {
     slot: u64,
+    #[allow(dead_code)]
     block_uid: [u8; 16],
     shard_idx: FumeShardIdx,
     total_event_downloaded: usize,
