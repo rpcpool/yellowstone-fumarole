@@ -223,7 +223,7 @@ pub const DEFAULT_DRAGONSMOUTH_CAPACITY: usize = 10000;
 ///
 /// Default Fumarole commit offset interval
 ///
-pub const DEFAULT_COMMIT_INTERVAL: Duration = Duration::from_secs(5);
+pub const DEFAULT_COMMIT_INTERVAL: Duration = Duration::from_secs(60);
 
 ///
 /// Default maximum number of consecutive failed slot download attempts before failing the fumarole session.

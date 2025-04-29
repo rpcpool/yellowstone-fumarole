@@ -8,7 +8,7 @@ use {
     solana_sdk::clock::Slot,
     std::{
         cmp::Reverse,
-        collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque},
+        collections::{hash_map, BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque},
     },
     yellowstone_grpc_proto::geyser::{self, CommitmentLevel},
 };
@@ -182,8 +182,8 @@ impl FumaroleSM {
     ///
     pub fn update_committed_offset(&mut self, offset: FumeOffset) {
         assert!(
-            offset > self.last_committed_offset,
-            "offset must be greater than last committed offset"
+            offset >= self.last_committed_offset,
+            "offset must be greater than or equal to last committed offset"
         );
         self.last_committed_offset = offset;
     }
@@ -357,7 +357,7 @@ impl FumaroleSM {
                         dead_error,
                     });
 
-                if !self.inflight_slot_shard_download.contains_key(&slot) {
+                if let hash_map::Entry::Vacant(e) = self.inflight_slot_shard_download.entry(slot) {
                     // This slot has not been schedule for download yet
                     let download_request = FumeDownloadRequest {
                         slot,
@@ -370,8 +370,7 @@ impl FumaroleSM {
                         num_shards,
                         shard_remaining: vec![false; num_shards as usize],
                     };
-                    self.inflight_slot_shard_download
-                        .insert(slot, download_progress);
+                    e.insert(download_progress);
                     return Some(download_request);
                 }
             }

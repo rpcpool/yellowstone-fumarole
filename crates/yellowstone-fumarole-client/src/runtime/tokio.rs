@@ -40,7 +40,7 @@ pub struct DragonsmouthSubscribeRequestBidi {
 }
 
 impl DataPlaneConn {
-    pub fn new(client: GrpcFumaroleClient, concurrency_limit: usize) -> Self {
+    pub const fn new(client: GrpcFumaroleClient, concurrency_limit: usize) -> Self {
         Self {
             permits: concurrency_limit,
             client,
@@ -48,7 +48,7 @@ impl DataPlaneConn {
         }
     }
 
-    fn has_permit(&self) -> bool {
+    const fn has_permit(&self) -> bool {
         self.permits > 0
     }
 }
@@ -116,6 +116,11 @@ impl From<SubscribeRequest> for BlockFilters {
             blocks_meta: val.blocks_meta,
         }
     }
+}
+
+enum LoopInstruction {
+    Continue,
+    ErrorStop,
 }
 
 impl TokioFumeDragonsmouthRuntime {
@@ -213,16 +218,22 @@ impl TokioFumeDragonsmouthRuntime {
         }
     }
 
+    async unsafe fn force_commit_offset(&mut self) {
+        tracing::debug!("committing offset {}", self.sm.committable_offset);
+        self.control_plane_tx
+            .send(build_commit_offset_cmd(self.sm.committable_offset))
+            .await
+            .expect("failed to commit offset");
+        #[cfg(feature = "prometheus")]
+        {
+            inc_offset_commitment_count(Self::RUNTIME_NAME);
+        }
+    }
+
     async fn commit_offset(&mut self) {
         if self.sm.last_committed_offset < self.sm.committable_offset {
-            tracing::debug!("committing offset {}", self.sm.committable_offset);
-            self.control_plane_tx
-                .send(build_commit_offset_cmd(self.sm.committable_offset))
-                .await
-                .expect("failed to commit offset");
-            #[cfg(feature = "prometheus")]
-            {
-                inc_offset_commitment_count(Self::RUNTIME_NAME);
+            unsafe {
+                self.force_commit_offset().await;
             }
         }
 
@@ -274,12 +285,35 @@ impl TokioFumeDragonsmouthRuntime {
         }
     }
 
+    async fn handle_control_plane_resp(
+        &mut self,
+        result: Result<proto::ControlResponse, tonic::Status>,
+    ) -> LoopInstruction {
+        match result {
+            Ok(control_response) => {
+                self.handle_control_response(control_response);
+                LoopInstruction::Continue
+            }
+            Err(e) => {
+                // TODO implement auto-reconnect on Unavailable
+                let _ = self.dragonsmouth_outlet.send(Err(e)).await;
+                LoopInstruction::ErrorStop
+            }
+        }
+    }
+
     pub(crate) async fn run(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let inital_load_history_cmd = build_poll_history_cmd(None);
+
         self.control_plane_tx
             .send(inital_load_history_cmd)
             .await
             .expect("disconnected");
+
+        // Always start to commit offset, to make sure not another instance is committing to the same offset.
+        unsafe {
+            self.force_commit_offset().await;
+        }
 
         loop {
             if self.dragonsmouth_outlet.is_closed() {
@@ -298,12 +332,16 @@ impl TokioFumeDragonsmouthRuntime {
                 }
                 control_response = self.control_plane_rx.recv() => {
                     match control_response {
-                        Some(Ok(control_response)) => {
-                            self.handle_control_response(control_response);
-                        }
-                        Some(Err(e)) => {
-                            tracing::error!("control plane error: {e}");
-                            return Err(Box::new(RuntimeError::GrpcError(e)));
+                        Some(result) => {
+                            match self.handle_control_plane_resp(result).await {
+                                LoopInstruction::Continue => {
+                                    // continue
+                                }
+                                LoopInstruction::ErrorStop => {
+                                    tracing::debug!("control plane error");
+                                    break;
+                                }
+                            }
                         }
                         None => {
                             tracing::debug!("control plane disconnected");
@@ -591,7 +629,7 @@ impl GrpcDownloadTaskRunner {
                         let _ = self
                             .outlet
                             .send(DownloadTaskResult::Err {
-                                slot: slot,
+                                slot,
                                 err: DownloadBlockError::BlockShardNotFound,
                             })
                             .await;

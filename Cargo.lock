@@ -1232,6 +1232,7 @@ dependencies = [
  "serde_yaml",
  "solana-sdk",
  "tabled",
+ "thiserror",
  "tokio",
  "tokio-stream",
  "tonic",

@@ -73,8 +73,8 @@ message Pong {
 
 message DataCommand {
   oneof command {
-    BlockFilters filters = 1;
-    DownloadBlockShard download_block_shard = 2;
+    DownloadBlockShard download_block_shard = 1;
+    BlockFilters filter_update = 2;
   } 
 }
 

@@ -16,6 +16,7 @@ futures = { workspace = true }
 solana-sdk = { workspace = true }
 serde_yaml = { workspace = true }
 tabled = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
