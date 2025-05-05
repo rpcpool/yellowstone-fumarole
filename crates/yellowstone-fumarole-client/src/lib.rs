@@ -126,7 +126,7 @@ use {
     },
     std::{
         collections::HashMap,
-        num::{NonZeroU8, NonZeroUsize},
+        num::NonZeroUsize,
         time::{Duration, Instant},
     },
     tokio::sync::mpsc,
@@ -233,7 +233,7 @@ pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: usize = 3;
 ///
 /// Default number of parallel data streams (TCP connections) to open to fumarole.
 ///
-pub const DEFAULT_PARA_DATA_STREAMS: u8 = 3;
+// const _DEFAULT_PARA_DATA_STREAMS: u8 = 3; /**TODO: enable this after beta*/
 
 ///
 /// Default maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
@@ -274,7 +274,7 @@ pub struct FumaroleSubscribeConfig {
     ///
     /// Number of parallel data streams (TCP connections) to open to fumarole
     ///
-    pub num_data_plane_tcp_connections: NonZeroU8,
+    // pub num_data_plane_tcp_connections: NonZeroU8, /*TODO: enable this after beta */
 
     ///
     /// Maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
@@ -300,7 +300,7 @@ pub struct FumaroleSubscribeConfig {
 impl Default for FumaroleSubscribeConfig {
     fn default() -> Self {
         Self {
-            num_data_plane_tcp_connections: NonZeroU8::new(DEFAULT_PARA_DATA_STREAMS).unwrap(),
+            // num_data_plane_tcp_connections: NonZeroU8::new(DEFAULT_PARA_DATA_STREAMS).unwrap(), /**THIS FEATURE WILL BE DONE AFTER BETA */
             concurrent_download_limit_per_tcp: NonZeroUsize::new(
                 DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
             )
@@ -501,9 +501,9 @@ impl FumaroleClient {
             rx: dm_rx,
         };
 
-        let mut data_plane_channel_vec =
-            Vec::with_capacity(config.num_data_plane_tcp_connections.get() as usize);
-        for _ in 0..config.num_data_plane_tcp_connections.get() {
+        let mut data_plane_channel_vec = Vec::with_capacity(1);
+        // TODO: support config.num_data_plane_tcp_connections
+        for _ in 0..1 {
             let client = self
                 .connector
                 .connect()
@@ -525,6 +525,7 @@ impl FumaroleClient {
             download_task_queue_rx,
             download_result_tx,
             config.max_failed_slot_download_attempt,
+            request.clone(),
         );
 
         let download_task_runner_chans = DownloadTaskRunnerChannels {

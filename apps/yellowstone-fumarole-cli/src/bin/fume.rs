@@ -4,8 +4,9 @@ use {
     solana_sdk::{bs58, pubkey::Pubkey},
     std::{
         collections::HashMap,
+        fmt,
         io::{stderr, stdout, IsTerminal},
-        num::{NonZeroU8, NonZeroUsize},
+        num::NonZeroUsize,
         path::PathBuf,
         str::FromStr,
         time::Duration,
@@ -111,12 +112,12 @@ impl FromStr for CommitmentOption {
     }
 }
 
-impl ToString for CommitmentOption {
-    fn to_string(&self) -> String {
+impl fmt::Display for CommitmentOption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CommitmentOption::Finalized => "finalized".to_string(),
-            CommitmentOption::Confirmed => "confirmed".to_string(),
-            CommitmentOption::Processed => "processed".to_string(),
+            CommitmentOption::Finalized => write!(f, "finalized"),
+            CommitmentOption::Confirmed => write!(f, "confirmed"),
+            CommitmentOption::Processed => write!(f, "processed"),
         }
     }
 }
@@ -159,10 +160,10 @@ fn summarize_account(account: SubscribeUpdateAccount) -> Option<String> {
     // let pubkey = Pubkey::try_from(account.pubkey).expect("Failed to parse pubkey");
     // let owner = Pubkey::try_from(account.owner).expect("Failed to parse owner");
     let tx_sig = account.txn_signature;
-    let tx_sig = if tx_sig.is_none() {
-        "None".to_string()
+    let tx_sig = if let Some(tx_sig_bytes) = tx_sig {
+        bs58::encode(tx_sig_bytes).into_string()
     } else {
-        bs58::encode(tx_sig.unwrap()).into_string()
+        "None".to_string()
     };
     Some(format!("account,{slot},{tx_sig}"))
 }
@@ -386,7 +387,6 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
 
     println!("Subscribing to consumer group {}", cg_name);
     let subscribe_config = FumaroleSubscribeConfig {
-        num_data_plane_tcp_connections: NonZeroU8::new(1).unwrap(),
         concurrent_download_limit_per_tcp: NonZeroUsize::new(1).unwrap(),
         commit_interval: Duration::from_secs(1),
         ..Default::default()
@@ -487,19 +487,14 @@ async fn test_config(mut fumarole_client: FumaroleClient) {
                 version.version
             );
         }
-        Err(e) => {
-            match e.code() {
-                Code::Unauthenticated => {
-                    eprintln!(
-                        "Missing authentication token or invalid token in configuration file"
-                    );
-                }
-                _ => {
-                    eprintln!("Failed to connect to fumarole: {}", e);
-                }
+        Err(e) => match e.code() {
+            Code::Unauthenticated => {
+                eprintln!("Missing authentication token or invalid token in configuration file");
             }
-            return;
-        }
+            _ => {
+                eprintln!("Failed to connect to fumarole: {}", e);
+            }
+        },
     }
 }
 

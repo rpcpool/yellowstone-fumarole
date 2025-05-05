@@ -29,14 +29,6 @@ lazy_static! {
         &["runtime"],
     )
     .unwrap();
-    pub(crate) static ref SLOT_DOWNLOAD_QUEUE_SIZE: IntGaugeVec = IntGaugeVec::new(
-        Opts::new(
-            "fumarole_slot_download_queue",
-            "Number slot download requests in the queue, waiting to be downloaded",
-        ),
-        &["runtime"],
-    )
-    .unwrap();
     pub(crate) static ref SLOT_DOWNLOAD_DURATION: HistogramVec = HistogramVec::new(
         HistogramOpts::new(
             "fumarole_slot_download_duration_ms",
@@ -115,12 +107,6 @@ pub(crate) fn dec_inflight_slot_download(name: impl AsRef<str>) {
         .dec();
 }
 
-pub(crate) fn set_slot_download_queue_size(name: impl AsRef<str>, size: usize) {
-    SLOT_DOWNLOAD_QUEUE_SIZE
-        .with_label_values(&[name.as_ref()])
-        .set(size as i64);
-}
-
 pub(crate) fn inc_offset_commitment_count(name: impl AsRef<str>) {
     OFFSET_COMMITMENT_COUNT
         .with_label_values(&[name.as_ref()])
@@ -148,9 +134,6 @@ pub fn register_metrics(registry: &prometheus::Registry) {
         .unwrap();
     registry
         .register(Box::new(INFLIGHT_SLOT_DOWNLOAD.clone()))
-        .unwrap();
-    registry
-        .register(Box::new(SLOT_DOWNLOAD_QUEUE_SIZE.clone()))
         .unwrap();
     registry
         .register(Box::new(SLOT_DOWNLOAD_DURATION.clone()))

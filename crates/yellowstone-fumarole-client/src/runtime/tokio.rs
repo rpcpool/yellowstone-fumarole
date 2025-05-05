@@ -2,7 +2,7 @@
 use crate::metrics::{
     dec_inflight_slot_download, inc_failed_slot_download_attempt, inc_inflight_slot_download,
     inc_offset_commitment_count, inc_slot_download_count, observe_slot_download_duration,
-    set_max_slot_detected, set_slot_download_queue_size,
+    set_max_slot_detected,
 };
 use {
     super::{FumaroleSM, FumeDownloadRequest, FumeOffset, FumeShardIdx},
@@ -193,7 +193,6 @@ impl TokioFumeDragonsmouthRuntime {
             };
             let download_task_args = DownloadTaskArgs {
                 download_request,
-                filters: Some(self.subscribe_request.clone().into()),
                 dragonsmouth_outlet: self.dragonsmouth_outlet.clone(),
             };
             permit.send(download_task_args);
@@ -302,6 +301,17 @@ impl TokioFumeDragonsmouthRuntime {
         }
     }
 
+    async fn handle_new_subscribe_request(&mut self, subscribe_request: SubscribeRequest) {
+        self.subscribe_request = subscribe_request;
+        self.download_task_runner_chans
+            .cnc_tx
+            .send(DownloadTaskRunnerCommand::UpdateSubscribeRequest(
+                self.subscribe_request.clone(),
+            ))
+            .await
+            .expect("failed to send subscribe request");
+    }
+
     pub(crate) async fn run(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let inital_load_history_cmd = build_poll_history_cmd(None);
 
@@ -328,7 +338,8 @@ impl TokioFumeDragonsmouthRuntime {
             tokio::select! {
                 Some(subscribe_request) = self.dragonsmouth_bidi.rx.recv() => {
                     tracing::debug!("dragonsmouth subscribe request received");
-                    self.subscribe_request = subscribe_request
+                    // self.subscribe_request = subscribe_request
+                    self.handle_new_subscribe_request(subscribe_request).await;
                 }
                 control_response = self.control_plane_rx.recv() => {
                     match control_response {
@@ -395,7 +406,9 @@ pub struct DownloadTaskRunnerChannels {
     pub download_result_rx: mpsc::Receiver<DownloadTaskResult>,
 }
 
-pub enum DownloadTaskRunnerCommand {}
+pub enum DownloadTaskRunnerCommand {
+    UpdateSubscribeRequest(SubscribeRequest),
+}
 
 ///
 /// Holds information about on-going data plane task.
@@ -404,7 +417,6 @@ pub enum DownloadTaskRunnerCommand {}
 pub(crate) struct DataPlaneTaskMeta {
     client_idx: usize,
     request: FumeDownloadRequest,
-    filters: Option<BlockFilters>,
     dragonsmouth_outlet: mpsc::Sender<Result<geyser::SubscribeUpdate, tonic::Status>>,
     scheduled_at: Instant,
     client_rev: u64,
@@ -463,6 +475,9 @@ pub struct GrpcDownloadTaskRunner {
     /// The maximum download attempt per slot (how many download failure do we allow)
     ///
     max_download_attempt_per_slot: usize,
+
+    /// The subscribe request to use for the download task
+    subscribe_request: SubscribeRequest,
 }
 
 ///
@@ -471,7 +486,6 @@ pub struct GrpcDownloadTaskRunner {
 #[derive(Debug, Clone)]
 pub struct DownloadTaskArgs {
     pub download_request: FumeDownloadRequest,
-    pub filters: Option<BlockFilters>,
     pub dragonsmouth_outlet: mpsc::Sender<Result<SubscribeUpdate, tonic::Status>>,
 }
 
@@ -484,6 +498,7 @@ pub(crate) struct DataPlaneConn {
 impl GrpcDownloadTaskRunner {
     const RUNTIME_NAME: &'static str = "tokio_grpc_task_runner";
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         rt: tokio::runtime::Handle,
         data_plane_channel_vec: Vec<DataPlaneConn>,
@@ -492,6 +507,7 @@ impl GrpcDownloadTaskRunner {
         download_task_queue: mpsc::Receiver<DownloadTaskArgs>,
         outlet: mpsc::Sender<DownloadTaskResult>,
         max_download_attempt_by_slot: usize,
+        subscribe_request: SubscribeRequest,
     ) -> Self {
         Self {
             rt,
@@ -504,13 +520,14 @@ impl GrpcDownloadTaskRunner {
             download_attempts: HashMap::new(),
             outlet,
             max_download_attempt_per_slot: max_download_attempt_by_slot,
+            subscribe_request,
         }
     }
 
     ///
     /// Always pick the client with the highest permit limit (least used)
     ///
-    fn find_most_underloaded_client(&self) -> Option<usize> {
+    fn find_least_use_client(&self) -> Option<usize> {
         self.data_plane_channel_vec
             .iter()
             .enumerate()
@@ -612,7 +629,6 @@ impl GrpcDownloadTaskRunner {
                         tracing::debug!("Download slot {slot} failed, rescheduling for retry...");
                         let task_spec = DownloadTaskArgs {
                             download_request: task_meta.request,
-                            filters: task_meta.filters,
                             dragonsmouth_outlet: task_meta.dragonsmouth_outlet,
                         };
                         // Reschedule download immediately
@@ -652,21 +668,20 @@ impl GrpcDownloadTaskRunner {
 
         let DownloadTaskArgs {
             download_request,
-            filters,
+            // filters,
             dragonsmouth_outlet,
         } = task_spec;
         let slot = download_request.slot;
         let task = GrpcDownloadBlockTaskRun {
             download_request: download_request.clone(),
             client,
-            filters: filters.clone(),
+            filters: Some(self.subscribe_request.clone().into()),
             dragonsmouth_oulet: dragonsmouth_outlet.clone(),
         };
         let ah = self.tasks.spawn_on(task.run(), &self.rt);
         let task_meta = DataPlaneTaskMeta {
             client_idx,
             request: download_request.clone(),
-            filters,
             dragonsmouth_outlet,
             scheduled_at: Instant::now(),
             client_rev,
@@ -676,17 +691,31 @@ impl GrpcDownloadTaskRunner {
             .and_modify(|e| *e += 1)
             .or_insert(1);
         conn.permits.checked_sub(1).expect("underflow");
+
+        #[cfg(feature = "prometheus")]
+        {
+            inc_inflight_slot_download(Self::RUNTIME_NAME);
+        }
+
         self.task_meta.insert(ah.id(), task_meta);
+    }
+
+    fn handle_control_command(&mut self, cmd: DownloadTaskRunnerCommand) {
+        match cmd {
+            DownloadTaskRunnerCommand::UpdateSubscribeRequest(subscribe_request) => {
+                self.subscribe_request = subscribe_request;
+            }
+        }
     }
 
     pub(crate) async fn run(mut self) -> Result<(), DownloadBlockError> {
         while !self.outlet.is_closed() {
-            let maybe_available_client_idx = self.find_most_underloaded_client();
+            let maybe_available_client_idx = self.find_least_use_client();
             tokio::select! {
                 maybe = self.cnc_rx.recv() => {
                     match maybe {
                         Some(cmd) => {
-                            todo!()
+                            self.handle_control_command(cmd);
                         },
                         None => {
                             tracing::debug!("command channel disconnected");
