@@ -49,6 +49,8 @@ struct Args {
 
 #[derive(Debug, Clone, Parser)]
 enum Action {
+    /// Test the connection to the fumarole service
+    TestConfig,
     /// Get Persistent Subscriber Info
     GetInfo(GetCgInfoArgs),
     /// Create Persistent Subscriber
@@ -476,6 +478,31 @@ fn setup_tracing_test_many(
         .try_init()
 }
 
+async fn test_config(mut fumarole_client: FumaroleClient) {
+    let result = fumarole_client.version().await;
+    match result {
+        Ok(version) => {
+            println!(
+                "Successfully connected to Fumarole Service -- version: {}",
+                version.version
+            );
+        }
+        Err(e) => {
+            match e.code() {
+                Code::Unauthenticated => {
+                    eprintln!(
+                        "Missing authentication token or invalid token in configuration file"
+                    );
+                }
+                _ => {
+                    eprintln!("Failed to connect to fumarole: {}", e);
+                }
+            }
+            return;
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -497,6 +524,9 @@ async fn main() {
         .expect("Failed to connect to fumarole");
 
     match args.action {
+        Action::TestConfig => {
+            test_config(fumarole_client).await;
+        }
         Action::GetInfo(get_cg_info_args) => {
             get_cg_info(get_cg_info_args, fumarole_client).await;
         }
