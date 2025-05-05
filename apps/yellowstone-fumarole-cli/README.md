@@ -11,22 +11,46 @@ $ cargo install yellowstone-fumarole-cli
 
 ## Usage
 
-### Configuration file
+```sh
+fume --help
 
-Fumarole CLI look for a file in `~/.config/fume/config.toml` by default, you can change the path location by using `fume --config <PATH>`.
+Yellowstone Fumarole CLI
+
+Usage: fume [OPTIONS] --config <CONFIG> <COMMAND>
+
+Commands:
+  test-config  Test the connection to the fumarole service
+  get-info     Get Persistent Subscriber Info
+  create       Create Persistent Subscriber
+  delete       Delete a Persistent Subscriber
+  list         List all persistent subscribers
+  delete-all   Delete all persistent subscribers
+  subscribe    Subscribe to fumarole events
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+      --config <CONFIG>  Path to static config file
+  -v, --verbose...       Increase logging verbosity
+  -q, --quiet...         Decrease logging verbosity
+  -h, --help             Print help
+  -V, --version          Print version
+```
+
+
+### Configuration file
 
 Here's how to configure your config file:
 
 ```toml
 [fumarole]
 endpoints = ["https://fumarole.endpoint.rpcpool.com"]
-x-token = "<YOUR X-TOKEN secret here>"
+x-token = "00000000-0000-0000-0000-000000000000"
 ```
 
 You can test your configuration file with `test-config` subcommand:
 
 ```sh
-$ fume test-config
+$ fume --config path/to/config.toml test-config
 ```
 
 or with custom config path:
@@ -35,114 +59,29 @@ or with custom config path:
 $ fume --config path/to/config.toml test-config
 ```
 
-### Create consumer group
+### Create a Persistent Subscriber
 
-To create a consumer group that at the end of the log, that stream only "confirmed" commitment level transaction:
 
 ```sh
-$ fume create-cg --name helloworld-1 \
---commitment confirmed \
---seek latest \
---include tx
+$ fume create --name helloworld-1 \
 ```
 
-To do the same but for account update
+### List all persistent subscribers
 
 ```sh
-$ fume create-cg --name helloworld-2 \
---commitment confirmed \
---seek latest \
---include account
+$ fume list
 ```
 
-More usage can be find using the `--help` options:
+### Delete a persistent subscribers
 
 ```sh
-$ fume create-cg --help
-Creates a consumer group
-
-Options:
-  --name TEXT                     Consumer group name to subscribe to, if none
-                                  provided a random name will be generated
-                                  following the pattern
-                                  'fume-<random-6-character>'.
-  --size INTEGER                  Size of the consumer group
-  --commitment [processed|confirmed|finalized]
-                                  Commitment level  [default: confirmed]
-  --include [all|account|tx]      Include option  [default: all]
-  --seek [earliest|latest|slot]   Seek option  [default: latest]
-  --help                          Show this message and exit.
+$ fume delete --name helloworld
 ```
 
-### Consumer Group Staleness
-
-Consumer groups can become stale if you are ingesting too slowly.
-
-Fumarole is a distributed log of blockchain event where each new blockchain event gets appended to.
-
-As Solana emits a lot of event in one hour, we cannot keep every blockchain event forever.
-
-Fumarole evicts fragment of the log as they age old enough.
-
-Depending of the Fumarole cluster you are connected to this time may vary. Connect Triton-One team to learn more.
-
-When creating a Consumer Group, you must ingest what you are capable of. Otherwise your consumer group is destined to become stale.
-
-A stale consumer group is a consumer group that haven't yet ingested blockchain event that had already been evicted by Fumarole vacuum process.
-
-
-### Consumer Group Size and performance guideline
-
-Consumer group size allow you to shard a fumarole stream into multiple consumer group member.
-Sharded consumer group follow similar semantics as [Kafka Static Consumer membership](https://cwiki.apache.org/confluence/display/KAFKA/KIP-345%3A+Introduce+static+membership+protocol+to+reduce+consumer+rebalances).
-
-Here's a quick-recap of static group membership:
-
-- The Fumarole log is already sharded in multiple partitions.
-- When you create a consumer group with `--size N`, it creates `N` member with each `# total fumarole partition / N` partitions.
-- Each member of the cnsumer group advance **at its own pace**.
-- Your consumer group becomes stale as soon as **one membership is stale**.
-
-
-As of this writing the maximum size of a consumer group is `6`.
-
-Each member can have their own dedicated TCP connection which offer better performance.
-
-The processing you do in reception, your internet speed, network bandwidth and location will impact the size of the consumer group.
-
-Ingesting everything Fumarole can output requires you to be in the same region as your assigned Fumarole cluster and multiple Gbits for internet Bandwidth, otherwise you will fall behind and become stale.
-
-Limit your subscription feed by using the various filters over the accounts and transactions we offer.
-
-As for the consumer group size goes, starting with a size of `1` is the simplest approach.
-
-If you are falling behind because your receiving code adds too much processing overhead, you can try
-`2`, `3` and so forth.
-
-Fumarole is already redundant and load balanced inside our Data centers, increasing `--size` does not inherently add more redundancy. It is a tool for you to scale your read operation in case on instance is not sufficient.
-
-To create a consumer group with `2` members you just have to provided `--size` options:
+### Delete all persistent subscribers
 
 ```sh
-$ fume create-cg --name example --size 2
-```
-
-### List all consumer groups
-
-```sh
-$ fume list-cg
-```
-
-### Delete a consumer groups
-
-```sh
-$ fume delete-cg --name helloworld
-```
-
-### Delete all consumer groups
-
-```sh
-$ fume delete-all-cg
+$ fume delete-all
 ```
 
 ### Stream summary on terminal
@@ -150,12 +89,12 @@ $ fume delete-all-cg
 To stream out from the CLI, you can use the `stream` command and its various features!
 
 ```sh
-$ fume subscribe --cg-name helloworld
+$ fume subscribe --name helloworld
 ```
 
 You can filter the stream content by adding one or multiple occurrence of the following options:
 
-- `--tx-account <base58 pubkey>` : filter transaction by account keys.
+- `--tx-pubkey <base58 pubkey>` : filter transaction by account keys.
 - `--owner <base58 pubkey>` : filter account update based on its owner
 - `--account <base58 pubkey>` : filter account update based on accout key. 
 

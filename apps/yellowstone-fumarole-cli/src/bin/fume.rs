@@ -34,7 +34,7 @@ use {
 };
 
 #[derive(Debug, Clone, Parser)]
-#[clap(author, version, about = "Yellowstone gRPC ScyllaDB Tool")]
+#[clap(author, version, about = "Yellowstone Fumarole CLI")]
 struct Args {
     /// Path to static config file
     #[clap(long)]
@@ -140,17 +140,17 @@ struct SubscribeArgs {
     #[clap(long, default_value = "processed")]
     commitment: CommitmentOption,
 
-    /// List of pubkeys to subscribe to
+    /// List of account public keys to subscribe to
     #[clap(short, long)]
-    pubkey: Vec<Pubkey>,
+    account: Vec<Pubkey>,
 
-    /// List of owners to subscribe to
+    /// List of account owners to subscribe to
     #[clap(short, long)]
     owner: Vec<Pubkey>,
 
-    /// List of pubkeys to must be in the transaction to subscribe to
+    /// List of account public keys that must be included in the transaction
     #[clap(long, short)]
-    tx_pubkey: Vec<Pubkey>,
+    tx_account: Vec<Pubkey>,
 }
 
 fn summarize_account(account: SubscribeUpdateAccount) -> Option<String> {
@@ -353,9 +353,9 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     let SubscribeArgs {
         name: cg_name,
         commitment,
-        pubkey,
+        account: pubkey,
         owner,
-        tx_pubkey,
+        tx_account: tx_pubkey,
     } = args;
     let commitment_level: CommitmentLevel = commitment.into();
     // This request listen for all account updates and transaction updates
