@@ -1,6 +1,6 @@
 [workspace]
 members = [ 
-    "apps/fume",
+    "apps/yellowstone-fumarole-cli",
     "crates/yellowstone-fumarole-client",
     "examples/rust",
 ]

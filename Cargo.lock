@@ -744,6 +744,7 @@ checksum = "2678fade3b77aa3a8ff3aae87e9c008d3fb00473a41c71fbf74e91c8c7b37e84"
 dependencies = [
  "clap",
  "log",
+ "tracing-core",
 ]
 
 [[package]]
@@ -1220,27 +1221,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "fume"
-version = "0.1.1+solana.2.1.11"
-dependencies = [
- "clap",
- "clap-verbosity-flag",
- "futures",
- "serde_yaml",
- "solana-sdk",
- "tabled",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tonic",
- "tracing",
- "tracing-subscriber",
- "yellowstone-fumarole-client",
- "yellowstone-grpc-client",
- "yellowstone-grpc-proto",
 ]
 
 [[package]]
@@ -5237,6 +5217,27 @@ name = "writeable"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e9df38ee2d2c3c5948ea468a8406ff0db0b29ae1ffde1bcf20ef305bcc95c51"
+
+[[package]]
+name = "yellowstone-fumarole-cli"
+version = "0.1.0-pre1"
+dependencies = [
+ "clap",
+ "clap-verbosity-flag",
+ "futures",
+ "serde_yaml",
+ "solana-sdk",
+ "tabled",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "yellowstone-fumarole-client",
+ "yellowstone-grpc-client",
+ "yellowstone-grpc-proto",
+]
 
 [[package]]
 name = "yellowstone-fumarole-client"

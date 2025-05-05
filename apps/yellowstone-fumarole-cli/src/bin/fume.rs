@@ -1,9 +1,9 @@
 use {
     clap::Parser,
     futures::{future::BoxFuture, FutureExt},
-    solana_sdk::{bs58, clock::Slot, pubkey::Pubkey},
+    solana_sdk::{bs58, pubkey::Pubkey},
     std::{
-        collections::{HashMap, HashSet},
+        collections::HashMap,
         io::{stderr, stdout, IsTerminal},
         num::{NonZeroU8, NonZeroUsize},
         path::PathBuf,
@@ -49,39 +49,37 @@ struct Args {
 
 #[derive(Debug, Clone, Parser)]
 enum Action {
-    /// Get Consumer Group Info
-    GetCgInfo(GetCgInfoArgs),
-    /// Create a consumer group
-    CreateCg(CreateCgArgs),
-    /// Delete a consumer group
-    DeleteCg(DeleteCgArgs),
-    /// List all consumer groups
-    ListCg,
-    /// Delete all consumer groups
-    DeleteAllCg,
+    /// Get Persistent Subscriber Info
+    GetInfo(GetCgInfoArgs),
+    /// Create Persistent Subscriber
+    Create(CreateCgArgs),
+    /// Delete a Persistent Subscriber
+    Delete(DeleteCgArgs),
+    /// List all persistent subscribers
+    List,
+    /// Delete all persistent subscribers
+    DeleteAll,
     /// Subscribe to fumarole events
     Subscribe(SubscribeArgs),
-    /// Subscribe to fumarole block stats
-    SubscribeBlocks(SubscribeArgs),
 }
 
 #[derive(Debug, Clone, Parser)]
 pub struct GetCgInfoArgs {
-    /// Name of the consumer group to get info for
+    /// Name of the persistent subscriber to get info for
     #[clap(long)]
     name: String,
 }
 
 #[derive(Debug, Clone, Parser)]
 pub struct CreateCgArgs {
-    /// Name of the consumer group to create
+    /// Name of the persistent subscriber to create
     #[clap(long)]
     name: String,
 }
 
 #[derive(Debug, Clone, Parser)]
 pub struct DeleteCgArgs {
-    /// Name of the consumer group to delete
+    /// Name of the persistent subscriber to delete
     #[clap(long)]
     name: String,
 }
@@ -133,12 +131,24 @@ impl From<CommitmentOption> for CommitmentLevel {
 
 #[derive(Debug, Clone, Parser)]
 struct SubscribeArgs {
-    /// Name of the consumer group to subscribe to
+    /// Name of the persistent subscriber
     #[clap(long)]
-    cg_name: String,
+    name: String,
 
     #[clap(long, default_value = "processed")]
     commitment: CommitmentOption,
+
+    /// List of pubkeys to subscribe to
+    #[clap(short, long)]
+    pubkey: Vec<Pubkey>,
+
+    /// List of owners to subscribe to
+    #[clap(short, long)]
+    owner: Vec<Pubkey>,
+
+    /// List of pubkeys to must be in the transaction to subscribe to
+    #[clap(long, short)]
+    tx_pubkey: Vec<Pubkey>,
 }
 
 fn summarize_account(account: SubscribeUpdateAccount) -> Option<String> {
@@ -228,7 +238,7 @@ async fn create_cg(args: CreateCgArgs, mut client: FumaroleClient) {
                 return;
             }
             eprintln!(
-                "Failed to create consumer group: {} {}",
+                "Failed to create consumer group: {}, {}",
                 e.code(),
                 e.message()
             );
@@ -337,145 +347,31 @@ pub fn create_shutdown() -> BoxFuture<'static, ()> {
     .boxed()
 }
 
-async fn subscribe_block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
-    let SubscribeArgs {
-        cg_name,
-        commitment,
-    } = args;
-    let commitment_level: CommitmentLevel = commitment.into();
-    // This request listen for all account updates and transaction updates
-    let request = SubscribeRequest {
-        // accounts: HashMap::from([("f1".to_owned(), SubscribeRequestFilterAccounts::default())]),
-        // transactions: HashMap::from([(
-        //     "f1".to_owned(),
-        //     SubscribeRequestFilterTransactions::default(),
-        // )]),
-        blocks_meta: HashMap::from([(
-            "f1".to_owned(),
-            SubscribeRequestFilterBlocksMeta::default(),
-        )]),
-        slots: HashMap::from([("f1".to_owned(), SubscribeRequestFilterSlots::default())]),
-        commitment: Some(commitment_level.into()),
-        ..Default::default()
-    };
-
-    println!("Subscribing to consumer group {}", cg_name);
-    let subscribe_config = FumaroleSubscribeConfig {
-        num_data_plane_tcp_connections: NonZeroU8::new(1).unwrap(),
-        concurrent_download_limit_per_tcp: NonZeroUsize::new(1).unwrap(),
-        commit_interval: Duration::from_secs(1),
-        ..Default::default()
-    };
-    let dragonsmouth_session = client
-        .dragonsmouth_subscribe_with_config(cg_name.clone(), request, subscribe_config)
-        .await
-        .expect("Failed to subscribe");
-    let DragonsmouthAdapterSession {
-        sink: _,
-        mut source,
-        fumarole_handle: _,
-    } = dragonsmouth_session;
-
-    let mut shutdown = create_shutdown();
-
-    #[allow(dead_code)]
-    enum BlockRow {
-        AccountUpdate(SubscribeUpdateAccount),
-        TransactionUpdate(SubscribeUpdateTransaction),
-        BlockMetaUpdate(SubscribeUpdateBlockMeta),
-    }
-
-    let mut blocks: HashMap<Slot, Vec<BlockRow>> = HashMap::new();
-    let mut block_status: HashMap<Slot, Vec<CommitmentLevel>> = HashMap::new();
-    loop {
-        tokio::select! {
-            _ = &mut shutdown => {
-                println!("Shutting down...");
-                break;
-            }
-            result = source.recv() => {
-                let Some(result) = result else {
-                    println!("grpc stream closed!");
-                    break;
-                };
-
-                let event = result.expect("Failed to receive event");
-
-                if let Some(oneof) = event.update_oneof {
-                    match oneof {
-                        UpdateOneof::Account(account_update) => {
-                            blocks.entry(
-                                account_update.slot
-                            ).or_default().push(BlockRow::AccountUpdate(account_update));
-                        },
-                        UpdateOneof::Transaction(tx) => {
-                            blocks.entry(
-                                tx.slot
-                            ).or_default().push(BlockRow::TransactionUpdate(tx));
-                        },
-                        UpdateOneof::Slot(slot) => {
-                            let SubscribeUpdateSlot {
-                                slot,
-                                parent: _,
-                                status,
-                                dead_error: _
-                            } = slot;
-                            let cl = CommitmentLevel::try_from(status).unwrap();
-                            block_status.entry(slot).or_default().push(cl);
-                            let block_data = blocks.remove(&slot);
-                            let msg = if let Some(block_data) = block_data {
-                                let mut block_status = block_status.remove(&slot).unwrap();
-                                let _status = block_status.pop().unwrap();
-                                let mut account_updates = 0;
-                                let mut tx_cnt = 0;
-                                for row in block_data {
-                                    match row {
-                                        BlockRow::AccountUpdate(_) => {
-                                            account_updates += 1;
-                                        }
-                                        BlockRow::TransactionUpdate(_) => {
-                                            tx_cnt += 1;
-                                        }
-                                        BlockRow::BlockMetaUpdate(_) => {
-                                        }
-                                    }
-                                }
-                                format!(
-                                    "block {slot}, status {cl:?} account_updates {account_updates} tx_cnt {tx_cnt}"
-                                )
-                            } else {
-                                format!("block {slot} status {cl:?}")
-                            };
-                            println!("{}", msg);
-                        }
-                        UpdateOneof::BlockMeta(block_meta) => {
-
-                            blocks.entry(
-                                block_meta.slot
-                            ).or_default().push(BlockRow::BlockMetaUpdate(block_meta));
-                        }
-                        _ => {},
-                    }
-                }
-            }
-        }
-    }
-    println!("Exiting subscribe loop");
-}
-
 async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     let SubscribeArgs {
-        cg_name,
+        name: cg_name,
         commitment,
+        pubkey,
+        owner,
+        tx_pubkey,
     } = args;
     let commitment_level: CommitmentLevel = commitment.into();
-
     // This request listen for all account updates and transaction updates
     let request = SubscribeRequest {
-        accounts: HashMap::from([("f1".to_owned(), SubscribeRequestFilterAccounts::default())]),
+        accounts: HashMap::from([(
+            "f1".to_owned(),
+            SubscribeRequestFilterAccounts {
+                account: pubkey.iter().map(|p| p.to_string()).collect(),
+                owner: owner.iter().map(|p| p.to_string()).collect(),
+                ..Default::default()
+            },
+        )]),
         transactions: HashMap::from([(
             "f1".to_owned(),
-            SubscribeRequestFilterTransactions::default(),
+            SubscribeRequestFilterTransactions {
+                account_include: tx_pubkey.iter().map(|p| p.to_string()).collect(),
+                ..Default::default()
+            },
         )]),
         blocks_meta: HashMap::from([(
             "f1".to_owned(),
@@ -583,6 +479,12 @@ fn setup_tracing_test_many(
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    let verbosity = args.verbose.tracing_level_filter();
+    let curr_crate = env!("CARGO_PKG_NAME");
+
+    let filter = format!("{curr_crate}={verbosity},yellowstone_fumarole_client={verbosity}");
+    let env_filter = EnvFilter::new(filter);
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     // setup_tracing_test_many(["yellowstone_fumarole_client"]);
     let config = std::fs::read_to_string(&args.config).expect("Failed to read config file");
@@ -595,26 +497,23 @@ async fn main() {
         .expect("Failed to connect to fumarole");
 
     match args.action {
-        Action::GetCgInfo(get_cg_info_args) => {
+        Action::GetInfo(get_cg_info_args) => {
             get_cg_info(get_cg_info_args, fumarole_client).await;
         }
-        Action::CreateCg(create_cg_args) => {
+        Action::Create(create_cg_args) => {
             create_cg(create_cg_args, fumarole_client).await;
         }
-        Action::DeleteCg(delete_cg_args) => {
+        Action::Delete(delete_cg_args) => {
             delete_cg(delete_cg_args, fumarole_client).await;
         }
-        Action::ListCg => {
+        Action::List => {
             list_all_cg(fumarole_client).await;
         }
-        Action::DeleteAllCg => {
+        Action::DeleteAll => {
             delete_all_cg(fumarole_client).await;
         }
         Action::Subscribe(subscribe_args) => {
             subscribe(fumarole_client, subscribe_args).await;
-        }
-        Action::SubscribeBlocks(subscribe_args) => {
-            subscribe_block_stats(fumarole_client, subscribe_args).await;
         }
     }
 }

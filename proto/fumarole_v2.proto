@@ -17,7 +17,16 @@ service Fumarole {
 
   // Represents subscription to the control plane
   rpc Subscribe(stream ControlCommand) returns (stream ControlResponse) {}
+
+  rpc Version(VersionRequest) returns (VersionResponse) {}
 }
+
+message VersionRequest {}
+
+message VersionResponse {
+  string version = 1;
+}
+
 
 message GetConsumerGroupInfoRequest {
   string consumer_group_name = 1;

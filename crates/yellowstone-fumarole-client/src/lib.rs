@@ -392,6 +392,15 @@ impl FumaroleClient {
     }
 
     ///
+    /// Returns the current version of the Fumarole service.
+    ///
+    pub async fn version(&mut self) -> Result<proto::VersionResponse, tonic::Status> {
+        let request = tonic::Request::new(proto::VersionRequest {});
+        let response = self.inner.version(request).await?;
+        Ok(response.into_inner())
+    }
+
+    ///
     /// Subscribe to a stream of updates from the Fumarole service
     ///
     pub async fn dragonsmouth_subscribe<S>(
