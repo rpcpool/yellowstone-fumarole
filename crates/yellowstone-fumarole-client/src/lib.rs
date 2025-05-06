@@ -9,7 +9,7 @@
 //!
 //! However, there are some differences:
 //!
-//! - The `yellowstone-fumarole` client uses multiple gRPC connections to communicate with the Fumarole service : avoids [`HoL`] blocking.
+//! - The `yellowstone-fumarole` (Coming soon) client uses multiple gRPC connections to communicate with the Fumarole service : avoids [`HoL`] blocking.
 //! - The `yellowstone-fumarole` subscribers are persistent and can be reused across multiple sessions (not computer).
 //! - The `yellowstone-fumarole` can reconnect to the Fumarole service if the connection is lost.
 //!
@@ -405,7 +405,7 @@ impl FumaroleClient {
     ///
     pub async fn dragonsmouth_subscribe<S>(
         &mut self,
-        consumer_group_name: S,
+        subscriber_name: S,
         request: geyser::SubscribeRequest,
     ) -> Result<DragonsmouthAdapterSession, tonic::Status>
     where
@@ -413,7 +413,7 @@ impl FumaroleClient {
     {
         let handle = tokio::runtime::Handle::current();
         self.dragonsmouth_subscribe_with_config_on(
-            consumer_group_name,
+            subscriber_name,
             request,
             Default::default(),
             handle,
@@ -441,7 +441,7 @@ impl FumaroleClient {
     ///
     pub async fn dragonsmouth_subscribe_with_config_on<S>(
         &mut self,
-        consumer_group_name: S,
+        subscriber_name: S,
         request: geyser::SubscribeRequest,
         config: FumaroleSubscribeConfig,
         handle: tokio::runtime::Handle,
@@ -456,7 +456,7 @@ impl FumaroleClient {
         let (fume_control_plane_tx, fume_control_plane_rx) = mpsc::channel(100);
 
         let initial_join = JoinControlPlane {
-            consumer_group_name: Some(consumer_group_name.as_ref().to_string()),
+            consumer_group_name: Some(subscriber_name.as_ref().to_string()),
         };
         let initial_join_command = ControlCommand {
             command: Some(proto::control_command::Command::InitialJoin(initial_join)),
@@ -539,7 +539,7 @@ impl FumaroleClient {
             dragonsmouth_bidi: dm_bidi,
             subscribe_request: request,
             download_task_runner_chans,
-            consumer_group_name: consumer_group_name.as_ref().to_string(),
+            consumer_group_name: subscriber_name.as_ref().to_string(),
             control_plane_tx: fume_control_plane_tx,
             control_plane_rx: fume_control_plane_rx,
             dragonsmouth_outlet,

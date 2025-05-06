@@ -15,12 +15,10 @@ pub async fn prometheus_service_fn(
 
     match metrics {
         Ok(metrics) => Ok(Response::new(Full::new(Bytes::from(metrics)))),
-        Err(e) => {
-            Ok(Response::new(Full::new(Bytes::from(format!(
-                "Failed to encode metrics: {}",
-                e
-            )))))
-        }
+        Err(e) => Ok(Response::new(Full::new(Bytes::from(format!(
+            "Failed to encode metrics: {}",
+            e
+        ))))),
     }
 }
 

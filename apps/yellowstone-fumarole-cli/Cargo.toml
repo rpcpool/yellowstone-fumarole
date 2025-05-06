@@ -1,13 +1,14 @@
 [package]
 name = "yellowstone-fumarole-cli"
+description = "Yellowstone Fumarole CLI"
+version = "0.1.0-pre.2+solana.2.1"
 authors.workspace = true
-version = "0.1.0-pre1"
 edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 license.workspace = true
 keywords.workspace = true
-publish.workspace = true
+publish = true
 
 [[bin]]
 name = "fume"
