@@ -11,7 +11,7 @@ keywords = { workspace = true }
 publish = true
 
 [features]
-default = ["prometheus"]
+default = []
 prometheus = ["dep:prometheus"]
 
 [package.metadata]
@@ -23,6 +23,7 @@ include = [
 [dependencies]
 async-trait = { workspace = true }
 futures = { workspace = true }
+fxhash = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true }
 lazy_static = { workspace = true }

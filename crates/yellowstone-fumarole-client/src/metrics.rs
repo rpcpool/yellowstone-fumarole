@@ -67,6 +67,14 @@ lazy_static! {
         &["runtime"],
     )
     .unwrap();
+    pub(crate) static ref SKIP_OFFSET_COMMITMENT_COUNT: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "fumarole_skip_offset_commitment_count",
+            "Number of skipped offset commitment done to remote Fumarole service",
+        ),
+        &["runtime"],
+    )
+    .unwrap();
     pub(crate) static ref TOTAL_EVENT_DOWNLOADED: IntCounterVec = IntCounterVec::new(
         Opts::new(
             "fumarole_total_event_downloaded",
@@ -75,6 +83,28 @@ lazy_static! {
         &["runtime"],
     )
     .unwrap();
+    pub(crate) static ref SLOT_STATUS_OFFSET_PROCESSED_CNT: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "fumarole_slot_status_offset_processed_count",
+            "Number of offset processed from Fumarole runtime",
+        ),
+        &["runtime"],
+    )
+    .unwrap();
+    pub(crate) static ref PROCESSED_SLOT_STATUS_OFFSET_QUEUE: IntGaugeVec = IntGaugeVec::new(
+        Opts::new(
+            "fumarole_processed_slot_status_offset_queue",
+            "The number of slot status offset that is blocked from commitment, waiting for missing offset to be acknowledged",
+        ),
+        &["runtime"],
+    ).unwrap();
+    pub(crate) static ref SLOT_STATUS_UPDATE_QUEUE_LEN: IntGaugeVec = IntGaugeVec::new(
+        Opts::new(
+            "fumarole_slot_status_update_queue_len",
+            "The number of slot status update that is waiting to be ack",
+        ),
+        &["runtime"],
+    ).unwrap();
 }
 
 pub(crate) fn inc_total_event_downloaded(name: impl AsRef<str>, amount: usize) {
@@ -125,6 +155,30 @@ pub(crate) fn inc_failed_slot_download_attempt(name: impl AsRef<str>) {
         .inc();
 }
 
+pub(crate) fn inc_skip_offset_commitment_count(name: impl AsRef<str>) {
+    SKIP_OFFSET_COMMITMENT_COUNT
+        .with_label_values(&[name.as_ref()])
+        .inc();
+}
+
+pub(crate) fn inc_slot_status_offset_processed_count(name: impl AsRef<str>) {
+    SLOT_STATUS_OFFSET_PROCESSED_CNT
+        .with_label_values(&[name.as_ref()])
+        .inc();
+}
+
+pub(crate) fn set_processed_slot_status_offset_queue_len(name: impl AsRef<str>, len: usize) {
+    PROCESSED_SLOT_STATUS_OFFSET_QUEUE
+        .with_label_values(&[name.as_ref()])
+        .set(len as i64);
+}
+
+pub(crate) fn set_slot_status_update_queue_len(name: impl AsRef<str>, len: usize) {
+    SLOT_STATUS_UPDATE_QUEUE_LEN
+        .with_label_values(&[name.as_ref()])
+        .set(len as i64);
+}
+
 ///
 /// Register Fumarole metrics to the given registry.
 ///
@@ -149,5 +203,17 @@ pub fn register_metrics(registry: &prometheus::Registry) {
         .unwrap();
     registry
         .register(Box::new(TOTAL_EVENT_DOWNLOADED.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(SKIP_OFFSET_COMMITMENT_COUNT.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(SLOT_STATUS_OFFSET_PROCESSED_CNT.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(PROCESSED_SLOT_STATUS_OFFSET_QUEUE.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(SLOT_STATUS_UPDATE_QUEUE_LEN.clone()))
         .unwrap();
 }

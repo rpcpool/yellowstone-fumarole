@@ -1,13 +1,14 @@
 #[cfg(feature = "prometheus")]
 use crate::metrics::{
     dec_inflight_slot_download, inc_failed_slot_download_attempt, inc_inflight_slot_download,
-    inc_offset_commitment_count, inc_slot_download_count, observe_slot_download_duration,
-    set_max_slot_detected,
+    inc_offset_commitment_count, inc_skip_offset_commitment_count, inc_slot_download_count,
+    inc_slot_status_offset_processed_count, inc_total_event_downloaded,
+    observe_slot_download_duration, set_max_slot_detected,
+    set_processed_slot_status_offset_queue_len, set_slot_status_update_queue_len,
 };
 use {
     super::{FumaroleSM, FumeDownloadRequest, FumeOffset, FumeShardIdx},
     crate::{
-        metrics::inc_total_event_downloaded,
         proto::{
             self, data_response, BlockFilters, CommitOffset, ControlCommand, DownloadBlockShard,
             PollBlockchainHistory,
@@ -234,6 +235,11 @@ impl TokioFumeDragonsmouthRuntime {
             unsafe {
                 self.force_commit_offset().await;
             }
+        } else {
+            #[cfg(feature = "prometheus")]
+            {
+                inc_skip_offset_commitment_count(Self::RUNTIME_NAME);
+            }
         }
 
         self.last_commit = Instant::now();
@@ -247,7 +253,11 @@ impl TokioFumeDragonsmouthRuntime {
             slot_status_vec.push_back(slot_status);
         }
 
-        tracing::debug!("draining slot status: {} events", slot_status_vec.len());
+        if slot_status_vec.is_empty() {
+            return;
+        }
+
+        tracing::debug!("draining {} slot status", slot_status_vec.len());
 
         for slot_status in slot_status_vec {
             let mut matched_filters = vec![];
@@ -270,7 +280,6 @@ impl TokioFumeDragonsmouthRuntime {
                             slot: slot_status.slot,
                             parent: slot_status.parent_slot,
                             status: slot_status.commitment_level.into(),
-                            // TODO: support dead slot
                             dead_error: slot_status.dead_error,
                         },
                     )),
@@ -280,7 +289,20 @@ impl TokioFumeDragonsmouthRuntime {
                 }
             }
 
-            self.sm.mark_offset_as_processed(slot_status.offset);
+            self.sm
+                .mark_event_as_processed(slot_status.session_sequence);
+            #[cfg(feature = "prometheus")]
+            {
+                inc_slot_status_offset_processed_count(Self::RUNTIME_NAME);
+            }
+        }
+
+        #[cfg(feature = "prometheus")]
+        {
+            set_processed_slot_status_offset_queue_len(
+                Self::RUNTIME_NAME,
+                self.sm.processed_offset_queue_len(),
+            );
         }
     }
 
@@ -331,6 +353,12 @@ impl TokioFumeDragonsmouthRuntime {
                 break;
             }
 
+            #[cfg(feature = "prometheus")]
+            {
+                let slot_status_update_queue_len = self.sm.slot_status_update_queue_len();
+                set_slot_status_update_queue_len(Self::RUNTIME_NAME, slot_status_update_queue_len);
+            }
+
             let commit_deadline = self.last_commit + self.commit_interval;
 
             self.poll_history_if_needed().await;
@@ -372,7 +400,7 @@ impl TokioFumeDragonsmouthRuntime {
                 }
 
                 _ = tokio::time::sleep_until(commit_deadline.into()) => {
-                    tracing::debug!("commit deadline reached");
+                    tracing::trace!("commit deadline reached");
                     self.commit_offset().await;
                 }
             }
@@ -551,7 +579,6 @@ impl GrpcDownloadTaskRunner {
         }
 
         let slot = task_meta.request.slot;
-        tracing::debug!("download task result received for slot {}", slot);
 
         let state = self
             .data_plane_channel_vec
@@ -573,7 +600,6 @@ impl GrpcDownloadTaskRunner {
                 {
                     observe_slot_download_duration(Self::RUNTIME_NAME, elapsed);
                     inc_slot_download_count(Self::RUNTIME_NAME);
-                    inc_total_event_downloaded(Self::RUNTIME_NAME, total_event_downloaded);
                 }
 
                 tracing::debug!(
@@ -799,6 +825,8 @@ pub(crate) struct CompletedDownloadBlockTask {
 }
 
 impl GrpcDownloadBlockTaskRun {
+    const RUNTIME_NAME: &'static str = "tokio_grpc_task_run";
+
     async fn run(mut self) -> Result<CompletedDownloadBlockTask, DownloadBlockError> {
         let request = DownloadBlockShard {
             blockchain_id: self.download_request.blockchain_id.to_vec(),
@@ -828,6 +856,12 @@ impl GrpcDownloadBlockTaskRun {
             match resp {
                 data_response::Response::Update(update) => {
                     total_event_downloaded += 1;
+
+                    #[cfg(feature = "prometheus")]
+                    {
+                        inc_total_event_downloaded(Self::RUNTIME_NAME, 1);
+                    }
+
                     if self.dragonsmouth_oulet.send(Ok(update)).await.is_err() {
                         return Err(DownloadBlockError::OutletDisconnected);
                     }

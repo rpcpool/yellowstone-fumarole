@@ -5,6 +5,7 @@ pub(crate) mod tokio;
 
 use {
     crate::proto::{self, BlockchainEvent},
+    fxhash::FxHashMap,
     solana_sdk::clock::Slot,
     std::{
         cmp::Reverse,
@@ -23,6 +24,8 @@ pub(crate) type FumeShardIdx = u32;
 
 pub(crate) type FumeOffset = i64;
 
+pub(crate) type FumeSessionSequence = u64;
+
 #[derive(Debug, Clone)]
 pub(crate) struct FumeDownloadRequest {
     pub slot: Slot,
@@ -36,6 +39,9 @@ pub(crate) struct FumeDownloadRequest {
 
 #[derive(Clone, Debug)]
 pub(crate) struct FumeSlotStatus {
+    /// Rough unit of time inside fumarole state machine.
+    pub session_sequence: FumeSessionSequence,
+    #[allow(dead_code)]
     pub offset: FumeOffset,
     pub slot: Slot,
     pub parent_slot: Option<Slot>,
@@ -146,11 +152,13 @@ pub(crate) struct FumaroleSM {
     /// Keeps track of each offset have been processed by the underlying runtime.
     /// Fumarole State Machine emits slot status in disorder, but still requires ordering
     /// when computing the `committable_offset`
-    processed_offset: BinaryHeap<Reverse<FumeOffset>>,
+    processed_offset: BinaryHeap<Reverse<(FumeSessionSequence, FumeOffset)>>,
 
     /// Represents the high-water mark fume offset that can be committed to the remote fumarole service.
     /// It means the runtime processed everything <= committable offset.
     pub committable_offset: FumeOffset,
+
+    last_processed_fume_sequence: FumeSessionSequence,
 
     /// Represents the max slot detected in the current session.
     /// This is used to detect rough slot lag.
@@ -158,7 +166,11 @@ pub(crate) struct FumaroleSM {
     pub max_slot_detected: Slot,
 
     /// Unprocessed blockchain events
-    unprocessed_blockchain_event: VecDeque<proto::BlockchainEvent>,
+    unprocessed_blockchain_event: VecDeque<(u64, proto::BlockchainEvent)>,
+
+    sequence: u64,
+
+    sequence_to_offset: FxHashMap<FumeSessionSequence, FumeOffset>,
 }
 
 impl FumaroleSM {
@@ -174,6 +186,9 @@ impl FumaroleSM {
             committable_offset: last_committed_offset,
             max_slot_detected: 0,
             unprocessed_blockchain_event: Default::default(),
+            sequence: 1,
+            last_processed_fume_sequence: 0,
+            sequence_to_offset: Default::default(),
         }
     }
 
@@ -188,6 +203,12 @@ impl FumaroleSM {
         self.last_committed_offset = offset;
     }
 
+    fn next_sequence(&mut self) -> u64 {
+        let ret = self.sequence;
+        self.sequence += 1;
+        ret
+    }
+
     pub fn queue_blockchain_event<IT>(&mut self, events: IT)
     where
         IT: IntoIterator<Item = proto::BlockchainEvent>,
@@ -196,8 +217,17 @@ impl FumaroleSM {
             if event.offset < self.last_committed_offset {
                 continue;
             }
+
+            if event.slot > self.max_slot_detected {
+                self.max_slot_detected = event.slot;
+            }
+            let sequence = self.next_sequence();
+
+            self.sequence_to_offset.insert(sequence, event.offset);
+
             if self.downloaded_slot.contains(&event.slot) {
                 let fume_status = FumeSlotStatus {
+                    session_sequence: sequence,
                     offset: event.offset,
                     slot: event.slot,
                     parent_slot: event.parent_slot,
@@ -217,7 +247,8 @@ impl FumaroleSM {
                     self.slot_status_update_queue.push_back(fume_status);
                 }
             } else {
-                self.unprocessed_blockchain_event.push_back(event);
+                self.unprocessed_blockchain_event
+                    .push_back((sequence, event));
             }
         }
     }
@@ -290,6 +321,8 @@ impl FumaroleSM {
     ) -> Option<FumeDownloadRequest> {
         loop {
             let min_commitment = commitment.unwrap_or(CommitmentLevel::Processed);
+            let (session_sequence, blockchain_event) =
+                self.unprocessed_blockchain_event.pop_front()?;
             let BlockchainEvent {
                 offset,
                 blockchain_id,
@@ -300,13 +333,14 @@ impl FumaroleSM {
                 commitment_level,
                 blockchain_shard_id: _,
                 dead_error,
-            } = self.unprocessed_blockchain_event.pop_front()?;
+            } = blockchain_event;
 
             let event_cl = geyser::CommitmentLevel::try_from(commitment_level)
                 .expect("invalid commitment level");
 
             if event_cl < min_commitment {
                 self.slot_status_update_queue.push_back(FumeSlotStatus {
+                    session_sequence,
                     offset,
                     slot,
                     parent_slot,
@@ -326,12 +360,13 @@ impl FumaroleSM {
 
                 if progression.processed_commitment_levels.contains(&event_cl) {
                     // We already processed this commitment level
-                    self.mark_offset_as_processed(offset);
+                    self.mark_event_as_processed(session_sequence);
                     continue;
                 }
 
                 // We have a new commitment level for this slot and slot has been downloaded in the current session.
                 self.slot_status_update_queue.push_back(FumeSlotStatus {
+                    session_sequence,
                     offset,
                     slot,
                     parent_slot,
@@ -350,6 +385,7 @@ impl FumaroleSM {
                     .entry(slot)
                     .or_default()
                     .push_back(FumeSlotStatus {
+                        session_sequence,
                         offset,
                         slot,
                         parent_slot,
@@ -377,34 +413,38 @@ impl FumaroleSM {
         }
     }
 
-    #[inline]
-    const fn missing_process_offset(&self) -> FumeOffset {
-        self.committable_offset + 1
+    pub fn slot_status_update_queue_len(&self) -> usize {
+        self.slot_status_update_queue.len()
     }
 
     ///
     /// Marks this [`FumeOffset`] has processed by the runtime.
     ///
-    pub fn mark_offset_as_processed(&mut self, offset: FumeOffset) {
-        if offset == self.missing_process_offset() {
-            self.committable_offset = offset;
+    pub fn mark_event_as_processed(&mut self, event_seq_number: FumeSessionSequence) {
+        let fume_offset = self
+            .sequence_to_offset
+            .remove(&event_seq_number)
+            .expect("event sequence number not found");
+        self.processed_offset
+            .push(Reverse((event_seq_number, fume_offset)));
 
-            loop {
-                let Some(offset2) = self.processed_offset.peek().copied() else {
-                    break;
-                };
-
-                if offset2.0 != self.missing_process_offset() {
-                    break;
-                }
-
-                let offset2 = self.processed_offset.pop().unwrap().0;
-                assert_eq!(offset2, self.missing_process_offset());
-                self.committable_offset = offset2;
+        loop {
+            let Some(tuple) = self.processed_offset.peek().copied() else {
+                break;
+            };
+            let (blocked_event_seq_number2, fume_offset2) = tuple.0;
+            if blocked_event_seq_number2 != self.last_processed_fume_sequence + 1 {
+                break;
             }
-        } else {
-            self.processed_offset.push(Reverse(offset));
+
+            let _ = self.processed_offset.pop().unwrap();
+            self.committable_offset = fume_offset2;
+            self.last_processed_fume_sequence = blocked_event_seq_number2;
         }
+    }
+
+    pub fn processed_offset_queue_len(&self) -> usize {
+        self.processed_offset.len()
     }
 
     ///
@@ -462,7 +502,7 @@ mod tests {
 
         assert_eq!(status.slot, 1);
         assert_eq!(status.commitment_level, CommitmentLevel::Processed);
-        sm.mark_offset_as_processed(status.offset);
+        sm.mark_event_as_processed(status.session_sequence);
 
         // All subsequent commitment level should be available right away
         let mut event2 = event.clone();
@@ -476,7 +516,7 @@ mod tests {
         let status = sm.pop_next_slot_status().unwrap();
         assert_eq!(status.slot, 1);
         assert_eq!(status.commitment_level, CommitmentLevel::Confirmed);
-        sm.mark_offset_as_processed(status.offset);
+        sm.mark_event_as_processed(status.session_sequence);
 
         assert_eq!(sm.committable_offset, event2.offset);
     }

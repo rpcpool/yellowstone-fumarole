@@ -4,8 +4,10 @@ use {
     solana_sdk::{bs58, pubkey::Pubkey},
     std::{
         collections::HashMap,
-        fmt,
-        io::{stderr, stdout, IsTerminal},
+        fmt::{self, Debug},
+        fs::File,
+        io::{stdout, Write},
+        net::{AddrParseError, SocketAddr},
         num::NonZeroUsize,
         path::PathBuf,
         str::FromStr,
@@ -17,7 +19,8 @@ use {
         signal::unix::{signal, SignalKind},
     },
     tonic::Code,
-    tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter},
+    tracing_subscriber::EnvFilter,
+    yellowstone_fumarole_cli::prom::prometheus_server,
     yellowstone_fumarole_client::{
         config::FumaroleConfig,
         proto::{
@@ -33,6 +36,44 @@ use {
         SubscribeUpdateBlockMeta, SubscribeUpdateSlot, SubscribeUpdateTransaction,
     },
 };
+
+#[derive(Debug, Clone)]
+pub struct PrometheusBindAddr(SocketAddr);
+
+impl From<PrometheusBindAddr> for SocketAddr {
+    fn from(addr: PrometheusBindAddr) -> Self {
+        addr.0
+    }
+}
+
+impl fmt::Display for PrometheusBindAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<AddrParseError> for PrometheusBindAddrParseError {
+    fn from(err: AddrParseError) -> Self {
+        PrometheusBindAddrParseError(err.to_string())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid prometheus bind address {0}")]
+pub struct PrometheusBindAddrParseError(String);
+
+impl FromStr for PrometheusBindAddr {
+    type Err = PrometheusBindAddrParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "0" {
+            Ok(PrometheusBindAddr("127.0.0.1:0".parse()?))
+        } else {
+            let ip_addr = s.parse()?;
+            Ok(PrometheusBindAddr(ip_addr))
+        }
+    }
+}
 
 #[derive(Debug, Clone, Parser)]
 #[clap(author, version, about = "Yellowstone Fumarole CLI")]
@@ -134,6 +175,15 @@ impl From<CommitmentOption> for CommitmentLevel {
 
 #[derive(Debug, Clone, Parser)]
 struct SubscribeArgs {
+    /// bind address <IP:PORT> for prometheus HTTP server endpoint, or "0" to bind to a random localhost port.
+    #[clap(long)]
+    prometheus: Option<PrometheusBindAddr>,
+
+    /// Output to write geyser events to.
+    /// If not specified, output will be written to stdout
+    #[clap(long)]
+    out: Option<String>,
+
     /// Name of the persistent subscriber
     #[clap(long)]
     name: String,
@@ -352,12 +402,34 @@ pub fn create_shutdown() -> BoxFuture<'static, ()> {
 
 async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     let SubscribeArgs {
+        prometheus,
         name: cg_name,
         commitment,
         account: pubkey,
         owner,
         tx_account: tx_pubkey,
+        out,
     } = args;
+
+    let mut out: Box<dyn Write> = if let Some(out) = out {
+        Box::new(
+            File::options()
+                .write(true)
+                .open(PathBuf::from(out))
+                .expect("Failed to open output file"),
+        )
+    } else {
+        Box::new(stdout())
+    };
+
+    let registry = prometheus::Registry::new();
+    yellowstone_fumarole_client::metrics::register_metrics(&registry);
+
+    if let Some(bind_addr) = prometheus {
+        let socket_addr: SocketAddr = bind_addr.into();
+        tokio::spawn(prometheus_server(socket_addr, registry));
+    }
+
     let commitment_level: CommitmentLevel = commitment.into();
     // This request listen for all account updates and transaction updates
     let request = SubscribeRequest {
@@ -449,33 +521,12 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
                 };
 
                 if let Some(message) = message {
-                    println!("{}", message);
+                    writeln!(out, "{}", message).expect("Failed to write to output file");
                 }
             }
         }
     }
     println!("Exiting subscribe loop");
-}
-
-#[allow(dead_code)]
-fn setup_tracing_test_many(
-    modules: impl IntoIterator<Item = &'static str>,
-) -> Result<(), tracing_subscriber::util::TryInitError> {
-    let is_atty = stdout().is_terminal() && stderr().is_terminal();
-    let io_layer = tracing_subscriber::fmt::layer()
-        .with_ansi(is_atty)
-        .with_line_number(true);
-
-    let directives = modules
-        .into_iter()
-        .fold(EnvFilter::default(), |filter, module| {
-            filter.add_directive(format!("{module}=debug").parse().expect("invalid module"))
-        });
-
-    tracing_subscriber::registry()
-        .with(io_layer)
-        .with(directives)
-        .try_init()
 }
 
 async fn test_config(mut fumarole_client: FumaroleClient) {
@@ -506,7 +557,10 @@ async fn main() {
 
     let filter = format!("{curr_crate}={verbosity},yellowstone_fumarole_client={verbosity}");
     let env_filter = EnvFilter::new(filter);
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_line_number(true)
+        .init();
 
     // setup_tracing_test_many(["yellowstone_fumarole_client"]);
     let config = std::fs::read_to_string(&args.config).expect("Failed to read config file");
