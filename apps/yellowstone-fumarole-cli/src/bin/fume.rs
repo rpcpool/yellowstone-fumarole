@@ -4,6 +4,7 @@ use {
     solana_sdk::{bs58, pubkey::Pubkey},
     std::{
         collections::{HashMap, HashSet},
+        env,
         fmt::{self, Debug},
         fs::File,
         io::{stdout, Write},
@@ -36,6 +37,8 @@ use {
         SubscribeUpdateBlockMeta, SubscribeUpdateSlot, SubscribeUpdateTransaction,
     },
 };
+
+const FUMAROLE_CONFIG_ENV: &str = "FUMAROLE_CONFIG";
 
 #[derive(Debug, Clone)]
 pub struct PrometheusBindAddr(SocketAddr);
@@ -78,9 +81,13 @@ impl FromStr for PrometheusBindAddr {
 #[derive(Debug, Clone, Parser)]
 #[clap(author, version, about = "Yellowstone Fumarole CLI")]
 struct Args {
-    /// Path to static config file
+    /// Path to the config file.
+    /// If not specified, the default config file will be used.
+    /// The default config file is ~/.fumarole/config.yaml.
+    /// You can also set the FUMAROLE_CONFIG environment variable to specify the config file.
+    /// If the config file is not found, the program will exit with an error.
     #[clap(long)]
-    config: PathBuf,
+    config: Option<PathBuf>,
 
     #[clap(flatten)]
     verbose: clap_verbosity_flag::Verbosity,
@@ -172,7 +179,6 @@ impl From<CommitmentOption> for CommitmentLevel {
         }
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SubscribeDataType {
@@ -501,7 +507,7 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
                         ..Default::default()
                     },
                 )]);
-            },
+            }
             SubscribeDataType::Transaction => {
                 request.transactions = HashMap::from([(
                     "fumarole".to_owned(),
@@ -516,7 +522,7 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
                     "fumarole".to_owned(),
                     SubscribeRequestFilterSlots::default(),
                 )]);
-            },
+            }
             SubscribeDataType::BlockMeta => {
                 request.blocks_meta = HashMap::from([(
                     "fumarole".to_owned(),
@@ -618,6 +624,14 @@ async fn test_config(mut fumarole_client: FumaroleClient) {
     }
 }
 
+fn home_dir() -> Option<PathBuf> {
+    if cfg!(target_os = "windows") {
+        env::var("USERPROFILE").ok().map(PathBuf::from)
+    } else {
+        env::var("HOME").ok().map(PathBuf::from)
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -631,9 +645,20 @@ async fn main() {
         .with_line_number(true)
         .init();
 
-    // setup_tracing_test_many(["yellowstone_fumarole_client"]);
-    let config = std::fs::read_to_string(&args.config).expect("Failed to read config file");
+    let maybe_config = args.config;
+    let config = if let Some(config_path) = maybe_config {
+        std::fs::read_to_string(&config_path).expect("Failed to read config file")
+    } else {
+        let mut default_config_path = home_dir().expect("Failed to get home directory");
+        default_config_path.push(".fumarole");
+        default_config_path.push("config.yaml");
 
+        let config_path = std::env::var(FUMAROLE_CONFIG_ENV)
+            .map(PathBuf::from)
+            .unwrap_or(default_config_path);
+        std::fs::read_to_string(&config_path)
+            .unwrap_or_else(|_| panic!("Failed to read config file at {config_path:?}"))
+    };
     let config = serde_yaml::from_str::<FumaroleConfig>(config.as_str())
         .expect("failed to parse fumarole config");
 

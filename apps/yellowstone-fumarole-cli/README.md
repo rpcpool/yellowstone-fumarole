@@ -12,11 +12,10 @@ $ cargo install yellowstone-fumarole-cli
 ## Usage
 
 ```sh
-fume --help
-
+fume help
 Yellowstone Fumarole CLI
 
-Usage: fume [OPTIONS] --config <CONFIG> <COMMAND>
+Usage: fume [OPTIONS] <COMMAND>
 
 Commands:
   test-config  Test the connection to the fumarole service
@@ -29,7 +28,7 @@ Commands:
   help         Print this message or the help of the given subcommand(s)
 
 Options:
-      --config <CONFIG>  Path to static config file
+      --config <CONFIG>  Path to the config file. If not specified, the default config file will be used. The default config file is ~/.fumarole/config.yaml. You can also set the FUMAROLE_CONFIG environment variable to specify the config file. If the config file is not found, the program will exit with an error
   -v, --verbose...       Increase logging verbosity
   -q, --quiet...         Decrease logging verbosity
   -h, --help             Print help
@@ -37,7 +36,7 @@ Options:
 ```
 
 
-### Configuration file
+## Configuration file
 
 Here's how to configure your config file:
 
@@ -50,65 +49,75 @@ x-token = "00000000-0000-0000-0000-000000000000"
 You can test your configuration file with `test-config` subcommand:
 
 ```sh
-$ fume --config path/to/config.toml test-config
+fume --config path/to/config.toml test-config
 ```
 
-or with custom config path:
+By default, if you don't provide `--config`, fumarole CLI will use the value at `FUMAROLE_CONFIG` environment variable if set, 
+otherwise fallback to `~/.fumarole/config.yaml`.
+
+
+## Create a Persistent Subscriber
 
 ```sh
-$ fume --config path/to/config.toml test-config
+fume create --name helloworld-1 \
 ```
 
-### Create a Persistent Subscriber
-
+## List all persistent subscribers
 
 ```sh
-$ fume create --name helloworld-1 \
+fume list
 ```
 
-### List all persistent subscribers
+## Delete a persistent subscribers
 
 ```sh
-$ fume list
+fume delete --name helloworld
 ```
 
-### Delete a persistent subscribers
+## Delete all persistent subscribers
 
 ```sh
-$ fume delete --name helloworld
+fume delete-all
 ```
 
-### Delete all persistent subscribers
-
-```sh
-$ fume delete-all
-```
-
-### Stream summary on terminal
+## Stream summary on terminal
 
 To stream out from the CLI, you can use the `stream` command and its various features!
 
 ```sh
-$ fume subscribe --name helloworld
+fume subscribe --name helloworld
 ```
 
-You can filter the stream content by adding one or multiple occurrence of the following options:
+### Filters
 
-- `--tx-pubkey <base58 pubkey>` : filter transaction by account keys.
-- `--owner <base58 pubkey>` : filter account update based on its owner
-- `--account <base58 pubkey>` : filter account update based on accout key. 
+You can filter by event type : account, transaction, slot status and block meta:
+
+```sh
+fume subscribe --name <SUBSCRIBER_NAME> --include tx  # This will only stream out transaction
+```
+
+```sh
+fume subscribe --name <SUBSCRIBER_NAME> --include account,slot  # This will only stream out account update and slot status
+```
+
+```sh
+ fume subscribe --name <SUBSCRIBER_NAME> --include all  # This will stream everything : account update, transactions, slot status and block meta update.
+```
+
+You can also filter incoming Geyser events by account pubkeys, account owners and transaction account inclusion.
 
 Here is an example to get all account updates owned by Token SPL program:
 
 ```sh
-$ fume subscribe --name helloworld \
+fume subscribe --name helloworld \
 --owner TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
 ```
 
 Here is how to chain multiple filters together:
  
 ```sh
-$ fume subscribe --cg-name helloworld \
+fume -- subscribe --name test1 \
+--include tx,account
 --owner metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s \
 --owner TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb \
 --owner TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA \

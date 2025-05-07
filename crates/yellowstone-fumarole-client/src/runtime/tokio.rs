@@ -143,7 +143,7 @@ impl TokioFumeDragonsmouthRuntime {
                         blockchain_history.events.len()
                     );
                 }
-                
+
                 self.sm.queue_blockchain_event(blockchain_history.events);
                 #[cfg(feature = "prometheus")]
                 {
