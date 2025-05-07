@@ -137,10 +137,13 @@ impl TokioFumeDragonsmouthRuntime {
                 self.sm.update_committed_offset(commit_offset_result.offset);
             }
             proto::control_response::Response::PollHist(blockchain_history) => {
-                tracing::debug!(
-                    "polled blockchain history : {} events",
-                    blockchain_history.events.len()
-                );
+                if !blockchain_history.events.is_empty() {
+                    tracing::debug!(
+                        "polled blockchain history : {} events",
+                        blockchain_history.events.len()
+                    );
+                }
+                
                 self.sm.queue_blockchain_event(blockchain_history.events);
                 #[cfg(feature = "prometheus")]
                 {
@@ -159,7 +162,6 @@ impl TokioFumeDragonsmouthRuntime {
     async fn poll_history_if_needed(&mut self) {
         if self.sm.need_new_blockchain_events() {
             let cmd = build_poll_history_cmd(Some(self.sm.committable_offset));
-            tracing::debug!("polling history...");
             self.control_plane_tx.send(cmd).await.expect("disconnected");
         }
     }
@@ -219,7 +221,6 @@ impl TokioFumeDragonsmouthRuntime {
     }
 
     async unsafe fn force_commit_offset(&mut self) {
-        tracing::debug!("committing offset {}", self.sm.committable_offset);
         self.control_plane_tx
             .send(build_commit_offset_cmd(self.sm.committable_offset))
             .await
@@ -258,7 +259,6 @@ impl TokioFumeDragonsmouthRuntime {
         }
 
         tracing::debug!("draining {} slot status", slot_status_vec.len());
-
         for slot_status in slot_status_vec {
             let mut matched_filters = vec![];
             for (filter_name, filter) in &self.subscribe_request.slots {
@@ -284,6 +284,7 @@ impl TokioFumeDragonsmouthRuntime {
                         },
                     )),
                 };
+                tracing::trace!("sending dragonsmouth update: {:?}", update);
                 if self.dragonsmouth_outlet.send(Ok(update)).await.is_err() {
                     return;
                 }

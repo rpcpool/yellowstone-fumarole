@@ -3,7 +3,7 @@ use {
     futures::{future::BoxFuture, FutureExt},
     solana_sdk::{bs58, pubkey::Pubkey},
     std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         fmt::{self, Debug},
         fs::File,
         io::{stdout, Write},
@@ -173,6 +173,50 @@ impl From<CommitmentOption> for CommitmentLevel {
     }
 }
 
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SubscribeDataType {
+    Account,
+    Transaction,
+    Slot,
+    BlockMeta,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubscribeInclude {
+    set: HashSet<SubscribeDataType>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid include type {0}")]
+pub struct FromStrSubscribeIncludeErr(String);
+
+impl FromStr for SubscribeInclude {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let include = s
+            .split(',')
+            .map(|s| s.trim())
+            .map(|s| match s {
+                "account" => Ok(vec![SubscribeDataType::Account]),
+                "tx" => Ok(vec![SubscribeDataType::Transaction]),
+                "meta" => Ok(vec![SubscribeDataType::BlockMeta]),
+                "slot" => Ok(vec![SubscribeDataType::Slot]),
+                "all" => Ok(vec![
+                    SubscribeDataType::Account,
+                    SubscribeDataType::Transaction,
+                    SubscribeDataType::Slot,
+                    SubscribeDataType::BlockMeta,
+                ]),
+                unknown => Err(format!("Invalid include type: {unknown}")),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let include = include.into_iter().flatten().collect::<HashSet<_>>();
+        Ok(SubscribeInclude { set: include })
+    }
+}
+
 #[derive(Debug, Clone, Parser)]
 struct SubscribeArgs {
     /// bind address <IP:PORT> for prometheus HTTP server endpoint, or "0" to bind to a random localhost port.
@@ -183,6 +227,14 @@ struct SubscribeArgs {
     /// If not specified, output will be written to stdout
     #[clap(long)]
     out: Option<String>,
+
+    ///
+    /// Comma separate list of Geyser event types you want to subscribe to.
+    /// Valid values are: [account, tx, slot, block_meta, all]
+    /// If not specified, all event types will be subscribed to.
+    /// Examples: account,tx, all, slot,meta,tx, tx
+    #[clap(long, default_value = "all")]
+    include: SubscribeInclude,
 
     /// Name of the persistent subscriber
     #[clap(long)]
@@ -404,6 +456,7 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     let SubscribeArgs {
         prometheus,
         name: cg_name,
+        include,
         commitment,
         account: pubkey,
         owner,
@@ -432,30 +485,46 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
 
     let commitment_level: CommitmentLevel = commitment.into();
     // This request listen for all account updates and transaction updates
-    let request = SubscribeRequest {
-        accounts: HashMap::from([(
-            "f1".to_owned(),
-            SubscribeRequestFilterAccounts {
-                account: pubkey.iter().map(|p| p.to_string()).collect(),
-                owner: owner.iter().map(|p| p.to_string()).collect(),
-                ..Default::default()
-            },
-        )]),
-        transactions: HashMap::from([(
-            "f1".to_owned(),
-            SubscribeRequestFilterTransactions {
-                account_include: tx_pubkey.iter().map(|p| p.to_string()).collect(),
-                ..Default::default()
-            },
-        )]),
-        blocks_meta: HashMap::from([(
-            "f1".to_owned(),
-            SubscribeRequestFilterBlocksMeta::default(),
-        )]),
-        slots: HashMap::from([("f1".to_owned(), SubscribeRequestFilterSlots::default())]),
+    let mut request = SubscribeRequest {
         commitment: Some(commitment_level.into()),
         ..Default::default()
     };
+
+    for to_include in include.set {
+        match to_include {
+            SubscribeDataType::Account => {
+                request.accounts = HashMap::from([(
+                    "fumarole".to_owned(),
+                    SubscribeRequestFilterAccounts {
+                        account: pubkey.iter().map(|p| p.to_string()).collect(),
+                        owner: owner.iter().map(|p| p.to_string()).collect(),
+                        ..Default::default()
+                    },
+                )]);
+            },
+            SubscribeDataType::Transaction => {
+                request.transactions = HashMap::from([(
+                    "fumarole".to_owned(),
+                    SubscribeRequestFilterTransactions {
+                        account_include: tx_pubkey.iter().map(|p| p.to_string()).collect(),
+                        ..Default::default()
+                    },
+                )]);
+            }
+            SubscribeDataType::Slot => {
+                request.slots = HashMap::from([(
+                    "fumarole".to_owned(),
+                    SubscribeRequestFilterSlots::default(),
+                )]);
+            },
+            SubscribeDataType::BlockMeta => {
+                request.blocks_meta = HashMap::from([(
+                    "fumarole".to_owned(),
+                    SubscribeRequestFilterBlocksMeta::default(),
+                )]);
+            }
+        }
+    }
 
     println!("Subscribing to consumer group {}", cg_name);
     let subscribe_config = FumaroleSubscribeConfig {
@@ -512,7 +581,7 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
                                 slot,
                                 ..
                             } = block_meta;
-                            Some(format!("block_meta={slot}"))
+                            Some(format!("block={slot}, tx_count={}, entry_count={}", block_meta.executed_transaction_count, block_meta.entries_count))
                         }
                         _ => None,
                     }
