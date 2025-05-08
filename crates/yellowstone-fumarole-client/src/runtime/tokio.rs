@@ -31,6 +31,8 @@ use {
     },
 };
 
+pub const DEFAULT_GC_INTERVAL: usize = 100;
+
 ///
 /// Mimics Dragonsmouth subscribe request bidirectional stream.
 ///
@@ -76,6 +78,7 @@ pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub dragonsmouth_outlet: mpsc::Sender<Result<geyser::SubscribeUpdate, tonic::Status>>,
     pub commit_interval: Duration,
     pub last_commit: Instant,
+    pub gc_interval: usize, // in ticks
 }
 
 const fn build_poll_history_cmd(from: Option<FumeOffset>) -> ControlCommand {
@@ -347,8 +350,13 @@ impl TokioFumeDragonsmouthRuntime {
         unsafe {
             self.force_commit_offset().await;
         }
-
+        let mut ticks = 0;
         loop {
+            ticks += 1;
+            if ticks % self.gc_interval  == 0 {
+                self.sm.gc();
+                ticks = 0;
+            }
             if self.dragonsmouth_outlet.is_closed() {
                 tracing::debug!("Detected dragonsmouth outlet closed");
                 break;

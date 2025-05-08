@@ -26,6 +26,8 @@ pub(crate) type FumeOffset = i64;
 
 pub(crate) type FumeSessionSequence = u64;
 
+pub(crate) const DEFAULT_SLOT_MEMORY_RETENTION: usize = 10000;
+
 #[derive(Debug, Clone)]
 pub(crate) struct FumeDownloadRequest {
     pub slot: Slot,
@@ -171,10 +173,15 @@ pub(crate) struct FumaroleSM {
     sequence: u64,
 
     sequence_to_offset: FxHashMap<FumeSessionSequence, FumeOffset>,
+
+    slot_memory_retention: usize,
 }
 
 impl FumaroleSM {
-    pub fn new(last_committed_offset: FumeOffset) -> Self {
+    pub fn new(
+        last_committed_offset: FumeOffset,
+        slot_memory_retention: usize,
+    ) -> Self {
         Self {
             last_committed_offset,
             slot_commitment_progression: Default::default(),
@@ -189,6 +196,7 @@ impl FumaroleSM {
             sequence: 1,
             last_processed_fume_sequence: 0,
             sequence_to_offset: Default::default(),
+            slot_memory_retention,
         }
     }
 
@@ -207,6 +215,18 @@ impl FumaroleSM {
         let ret = self.sequence;
         self.sequence += 1;
         ret
+    }
+
+    pub fn gc(&mut self) {
+        while self.downloaded_slot.len() > self.slot_memory_retention {
+            let Some(slot) = self.downloaded_slot.pop_first() else {
+                break;
+            };
+
+            self.slot_commitment_progression.remove(&slot);
+            self.inflight_slot_shard_download.remove(&slot);
+            self.blocked_slot_status_update.remove(&slot);
+        }
     }
 
     pub fn queue_blockchain_event<IT>(&mut self, events: IT)
@@ -482,7 +502,7 @@ mod tests {
 
     #[test]
     fn test_fumarole_sm_happy_path() {
-        let mut sm = FumaroleSM::new(0);
+        let mut sm = FumaroleSM::new(0, DEFAULT_SLOT_MEMORY_RETENTION);
 
         let event = random_blockchain_event(1, 1, CommitmentLevel::Processed);
         sm.queue_blockchain_event(vec![event.clone()]);
@@ -523,7 +543,7 @@ mod tests {
 
     #[test]
     fn it_should_dedup_slot_status() {
-        let mut sm = FumaroleSM::new(0);
+        let mut sm = FumaroleSM::new(0, DEFAULT_SLOT_MEMORY_RETENTION);
 
         let event = random_blockchain_event(1, 1, CommitmentLevel::Processed);
         sm.queue_blockchain_event(vec![event.clone()]);
@@ -553,7 +573,7 @@ mod tests {
 
     #[test]
     fn it_should_handle_min_commitment_level() {
-        let mut sm = FumaroleSM::new(0);
+        let mut sm = FumaroleSM::new(0, DEFAULT_SLOT_MEMORY_RETENTION);
 
         let event = random_blockchain_event(1, 1, CommitmentLevel::Processed);
         sm.queue_blockchain_event(vec![event.clone()]);

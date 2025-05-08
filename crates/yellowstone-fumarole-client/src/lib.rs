@@ -116,6 +116,8 @@ pub mod metrics;
 pub(crate) mod runtime;
 pub(crate) mod util;
 
+use runtime::{tokio::DEFAULT_GC_INTERVAL, DEFAULT_SLOT_MEMORY_RETENTION};
+
 use {
     config::FumaroleConfig,
     futures::future::{select, Either},
@@ -295,6 +297,16 @@ pub struct FumaroleSubscribeConfig {
     /// Capacity of each data channel for the fumarole client
     ///
     pub data_channel_capacity: NonZeroUsize,
+
+    ///
+    /// Garbage collection interval for the fumarole client in ticks (loop iteration of the fumarole runtime)
+    /// 
+    pub gc_interval: usize,
+
+    ///
+    /// How far back in time the fumarole client should retain slot memory.
+    /// This is used to avoid downloading the same slot multiple times.
+    pub slot_memory_retention: usize,
 }
 
 impl Default for FumaroleSubscribeConfig {
@@ -308,6 +320,8 @@ impl Default for FumaroleSubscribeConfig {
             commit_interval: DEFAULT_COMMIT_INTERVAL,
             max_failed_slot_download_attempt: DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT,
             data_channel_capacity: NonZeroUsize::new(DEFAULT_DRAGONSMOUTH_CAPACITY).unwrap(),
+            gc_interval: DEFAULT_GC_INTERVAL,
+            slot_memory_retention: DEFAULT_SLOT_MEMORY_RETENTION,
         }
     }
 }
@@ -493,7 +507,7 @@ impl FumaroleClient {
             .get(&0)
             .expect("no last committed offset");
 
-        let sm = FumaroleSM::new(*last_committed_offset);
+        let sm = FumaroleSM::new(*last_committed_offset, config.slot_memory_retention);
 
         let (dm_tx, dm_rx) = mpsc::channel(100);
         let dm_bidi = DragonsmouthSubscribeRequestBidi {
@@ -545,6 +559,7 @@ impl FumaroleClient {
             dragonsmouth_outlet,
             commit_interval: config.commit_interval,
             last_commit: Instant::now(),
+            gc_interval: config.gc_interval,
         };
         let download_task_runner_jh = handle.spawn(grpc_download_task_runner.run());
         let fumarole_rt_jh = handle.spawn(tokio_rt.run());
