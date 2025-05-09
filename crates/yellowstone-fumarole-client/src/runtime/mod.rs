@@ -178,10 +178,7 @@ pub(crate) struct FumaroleSM {
 }
 
 impl FumaroleSM {
-    pub fn new(
-        last_committed_offset: FumeOffset,
-        slot_memory_retention: usize,
-    ) -> Self {
+    pub fn new(last_committed_offset: FumeOffset, slot_memory_retention: usize) -> Self {
         Self {
             last_committed_offset,
             slot_commitment_progression: Default::default(),

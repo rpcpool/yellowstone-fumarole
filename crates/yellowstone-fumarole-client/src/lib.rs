@@ -19,7 +19,7 @@
 //!
 //! ## Create a `FumaroleClient`
 //!
-//! ```ignore
+//! ```rust
 //! use yellowstone_fumarole_client::FumaroleClient;
 //! use yellowstone_fumarole_client::config::FumaroleConfig;
 //!
@@ -47,30 +47,46 @@
 //! ```
 //! ## Dragonsmouth-like Subscribe
 //!
-//! ```ignore
-//! use yellowstone_fumarole_client::FumaroleClient;
-//!
-//!
-//! let mut client = FumaroleClient::connect(config).await.unwrap();
-//!
-//! let request = geyser::SubscribeRequest {
-//!     accounts: HashMap::from([("f1".to_owned(), SubscribeRequestFilterAccounts::default())]),
-//!     transactions: HashMap::from([("f1".to_owned(), SubscribeRequestFilterTransactions::default())]),
-//!     ..Default::default()
+//! ```rust
+//! use {
+//!     yellowstone_fumarole_client::{
+//!         FumaroleClient, config::FumaroleConfig, DragonsmouthAdapterSession
+//!     },
+//!     yellowstone_grpc_proto::geyser::{
+//!         SubscribeRequest, SubscribeRequestFilterAccounts,
+//!         SubscribeRequestFilterTransactions,
+//!    },
 //! };
 //!
+//! #[tokio::main]
+//! async fn main() {
+//!     let config = FumaroleConfig {
+//!         endpoint: "https://example.com".to_string(),
+//!         x_token: Some("00000000-0000-0000-0000-000000000000".to_string()),
+//!         max_decoding_message_size_bytes: FumaroleConfig::default_max_decoding_message_size_bytes(),
+//!         x_metadata: Default::default(),
+//!     };
 //!
-//! let dragonsmouth_adapter = client.dragonsmouth_subscribe("my-consumer-group", request).await.unwrap();
+//!     let mut client = FumaroleClient::connect(config).await.unwrap();
 //!
-//! let DragonsmouthAdapterSession {
-//!     sink: _, // Channel to update [`SubscribeRequest`] requests to the fumarole service
-//!     mut source, // Channel to receive updates from the fumarole service
-//!     runtime_handle: _, // Handle to the fumarole session client runtime
-//! } = dragonsmouth_adapter;
+//!     let request = SubscribeRequest {
+//!         accounts: HashMap::from([("f1".to_owned(), SubscribeRequestFilterAccounts::default())]),
+//!         transactions: HashMap::from([("f1".to_owned(), SubscribeRequestFilterTransactions::default())]),
+//!         ..Default::default()
+//!     };
 //!
-//! while let Some(result) = source.recv().await {
-//!    let event = result.expect("Failed to receive event");
-//!    // ... do something with the event
+//!     let dragonsmouth_adapter = client.dragonsmouth_subscribe("my-consumer-group", request).await.unwrap();
+//!
+//!     let DragonsmouthAdapterSession {
+//!         sink: _, // Channel to update [`SubscribeRequest`] requests to the fumarole service
+//!         mut source, // Channel to receive updates from the fumarole service
+//!         runtime_handle: _, // Handle to the fumarole session client runtime
+//!     } = dragonsmouth_adapter;
+//!
+//!     while let Some(result) = source.recv().await {
+//!        let event = result.expect("Failed to receive event");
+//!        println!("{:?}", event);
+//!     }
 //! }
 //! ```
 //!
@@ -116,15 +132,16 @@ pub mod metrics;
 pub(crate) mod runtime;
 pub(crate) mod util;
 
-use runtime::{tokio::DEFAULT_GC_INTERVAL, DEFAULT_SLOT_MEMORY_RETENTION};
-
 use {
     config::FumaroleConfig,
     futures::future::{select, Either},
     proto::control_response::Response,
     runtime::{
-        tokio::{DownloadTaskRunnerChannels, GrpcDownloadTaskRunner, TokioFumeDragonsmouthRuntime},
-        FumaroleSM,
+        tokio::{
+            DownloadTaskRunnerChannels, GrpcDownloadTaskRunner, TokioFumeDragonsmouthRuntime,
+            DEFAULT_GC_INTERVAL,
+        },
+        FumaroleSM, DEFAULT_SLOT_MEMORY_RETENTION,
     },
     std::{
         collections::HashMap,
@@ -300,7 +317,7 @@ pub struct FumaroleSubscribeConfig {
 
     ///
     /// Garbage collection interval for the fumarole client in ticks (loop iteration of the fumarole runtime)
-    /// 
+    ///
     pub gc_interval: usize,
 
     ///

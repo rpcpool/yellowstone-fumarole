@@ -353,7 +353,7 @@ impl TokioFumeDragonsmouthRuntime {
         let mut ticks = 0;
         loop {
             ticks += 1;
-            if ticks % self.gc_interval  == 0 {
+            if ticks % self.gc_interval == 0 {
                 self.sm.gc();
                 ticks = 0;
             }
