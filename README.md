@@ -18,6 +18,16 @@ We offer a simple fumarole Rust client crate in `crates/yellowstone-fumarole-cli
 An example can be found in `examples/rust/client.rs`.
 See rust example [README](examples/rust/README.md) for more details.
 
+## Must know: Staleness
+
+
+Unlike _Dragonsmouth_, you can consume data at your own pace, since Fumarole uses a polling approach at its core.
+
+However, it is important you don't over commit to the amount of data you want to subcribe to.
+
+Fumarole does not store data forever and if you are too slow to make progress in your subscriber session, your
+TCP connection will be interrupt because of staleness.
+
 ## Examples
 
 See [examples/rust folder](examples/rust).
