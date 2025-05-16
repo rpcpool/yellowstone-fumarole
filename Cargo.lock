@@ -2483,9 +2483,9 @@ dependencies = [
 
 [[package]]
 name = "prometheus"
-version = "0.13.4"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d33c28a30771f7f96db69893f78b857f7450d7e0237e9c8fc6427a81bae7ed1"
+checksum = "3ca5326d8d0b950a9acd87e6a3f94745394f62e4dae1b1ee22b2bc0c394af43a"
 dependencies = [
  "cfg-if",
  "fnv",
@@ -2493,7 +2493,7 @@ dependencies = [
  "memchr",
  "parking_lot",
  "protobuf",
- "thiserror",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
@@ -2550,9 +2550,14 @@ dependencies = [
 
 [[package]]
 name = "protobuf"
-version = "2.28.0"
+version = "3.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "106dd99e98437432fed6519dedecfade6a06a73bb7b2a1e019fdd2bee5778d94"
+checksum = "d65a1d4ddae7d8b5de68153b48f6aa3bba8cb002b243dbdbc55a5afbc98f99f4"
+dependencies = [
+ "once_cell",
+ "protobuf-support",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "protobuf-src"
@@ -2561,6 +2566,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7ac8852baeb3cc6fb83b93646fb93c0ffe5d14bf138c945ceb4b9948ee0e3c1"
 dependencies = [
  "autotools",
+]
+
+[[package]]
+name = "protobuf-support"
+version = "3.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6"
+dependencies = [
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3182,7 +3196,7 @@ dependencies = [
  "spl-token-2022",
  "spl-token-group-interface",
  "spl-token-metadata-interface",
- "thiserror",
+ "thiserror 1.0.69",
  "zstd",
 ]
 
@@ -3247,7 +3261,7 @@ dependencies = [
  "ark-serialize",
  "bytemuck",
  "solana-program",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3321,7 +3335,7 @@ dependencies = [
  "bytemuck_derive",
  "curve25519-dalek 4.1.3",
  "solana-program",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3472,7 +3486,7 @@ dependencies = [
  "log",
  "reqwest",
  "solana-sdk",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3583,7 +3597,7 @@ dependencies = [
  "solana-stable-layout",
  "solana-sysvar-id",
  "solana-transaction-error",
- "thiserror",
+ "thiserror 1.0.69",
  "wasm-bindgen",
 ]
 
@@ -3667,7 +3681,7 @@ dependencies = [
  "solana-type-overrides",
  "solana-vote",
  "solana_rbpf",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3775,7 +3789,7 @@ dependencies = [
  "solana-short-vec",
  "solana-signature",
  "solana-transaction-error",
- "thiserror",
+ "thiserror 1.0.69",
  "wasm-bindgen",
 ]
 
@@ -3800,7 +3814,7 @@ dependencies = [
  "borsh 1.5.7",
  "libsecp256k1",
  "solana-define-syscall",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3969,7 +3983,7 @@ dependencies = [
  "spl-token-2022",
  "spl-token-group-interface",
  "spl-token-metadata-interface",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3987,7 +4001,7 @@ dependencies = [
  "solana-account-decoder-client-types",
  "solana-sdk",
  "solana-signature",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4011,7 +4025,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "solana-sdk",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4042,7 +4056,7 @@ dependencies = [
  "solana-program",
  "solana-sdk",
  "subtle",
- "thiserror",
+ "thiserror 1.0.69",
  "zeroize",
 ]
 
@@ -4060,7 +4074,7 @@ dependencies = [
  "rand 0.8.5",
  "rustc-demangle",
  "scroll",
- "thiserror",
+ "thiserror 1.0.69",
  "winapi",
 ]
 
@@ -4077,7 +4091,7 @@ dependencies = [
  "solana-program",
  "spl-token",
  "spl-token-2022",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4112,7 +4126,7 @@ dependencies = [
  "quote",
  "sha2 0.10.9",
  "syn 2.0.101",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4148,7 +4162,7 @@ dependencies = [
  "num-traits",
  "solana-program",
  "spl-program-error-derive",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4189,7 +4203,7 @@ dependencies = [
  "num-traits",
  "num_enum",
  "solana-program",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4213,7 +4227,7 @@ dependencies = [
  "spl-token-metadata-interface",
  "spl-transfer-hook-interface",
  "spl-type-length-value",
- "thiserror",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4398,7 +4412,16 @@ version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "567b8a2dae586314f7be2a752ec7474332959c6460e02bde30d702a66d488708"
+dependencies = [
+ "thiserror-impl 2.0.12",
 ]
 
 [[package]]
@@ -4406,6 +4429,17 @@ name = "thiserror-impl"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.101",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f7cf42b4507d8ea322120659672cf1b9dbb93f8f2d4ecfd6e51350ff5b17a1d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5248,7 +5282,7 @@ checksum = "ea2f10b9bb0928dfb1b42b65e1f9e36f7f54dbdf08457afefb38afcdec4fa2bb"
 
 [[package]]
 name = "yellowstone-fumarole-cli"
-version = "0.1.0-pre.2+solana.2.1"
+version = "0.1.0-2+solana.2.1"
 dependencies = [
  "clap",
  "clap-verbosity-flag",
@@ -5260,7 +5294,7 @@ dependencies = [
  "serde_yaml",
  "solana-sdk",
  "tabled",
- "thiserror",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -5273,7 +5307,7 @@ dependencies = [
 
 [[package]]
 name = "yellowstone-fumarole-client"
-version = "0.2.0-pre.2+solana.2.1"
+version = "0.2.0-2+solana.2.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -5288,7 +5322,7 @@ dependencies = [
  "serde_with",
  "serde_yaml",
  "solana-sdk",
- "thiserror",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -5322,7 +5356,7 @@ checksum = "036a48ab3619ae9353e7b1797fbffc100c9b075196b32308ac7d3364d6a62460"
 dependencies = [
  "bytes",
  "futures",
- "thiserror",
+ "thiserror 1.0.69",
  "tonic",
  "tonic-health",
  "yellowstone-grpc-proto",
