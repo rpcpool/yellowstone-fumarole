@@ -128,6 +128,7 @@ enum LoopInstruction {
 }
 
 impl TokioFumeDragonsmouthRuntime {
+    #[allow(dead_code)]
     const RUNTIME_NAME: &'static str = "tokio";
 
     fn handle_control_response(&mut self, control_response: proto::ControlResponse) {
@@ -533,6 +534,7 @@ pub(crate) struct DataPlaneConn {
 }
 
 impl GrpcDownloadTaskRunner {
+    #[allow(dead_code)]
     const RUNTIME_NAME: &'static str = "tokio_grpc_task_runner";
 
     #[allow(clippy::too_many_arguments)]
@@ -834,6 +836,7 @@ pub(crate) struct CompletedDownloadBlockTask {
 }
 
 impl GrpcDownloadBlockTaskRun {
+    #[allow(dead_code)]
     const RUNTIME_NAME: &'static str = "tokio_grpc_task_run";
 
     async fn run(mut self) -> Result<CompletedDownloadBlockTask, DownloadBlockError> {

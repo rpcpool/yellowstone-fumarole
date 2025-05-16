@@ -646,8 +646,9 @@ async fn main() {
         .init();
 
     let maybe_config = args.config;
-    let config = if let Some(config_path) = maybe_config {
-        std::fs::read_to_string(&config_path).expect("Failed to read config file")
+    let config_file = if let Some(config_path) = maybe_config {
+        std::fs::File::open(config_path.clone())
+            .unwrap_or_else(|_| panic!("Failed to read config file at {config_path:?}"))
     } else {
         let mut default_config_path = home_dir().expect("Failed to get home directory");
         default_config_path.push(".fumarole");
@@ -656,11 +657,11 @@ async fn main() {
         let config_path = std::env::var(FUMAROLE_CONFIG_ENV)
             .map(PathBuf::from)
             .unwrap_or(default_config_path);
-        std::fs::read_to_string(&config_path)
+        std::fs::File::open(config_path.clone())
             .unwrap_or_else(|_| panic!("Failed to read config file at {config_path:?}"))
     };
-    let config = serde_yaml::from_str::<FumaroleConfig>(config.as_str())
-        .expect("failed to parse fumarole config");
+    let config: FumaroleConfig =
+        serde_yaml::from_reader(config_file).expect("failed to parse fumarole config");
 
     let fumarole_client = FumaroleClient::connect(config.clone())
         .await

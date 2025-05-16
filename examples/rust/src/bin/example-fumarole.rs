@@ -6,8 +6,8 @@ use {
         config::FumaroleConfig, DragonsmouthAdapterSession, FumaroleClient,
     },
     yellowstone_grpc_proto::geyser::{
-        subscribe_update::UpdateOneof, SubscribeRequest, SubscribeRequestFilterAccounts,
-        SubscribeRequestFilterTransactions, SubscribeUpdateAccount, SubscribeUpdateTransaction,
+        subscribe_update::UpdateOneof, SubscribeRequest, SubscribeRequestFilterTransactions,
+        SubscribeUpdateAccount, SubscribeUpdateTransaction,
     },
 };
 
@@ -30,13 +30,9 @@ enum Action {
 
 #[derive(Debug, Clone, Parser)]
 struct SubscribeArgs {
-    /// Name of the consumer group to subscribe to
+    /// Name of the persistent subscriber to use
     #[clap(long)]
-    cg_name: String,
-
-    /// Number of parallel streams to open: must be lower or equal to the size of your consumer group, otherwise the program will return an error
-    #[clap(long)]
-    par: Option<u32>,
+    name: String,
 }
 
 fn summarize_account(account: SubscribeUpdateAccount) -> Option<String> {
@@ -57,7 +53,6 @@ fn summarize_tx(tx: SubscribeUpdateTransaction) -> Option<String> {
 async fn subscribe(args: SubscribeArgs, config: FumaroleConfig) {
     // This request listen for all account updates and transaction updates
     let request = SubscribeRequest {
-        accounts: HashMap::from([("f1".to_owned(), SubscribeRequestFilterAccounts::default())]),
         transactions: HashMap::from([(
             "f1".to_owned(),
             SubscribeRequestFilterTransactions::default(),
@@ -70,31 +65,50 @@ async fn subscribe(args: SubscribeArgs, config: FumaroleConfig) {
         .expect("Failed to connect to fumarole");
 
     let dragonsmouth_session = fumarole_client
-        .dragonsmouth_subscribe(args.cg_name, request)
+        .dragonsmouth_subscribe(args.name, request)
         .await
         .expect("Failed to subscribe");
 
     let DragonsmouthAdapterSession {
         sink: _,
         mut source,
-        fumarole_handle: _,
+        mut fumarole_handle,
     } = dragonsmouth_session;
 
-    while let Some(result) = source.recv().await {
-        let event = result.expect("Failed to receive event");
-
-        let message = if let Some(oneof) = event.update_oneof {
-            match oneof {
-                UpdateOneof::Account(account_update) => summarize_account(account_update),
-                UpdateOneof::Transaction(tx) => summarize_tx(tx),
-                _ => None,
+    loop {
+        tokio::select! {
+            result = &mut fumarole_handle => {
+                eprintln!("Fumarole handle closed: {:?}", result);
+                break;
             }
-        } else {
-            None
-        };
+            maybe = source.recv() => {
+                match maybe {
+                    None => {
+                        eprintln!("Source closed");
+                        break;
+                    }
+                    Some(result) => {
+                        let event = result.expect("Failed to receive event");
+                        let message = if let Some(oneof) = event.update_oneof {
+                            match oneof {
+                                UpdateOneof::Account(account_update) => {
+                                    summarize_account(account_update)
+                                }
+                                UpdateOneof::Transaction(tx) => {
+                                    summarize_tx(tx)
+                                }
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
 
-        if let Some(message) = message {
-            println!("{}", message);
+                        if let Some(message) = message {
+                            println!("{}", message);
+                        }
+                    }
+                }
+            }
         }
     }
 }

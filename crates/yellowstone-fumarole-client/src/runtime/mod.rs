@@ -430,6 +430,7 @@ impl FumaroleSM {
         }
     }
 
+    #[allow(dead_code)]
     pub fn slot_status_update_queue_len(&self) -> usize {
         self.slot_status_update_queue.len()
     }
@@ -460,6 +461,7 @@ impl FumaroleSM {
         }
     }
 
+    #[allow(dead_code)]
     pub fn processed_offset_queue_len(&self) -> usize {
         self.processed_offset.len()
     }
