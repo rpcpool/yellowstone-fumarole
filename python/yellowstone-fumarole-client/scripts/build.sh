@@ -23,8 +23,8 @@ echo "fume_dir: $package_dir"
 echo "repo_dir: $repo_dir"
 proto_path="$repo_dir/proto"
 proto_path2="$repo_dir/yellowstone-grpc/yellowstone-grpc-proto/proto"
-out_dir="$package_dir/yellowstone_api"
-module_name="yellowstone_api"
+out_dir="$package_dir/yellowstone_fumarole_proto"
+module_name="yellowstone_fumarole_proto"
 rm -fr $out_dir/*
 mkdir -p $out_dir
 

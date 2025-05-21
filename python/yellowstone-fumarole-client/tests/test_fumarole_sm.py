@@ -7,7 +7,7 @@ from yellowstone_fumarole_client.runtime.state_machine import (
     SlotDownloadState,
 )
 
-from yellowstone_api.fumarole_v2_pb2 import BlockchainEvent, CommitmentLevel
+from yellowstone_fumarole_proto.fumarole_v2_pb2 import BlockchainEvent, CommitmentLevel
 
 
 # Tests

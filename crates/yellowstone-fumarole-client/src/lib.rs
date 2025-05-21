@@ -229,6 +229,7 @@ pub mod metrics;
 
 pub(crate) mod runtime;
 pub(crate) mod util;
+pub(crate) mod grpc;
 
 use {
     config::FumaroleConfig,
@@ -281,6 +282,7 @@ use {
     proto::{fumarole_client::FumaroleClient as TonicFumaroleClient, JoinControlPlane},
     runtime::tokio::DataPlaneConn,
     tonic::transport::Endpoint,
+    crate::grpc::FumaroleGrpcConnector,
 };
 
 #[derive(Clone)]
@@ -727,34 +729,5 @@ impl FumaroleClient {
     ) -> std::result::Result<tonic::Response<proto::CreateConsumerGroupResponse>, tonic::Status>
     {
         self.inner.create_consumer_group(request).await
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct FumaroleGrpcConnector {
-    config: FumaroleConfig,
-    endpoint: Endpoint,
-}
-
-impl FumaroleGrpcConnector {
-    async fn connect(
-        &self,
-    ) -> Result<
-        TonicFumaroleClient<InterceptedService<Channel, FumeInterceptor>>,
-        tonic::transport::Error,
-    > {
-        let channel = self.endpoint.connect().await?;
-        let interceptor = FumeInterceptor {
-            x_token: self
-                .config
-                .x_token
-                .as_ref()
-                .map(|token| token.try_into())
-                .transpose()
-                .unwrap(),
-            metadata: string_pairs_to_metadata_header(self.config.x_metadata.clone()).unwrap(),
-        };
-        Ok(TonicFumaroleClient::with_interceptor(channel, interceptor)
-            .max_decoding_message_size(self.config.max_decoding_message_size_bytes))
     }
 }

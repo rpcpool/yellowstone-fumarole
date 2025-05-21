@@ -1,30 +1,30 @@
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
-import yellowstone_api.solana_storage_pb2 as _solana_storage_pb2
+import yellowstone_fumarole_proto.solana_storage_pb2 as _solana_storage_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
 from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
-from yellowstone_api.solana_storage_pb2 import ConfirmedBlock as ConfirmedBlock
-from yellowstone_api.solana_storage_pb2 import ConfirmedTransaction as ConfirmedTransaction
-from yellowstone_api.solana_storage_pb2 import Transaction as Transaction
-from yellowstone_api.solana_storage_pb2 import Message as Message
-from yellowstone_api.solana_storage_pb2 import MessageHeader as MessageHeader
-from yellowstone_api.solana_storage_pb2 import MessageAddressTableLookup as MessageAddressTableLookup
-from yellowstone_api.solana_storage_pb2 import TransactionStatusMeta as TransactionStatusMeta
-from yellowstone_api.solana_storage_pb2 import TransactionError as TransactionError
-from yellowstone_api.solana_storage_pb2 import InnerInstructions as InnerInstructions
-from yellowstone_api.solana_storage_pb2 import InnerInstruction as InnerInstruction
-from yellowstone_api.solana_storage_pb2 import CompiledInstruction as CompiledInstruction
-from yellowstone_api.solana_storage_pb2 import TokenBalance as TokenBalance
-from yellowstone_api.solana_storage_pb2 import UiTokenAmount as UiTokenAmount
-from yellowstone_api.solana_storage_pb2 import ReturnData as ReturnData
-from yellowstone_api.solana_storage_pb2 import Reward as Reward
-from yellowstone_api.solana_storage_pb2 import Rewards as Rewards
-from yellowstone_api.solana_storage_pb2 import UnixTimestamp as UnixTimestamp
-from yellowstone_api.solana_storage_pb2 import BlockHeight as BlockHeight
-from yellowstone_api.solana_storage_pb2 import NumPartitions as NumPartitions
-from yellowstone_api.solana_storage_pb2 import RewardType as RewardType
+from yellowstone_fumarole_proto.solana_storage_pb2 import ConfirmedBlock as ConfirmedBlock
+from yellowstone_fumarole_proto.solana_storage_pb2 import ConfirmedTransaction as ConfirmedTransaction
+from yellowstone_fumarole_proto.solana_storage_pb2 import Transaction as Transaction
+from yellowstone_fumarole_proto.solana_storage_pb2 import Message as Message
+from yellowstone_fumarole_proto.solana_storage_pb2 import MessageHeader as MessageHeader
+from yellowstone_fumarole_proto.solana_storage_pb2 import MessageAddressTableLookup as MessageAddressTableLookup
+from yellowstone_fumarole_proto.solana_storage_pb2 import TransactionStatusMeta as TransactionStatusMeta
+from yellowstone_fumarole_proto.solana_storage_pb2 import TransactionError as TransactionError
+from yellowstone_fumarole_proto.solana_storage_pb2 import InnerInstructions as InnerInstructions
+from yellowstone_fumarole_proto.solana_storage_pb2 import InnerInstruction as InnerInstruction
+from yellowstone_fumarole_proto.solana_storage_pb2 import CompiledInstruction as CompiledInstruction
+from yellowstone_fumarole_proto.solana_storage_pb2 import TokenBalance as TokenBalance
+from yellowstone_fumarole_proto.solana_storage_pb2 import UiTokenAmount as UiTokenAmount
+from yellowstone_fumarole_proto.solana_storage_pb2 import ReturnData as ReturnData
+from yellowstone_fumarole_proto.solana_storage_pb2 import Reward as Reward
+from yellowstone_fumarole_proto.solana_storage_pb2 import Rewards as Rewards
+from yellowstone_fumarole_proto.solana_storage_pb2 import UnixTimestamp as UnixTimestamp
+from yellowstone_fumarole_proto.solana_storage_pb2 import BlockHeight as BlockHeight
+from yellowstone_fumarole_proto.solana_storage_pb2 import NumPartitions as NumPartitions
+from yellowstone_fumarole_proto.solana_storage_pb2 import RewardType as RewardType
 
 DESCRIPTOR: _descriptor.FileDescriptor
 Unspecified: _solana_storage_pb2.RewardType

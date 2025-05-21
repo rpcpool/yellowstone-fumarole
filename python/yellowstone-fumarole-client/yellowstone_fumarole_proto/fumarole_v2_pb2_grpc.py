@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-import yellowstone_api.fumarole_v2_pb2 as fumarole__v2__pb2
+import yellowstone_fumarole_proto.fumarole_v2_pb2 as fumarole__v2__pb2
 
 GRPC_GENERATED_VERSION = '1.71.0'
 GRPC_VERSION = grpc.__version__

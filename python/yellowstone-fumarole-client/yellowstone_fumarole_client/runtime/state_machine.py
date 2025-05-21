@@ -1,6 +1,6 @@
 from typing import Optional, List, Dict, Set, Deque, Tuple, Any
 from collections import deque, defaultdict
-from yellowstone_api.fumarole_v2_pb2 import (
+from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
     CommitmentLevel,
     BlockchainEvent,
 )
@@ -106,9 +106,7 @@ class FumaroleSM:
 
     def __init__(self, last_committed_offset: FumeOffset, slot_memory_retention: int):
         self.last_committed_offset = last_committed_offset
-        self.slot_commitment_progression = (
-            dict()
-        )  # Slot -> SlotCommitmentProgression
+        self.slot_commitment_progression = dict()  # Slot -> SlotCommitmentProgression
         self.downloaded_slot = set()  # Set of downloaded slots
         self.inflight_slot_shard_download = {}  # Slot -> SlotDownloadProgress
         self.blocked_slot_status_update = defaultdict(
@@ -118,7 +116,9 @@ class FumaroleSM:
         self.processed_offset = []  # Min-heap for (sequence, offset)
         self.committable_offset = last_committed_offset
         self.max_slot_detected = 0
-        self.unprocessed_blockchain_event: Deque[(FumeSessionSequence, BlockchainEvent)] = deque()
+        self.unprocessed_blockchain_event: Deque[
+            (FumeSessionSequence, BlockchainEvent)
+        ] = deque()
         self.sequence = 1
         self.last_processed_fume_sequence = 0
         self.sequence_to_offset = {}  # FumeSessionSequence -> FumeOffset
@@ -137,6 +137,7 @@ class FumaroleSM:
 
     def gc(self) -> None:
         """Garbage collect old slots to respect memory retention limit."""
+        LOGGER.debug("Garbage collecting old slots")
         while len(self.downloaded_slot) > self.slot_memory_retention:
             slot = self.downloaded_slot.pop(0) if self.downloaded_slot else None
             if slot is None:
@@ -220,13 +221,13 @@ class FumaroleSM:
             slot, SlotCommitmentProgression()
         )
 
-    def pop_slot_to_download(
-        self, commitment = None
-    ) -> Optional[FumeDownloadRequest]:
+    def pop_slot_to_download(self, commitment=None) -> Optional[FumeDownloadRequest]:
         """Pop the next slot to download."""
         min_commitment = commitment or CommitmentLevel.PROCESSED
         while self.unprocessed_blockchain_event:
-            session_sequence, blockchain_event = self.unprocessed_blockchain_event.popleft()
+            session_sequence, blockchain_event = (
+                self.unprocessed_blockchain_event.popleft()
+            )
             event_cl = blockchain_event.commitment_level
 
             if event_cl < min_commitment:

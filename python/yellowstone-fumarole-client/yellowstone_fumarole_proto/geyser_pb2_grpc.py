@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-import yellowstone_api.geyser_pb2 as geyser__pb2
+import yellowstone_fumarole_proto.geyser_pb2 as geyser__pb2
 
 GRPC_GENERATED_VERSION = '1.71.0'
 GRPC_VERSION = grpc.__version__
