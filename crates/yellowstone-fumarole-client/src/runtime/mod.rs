@@ -168,7 +168,7 @@ pub(crate) struct FumaroleSM {
     pub max_slot_detected: Slot,
 
     /// Unprocessed blockchain events
-    unprocessed_blockchain_event: VecDeque<(u64, proto::BlockchainEvent)>,
+    unprocessed_blockchain_event: VecDeque<(FumeSessionSequence, proto::BlockchainEvent)>,
 
     sequence: u64,
 
