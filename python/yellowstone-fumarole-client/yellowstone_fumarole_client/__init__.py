@@ -135,8 +135,8 @@ class FumaroleClient:
         config: FumaroleSubscribeConfig,
     ) -> DragonsmouthAdapterSession:
         """Subscribe to a dragonsmouth stream with custom configuration."""
-        dragonsmouth_outlet = asyncio.Queue(maxsize=DEFAULT_DRAGONSMOUTH_CAPACITY)
-        dragonsmouth_inlet = asyncio.Queue(maxsize=DEFAULT_DRAGONSMOUTH_CAPACITY)
+        dragonsmouth_outlet = asyncio.Queue(maxsize=config.data_channel_capacity)
+        dragonsmouth_inlet = asyncio.Queue(maxsize=config.data_channel_capacity)
         fume_control_plane_q = asyncio.Queue(maxsize=100)
 
         initial_join = JoinControlPlane(consumer_group_name=consumer_group_name)
@@ -148,21 +148,39 @@ class FumaroleClient:
         )
 
         async def control_plane_sink():
-            try:
-                while True:
+            while True:
+                try:
                     update = await fume_control_plane_q.get()
                     yield update
-            finally:
-                FumaroleClient.logger.debug("Control plane sink closed")
+                except asyncio.QueueShutDown:
+                    break
+
 
         fume_control_plane_stream_rx: grpc.aio.StreamStreamMultiCallable = (
             self.stub.Subscribe(control_plane_sink())
         )
 
+        
         control_response: ControlResponse = await fume_control_plane_stream_rx.read()
         init = control_response.init
         if init is None:
             raise ValueError(f"Unexpected initial response: {control_response}")
+        
+        # Once we have the initial response, we can spin a task to read from the stream
+        # and put the updates into the queue.
+        # This is a bit of a hack, but we need a Queue not a StreamStreamMultiCallable
+        # because Queue are cancel-safe, while Stream are not, or at least didn't find any docs about it.
+        fume_control_plane_rx_q = asyncio.Queue(maxsize=100)
+        async def control_plane_source():
+            while True:
+                try:
+                    async for update in fume_control_plane_stream_rx:
+                        await fume_control_plane_rx_q.put(update)
+                except asyncio.QueueShutDown:
+                    break
+                
+        _cp_src_task = asyncio.create_task(control_plane_source())
+
 
         FumaroleClient.logger.debug(f"Control response: {control_response}")
 
@@ -208,8 +226,8 @@ class FumaroleClient:
             dragonsmouth_bidi=dm_bidi,
             subscribe_request=request,
             consumer_group_name=consumer_group_name,
-            control_plane_q=fume_control_plane_q,
-            control_plane_stream_reader=fume_control_plane_stream_rx,
+            control_plane_tx_q=fume_control_plane_q,
+            control_plane_rx_q=fume_control_plane_rx_q,
             dragonsmouth_outlet=dragonsmouth_outlet,
             commit_interval=config.commit_interval,
             gc_interval=config.gc_interval,

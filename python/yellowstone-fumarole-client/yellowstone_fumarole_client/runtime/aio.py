@@ -1,5 +1,6 @@
 # DataPlaneConn
 import asyncio
+import grpc
 from typing import Optional, List
 from collections import deque
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
 from yellowstone_fumarole_proto.fumarole_v2_pb2_grpc import (
     Fumarole as GrpcFumaroleClient,
 )
+from yellowstone_fumarole_client.utils.aio import JoinSet, never 
 from yellowstone_fumarole_client.grpc_connectivity import FumaroleGrpcConnector
 import logging
 
@@ -90,8 +92,8 @@ class AsyncioFumeDragonsmouthRuntime:
         dragonsmouth_bidi: DragonsmouthSubscribeRequestBidi,
         subscribe_request: SubscribeRequest,
         consumer_group_name: str,
-        control_plane_q: asyncio.Queue,
-        control_plane_stream_reader,
+        control_plane_tx_q: asyncio.Queue,
+        control_plane_rx_q: asyncio.Queue,
         dragonsmouth_outlet: asyncio.Queue,
         commit_interval: float,  # in seconds
         gc_interval: int,
@@ -101,8 +103,8 @@ class AsyncioFumeDragonsmouthRuntime:
         self.dragonsmouth_bidi = dragonsmouth_bidi
         self.subscribe_request = subscribe_request
         self.consumer_group_name = consumer_group_name
-        self.control_plane_tx = control_plane_q
-        self.control_plane_stream_rx = control_plane_stream_reader
+        self.control_plane_tx = control_plane_tx_q
+        self.control_plane_rx = control_plane_rx_q
         self.dragonsmouth_outlet = dragonsmouth_outlet
         self.commit_interval = commit_interval
         self.last_commit = time.time()
@@ -145,10 +147,11 @@ class AsyncioFumeDragonsmouthRuntime:
 
     def schedule_download_task_if_any(self):
         while True:
-            if (
-                not self.download_task_runner_chans.download_task_queue_tx.qsize() < 100
-            ):  # Simulate try_reserve
+            download_task_queue_tx = self.download_task_runner_chans.download_task_queue_tx
+            assert download_task_queue_tx.maxsize == 10
+            if download_task_queue_tx.full():
                 break
+
             download_request = self.sm.pop_slot_to_download(self.commitment_level())
             if not download_request:
                 break
@@ -158,7 +161,7 @@ class AsyncioFumeDragonsmouthRuntime:
             )
             LOGGER.debug(f"Scheduling download task for slot {download_request.slot}")
             asyncio.create_task(
-                self.download_task_runner_chans.download_task_queue_tx.put(
+                download_task_queue_tx.put(
                     download_task_args
                 )
             )
@@ -167,7 +170,7 @@ class AsyncioFumeDragonsmouthRuntime:
         if download_result.kind == "Ok":
             completed = download_result.completed
             LOGGER.debug(
-                f"Download completed for slot {completed.slot}, shard {completed.shard_idx}"
+                f"Download completed for slot {completed.slot}, shard {completed.shard_idx}, {completed.total_event_downloaded} total events"
             )
             self.sm.make_slot_download_progress(completed.slot, completed.shard_idx)
         else:
@@ -202,7 +205,7 @@ class AsyncioFumeDragonsmouthRuntime:
             for filter_name, filter in self.subscribe_request.slots.items():
                 if (
                     filter.filter_by_commitment
-                    and slot_status.commitment_level.value == commitment
+                    and slot_status.commitment_level == commitment
                 ):
                     matched_filters.append(filter_name)
                 elif not filter.filter_by_commitment:
@@ -212,10 +215,10 @@ class AsyncioFumeDragonsmouthRuntime:
                 update = SubscribeUpdate(
                     filters=matched_filters,
                     created_at=None,
-                    update_oneof=SubscribeUpdateSlot(
+                    slot=SubscribeUpdateSlot(
                         slot=slot_status.slot,
                         parent=slot_status.parent_slot,
-                        status=slot_status.commitment_level.value,
+                        status=slot_status.commitment_level,
                         dead_error=slot_status.dead_error,
                     ),
                 )
@@ -257,17 +260,14 @@ class AsyncioFumeDragonsmouthRuntime:
                 self.sm.gc()
                 ticks = 0
 
-            if self.dragonsmouth_outlet.qsize() >= 100:  # Simulate is_closed
-                LOGGER.debug("Detected dragonsmouth outlet closed")
-                break
-
             commit_deadline = self.last_commit + self.commit_interval
             await self.poll_history_if_needed()
             self.schedule_download_task_if_any()
 
+            # asyncio queues are cancel safe
             tasks = [
                 asyncio.create_task(self.dragonsmouth_bidi.rx.get()),
-                asyncio.create_task(self.control_plane_stream_rx.read()),
+                asyncio.create_task(self.control_plane_rx.get()),
                 asyncio.create_task(
                     self.download_task_runner_chans.download_result_rx.get()
                 ),
@@ -358,7 +358,7 @@ class GrpcDownloadTaskRunner:
     ):
         self.data_plane_channel_vec = data_plane_channel_vec
         self.connector = connector
-        self.tasks = []
+        self.tasks = JoinSet()
         self.task_meta = {}
         self.cnc_rx = cnc_rx
         self.download_task_queue = download_task_queue
@@ -449,7 +449,7 @@ class GrpcDownloadTaskRunner:
         )
         task_id = self.task_counter
         self.task_counter += 1
-        self.tasks.append(asyncio.create_task(task.run(task_id)))
+        self.tasks.spawn(task.run(task_id))
         self.download_attempts[slot] = self.download_attempts.get(slot, 0) + 1
         conn.permits -= 1
         self.task_meta[task_id] = DataPlaneTaskMeta(
@@ -465,30 +465,42 @@ class GrpcDownloadTaskRunner:
             self.subscribe_request = cmd.subscribe_request
 
     async def run(self):
-        while self.outlet.qsize() < 100:  # Simulate is_closed
+        while True:
             maybe_available_client_idx = self.find_least_use_client()
             tasks = [asyncio.create_task(self.cnc_rx.get())]
             if maybe_available_client_idx is not None:
                 tasks.append(asyncio.create_task(self.download_task_queue.get()))
-            for task in self.tasks[:]:
-                if task.done():
-                    self.tasks.remove(task)
-                    task_id, result = task.result()
-                    await self.handle_data_plane_task_result(task_id, result)
+            else:
+                tasks.append(asyncio.create_task(never()))
+
+            next_download_result_fut = self.tasks.join_next()
+            if next_download_result_fut:
+                tasks.append(next_download_result_fut)
+            else:
+                tasks.append(asyncio.create_task(never()))
+
+            assert len(tasks) == 3
             if tasks:
-                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+
                 for task in done:
                     try:
                         result = task.result()
                         if task == tasks[0]:  # cnc_rx
                             self.handle_control_command(result)
-                        elif len(tasks) > 1 and task == tasks[1]:  # download_task_queue
+                        elif task == tasks[1]:  # download_task_queue
+                            assert maybe_available_client_idx is not None
                             self.spawn_grpc_download_task(
                                 maybe_available_client_idx, result
                             )
-                    except Exception as e:
-                        LOGGER.debug(f"Error: {e}")
-                        return
+                        elif task == tasks[2]:  # download_result_rx
+                            download_task = task.result()
+                            task_id, result = download_task.result()
+                            await self.handle_data_plane_task_result(task_id, result)
+                    except asyncio.QueueShutDown as e:
+                        break
         LOGGER.debug("Closing GrpcDownloadTaskRunner loop")
 
 
@@ -507,25 +519,26 @@ class GrpcDownloadBlockTaskRun:
         self.dragonsmouth_oulet = dragonsmouth_oulet
 
     def map_tonic_error_code_to_download_block_error(
-        self, code: str
+        self, e: grpc.aio.AioRpcError
     ) -> DownloadBlockError:
-        if code == "NotFound":
+        code = e.code()
+        if code == grpc.StatusCode.NOT_FOUND:
             return DownloadBlockError(
                 kind="BlockShardNotFound", message="Block shard not found"
             )
-        elif code == "Unavailable":
+        elif code == grpc.StatusCode.UNAVAILABLE:
             return DownloadBlockError(kind="Disconnected", message="Disconnected")
         elif code in (
-            "Internal",
-            "Aborted",
-            "DataLoss",
-            "ResourceExhausted",
-            "Unknown",
-            "Cancelled",
-            "DeadlineExceeded",
+            grpc.StatusCode.INTERNAL,
+            grpc.StatusCode.ABORTED,
+            grpc.StatusCode.DATA_LOSS,
+            grpc.StatusCode.RESOURCE_EXHAUSTED,
+            grpc.StatusCode.UNKNOWN,
+            grpc.StatusCode.CANCELLED,
+            grpc.StatusCode.DEADLINE_EXCEEDED,
         ):
             return DownloadBlockError(kind="FailedDownload", message="Failed download")
-        elif code == "InvalidArgument":
+        elif code == grpc.StatusCode.INVALID_ARGUMENT:
             raise ValueError("Invalid argument")
         else:
             return DownloadBlockError(kind="Fatal", message=f"Unknown error: {code}")
@@ -539,52 +552,54 @@ class GrpcDownloadBlockTaskRun:
         )
         try:
             resp = self.client.DownloadBlock(request)
-        except Exception as e:
+        except grpc.aio.AioRpcError as e:
             LOGGER.error(f"Download block error: {e}")
             return task_id, DownloadTaskResult(
                 kind="Err",
                 slot=self.download_request.slot,
-                err=self.map_tonic_error_code_to_download_block_error(str(e)),
+                err=self.map_tonic_error_code_to_download_block_error(e),
             )
 
         total_event_downloaded = 0
-        async for data in resp:
-
-            kind = data.WhichOneof("response")
-
-            match kind:
-                case "update":
-                    update = data.update
-                    assert update is not None, "Update is None"
-                    total_event_downloaded += 1
-                    try:
-                        await self.dragonsmouth_oulet.put(update)
-                    except asyncio.QueueFull:
+        try:
+            async for data in resp:
+                kind = data.WhichOneof("response")
+                match kind:
+                    case "update":
+                        update = data.update
+                        assert update is not None, "Update is None"
+                        total_event_downloaded += 1
+                        try:
+                            await self.dragonsmouth_oulet.put(update)
+                        except asyncio.QueueShutDown:
+                            return task_id, DownloadTaskResult(
+                                kind="Err",
+                                slot=self.download_request.slot,
+                                err=DownloadBlockError(
+                                    kind="OutletDisconnected", message="Outlet disconnected"
+                                ),
+                            )
+                    case "block_shard_download_finish":
                         return task_id, DownloadTaskResult(
-                            kind="Err",
-                            slot=self.download_request.slot,
-                            err=DownloadBlockError(
-                                kind="OutletDisconnected", message="Outlet disconnected"
+                            kind="Ok",
+                            completed=CompletedDownloadBlockTask(
+                                slot=self.download_request.slot,
+                                block_uid=self.download_request.block_uid,
+                                shard_idx=0,
+                                total_event_downloaded=total_event_downloaded,
                             ),
                         )
-                case "block_shard_download_finish":
-                    return task_id, DownloadTaskResult(
-                        kind="Ok",
-                        completed=CompletedDownloadBlockTask(
-                            slot=self.download_request.slot,
-                            block_uid=self.download_request.block_uid,
-                            shard_idx=0,
-                            total_event_downloaded=total_event_downloaded,
-                        ),
-                    )
-                case _:
-                    return task_id, DownloadTaskResult(
-                        kind="Err",
-                        slot=self.download_request.slot,
-                        err=self.map_tonic_error_code_to_download_block_error(
-                            "Unknown"
-                        ),
-                    )
+                    case unknown:
+                        raise RuntimeError("Unexpected response kind: {unknown}")
+        except grpc.aio.AioRpcError as e:
+            LOGGER.error(f"Download block error: {e}")
+            return task_id, DownloadTaskResult(
+                kind="Err",
+                slot=self.download_request.slot,
+                err=self.map_tonic_error_code_to_download_block_error(
+                    e
+                ),
+            )
 
         return task_id, DownloadTaskResult(
             kind="Err",

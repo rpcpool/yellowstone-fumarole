@@ -76,7 +76,9 @@ async def test_dragonsmouth_adapter(fumarole_config):
     logging.debug("test_fumarole_delete_all")
     # Create a FumaroleClient instance
 
-    fumarole_config.x_metadata = {"x-subscription-id": str(uuid.uuid4())}
+    # x_subscription_id = str(uuid.uuid4())
+    x_subscription_id = "d2ec45b8-4c2f-4678-a8dd-55cabcc1280a"
+    fumarole_config.x_metadata = {"x-subscription-id": x_subscription_id}
 
     client: FumaroleClient = await FumaroleClient.connect(fumarole_config)
     await client.delete_all_consumer_groups()
@@ -91,7 +93,7 @@ async def test_dragonsmouth_adapter(fumarole_config):
     session = await client.dragonsmouth_subscribe(
         consumer_group_name="test",
         request=SubscribeRequest(
-            accounts={"fumarole": SubscribeRequestFilterAccounts()},
+            # accounts={"fumarole": SubscribeRequestFilterAccounts()},
             transactions={"fumarole": SubscribeRequestFilterTransactions()},
             blocks_meta={"fumarole": SubscribeRequestFilterBlocksMeta()},
             entry={"fumarole": SubscribeRequestFilterEntry()},
@@ -100,19 +102,21 @@ async def test_dragonsmouth_adapter(fumarole_config):
     )
 
     dragonsmouth_source = session.source
-    fh = session.fumarole_handle
+    handle = session.fumarole_handle
     while True:
 
-        tasks = [asyncio.create_task(dragonsmouth_source.get()), fh]
+        tasks = [
+            asyncio.create_task(dragonsmouth_source.get()),
+            handle
+        ]
 
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
-        for t in pending:
-            t.cancel()
-
-        for task in done:
-            if task == tasks[0]:
-                print(f"Consumed: {type(task.result())}")
+        for t in done:
+            if tasks[0] == t:
+                result = t.result()
+                logging.debug(f"Consumed: {type(result)}")
             else:
-                print(f"session ended with: {type(task.result())}")
+                result = t.result()
+                logging.debug(f"Handle: {type(result)}")
                 return

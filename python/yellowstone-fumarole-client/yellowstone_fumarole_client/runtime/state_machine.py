@@ -137,7 +137,6 @@ class FumaroleSM:
 
     def gc(self) -> None:
         """Garbage collect old slots to respect memory retention limit."""
-        LOGGER.debug("Garbage collecting old slots")
         while len(self.downloaded_slot) > self.slot_memory_retention:
             slot = self.downloaded_slot.pop(0) if self.downloaded_slot else None
             if slot is None:
@@ -149,6 +148,7 @@ class FumaroleSM:
     def queue_blockchain_event(self, events: List[BlockchainEvent]) -> None:
         """Queue blockchain events for processing."""
         for event in events:
+
             if event.offset < self.last_committed_offset:
                 continue
 
@@ -167,6 +167,7 @@ class FumaroleSM:
                     commitment_level=event.commitment_level,
                     dead_error=event.dead_error,
                 )
+
                 if event.slot in self.inflight_slot_shard_download:
                     self.blocked_slot_status_update[event.slot].append(fume_status)
                 else:
@@ -228,6 +229,7 @@ class FumaroleSM:
             session_sequence, blockchain_event = (
                 self.unprocessed_blockchain_event.popleft()
             )
+            blockchain_event: BlockchainEvent = blockchain_event
             event_cl = blockchain_event.commitment_level
 
             if event_cl < min_commitment:
