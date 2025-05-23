@@ -29,7 +29,7 @@ from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
 from yellowstone_fumarole_proto.fumarole_v2_pb2_grpc import (
     Fumarole as GrpcFumaroleClient,
 )
-from yellowstone_fumarole_client.utils.aio import JoinSet, never 
+from yellowstone_fumarole_client.utils.aio import JoinSet, never, CancelHandle
 from yellowstone_fumarole_client.grpc_connectivity import FumaroleGrpcConnector
 import logging
 
@@ -263,7 +263,7 @@ class AsyncioFumeDragonsmouthRuntime:
             commit_deadline = self.last_commit + self.commit_interval
             await self.poll_history_if_needed()
             self.schedule_download_task_if_any()
-
+            
             # asyncio queues are cancel safe
             tasks = [
                 asyncio.create_task(self.dragonsmouth_bidi.rx.get()),
@@ -275,6 +275,10 @@ class AsyncioFumeDragonsmouthRuntime:
                     asyncio.sleep(max(0, commit_deadline - time.time()))
                 ),
             ]
+
+            select_group = select_group()
+
+            branch_idx = select_group.add_branch(awaitable)
 
             done, pending = await asyncio.wait(
                 tasks, return_when=asyncio.FIRST_COMPLETED
@@ -366,7 +370,6 @@ class GrpcDownloadTaskRunner:
         self.outlet = outlet
         self.max_download_attempt_per_slot = max_download_attempt_by_slot
         self.subscribe_request = subscribe_request
-        self.task_counter = 0
 
     def find_least_use_client(self) -> Optional[int]:
         max_permits = -1
@@ -380,10 +383,12 @@ class GrpcDownloadTaskRunner:
     async def handle_data_plane_task_result(
         self, task_id: int, result: DownloadTaskResult
     ):
-        task_meta = self.task_meta.pop(task_id, None)
-        if not task_meta:
-            raise RuntimeError("Missing task meta")
-
+        LOGGER.debug(f"Handling data plane task result for task {task_id}")
+        try:
+            task_meta = self.task_meta.pop(task_id)
+        except KeyError as e:
+            LOGGER.error(f"Task {task_id} not found in task meta")
+            raise e
         slot = task_meta.request.slot
         conn = self.data_plane_channel_vec[task_meta.client_idx]
         conn.permits += 1
@@ -447,9 +452,9 @@ class GrpcDownloadTaskRunner:
             ),
             dragonsmouth_oulet=task_spec.dragonsmouth_outlet,
         )
-        task_id = self.task_counter
-        self.task_counter += 1
-        self.tasks.spawn(task.run(task_id))
+        ch: CancelHandle = self.tasks.spawn(task.run())
+        task_id = ch.id()
+        LOGGER.debug(f"Spawned download task {task_id} for slot {slot}")
         self.download_attempts[slot] = self.download_attempts.get(slot, 0) + 1
         conn.permits -= 1
         self.task_meta[task_id] = DataPlaneTaskMeta(
@@ -473,9 +478,9 @@ class GrpcDownloadTaskRunner:
             else:
                 tasks.append(asyncio.create_task(never()))
 
-            next_download_result_fut = self.tasks.join_next()
-            if next_download_result_fut:
-                tasks.append(next_download_result_fut)
+            next_download_result_co = self.tasks.join_next()
+            if next_download_result_co:
+                tasks.append(asyncio.create_task(next_download_result_co))
             else:
                 tasks.append(asyncio.create_task(never()))
 
@@ -497,11 +502,11 @@ class GrpcDownloadTaskRunner:
                             )
                         elif task == tasks[2]:  # download_result_rx
                             download_task = task.result()
-                            task_id, result = download_task.result()
+                            task_id = download_task.get_name()
+                            result = download_task.result()
                             await self.handle_data_plane_task_result(task_id, result)
                     except asyncio.QueueShutDown as e:
-                        break
-        LOGGER.debug("Closing GrpcDownloadTaskRunner loop")
+                        return
 
 
 # GrpcDownloadBlockTaskRun
@@ -543,7 +548,7 @@ class GrpcDownloadBlockTaskRun:
         else:
             return DownloadBlockError(kind="Fatal", message=f"Unknown error: {code}")
 
-    async def run(self, task_id: int) -> tuple[int, DownloadTaskResult]:
+    async def run(self) -> DownloadTaskResult:
         request = DownloadBlockShard(
             blockchain_id=self.download_request.blockchain_id,
             block_uid=self.download_request.block_uid,
@@ -554,7 +559,7 @@ class GrpcDownloadBlockTaskRun:
             resp = self.client.DownloadBlock(request)
         except grpc.aio.AioRpcError as e:
             LOGGER.error(f"Download block error: {e}")
-            return task_id, DownloadTaskResult(
+            return DownloadTaskResult(
                 kind="Err",
                 slot=self.download_request.slot,
                 err=self.map_tonic_error_code_to_download_block_error(e),
@@ -572,7 +577,7 @@ class GrpcDownloadBlockTaskRun:
                         try:
                             await self.dragonsmouth_oulet.put(update)
                         except asyncio.QueueShutDown:
-                            return task_id, DownloadTaskResult(
+                            return DownloadTaskResult(
                                 kind="Err",
                                 slot=self.download_request.slot,
                                 err=DownloadBlockError(
@@ -580,7 +585,7 @@ class GrpcDownloadBlockTaskRun:
                                 ),
                             )
                     case "block_shard_download_finish":
-                        return task_id, DownloadTaskResult(
+                        return DownloadTaskResult(
                             kind="Ok",
                             completed=CompletedDownloadBlockTask(
                                 slot=self.download_request.slot,
@@ -593,7 +598,7 @@ class GrpcDownloadBlockTaskRun:
                         raise RuntimeError("Unexpected response kind: {unknown}")
         except grpc.aio.AioRpcError as e:
             LOGGER.error(f"Download block error: {e}")
-            return task_id, DownloadTaskResult(
+            return DownloadTaskResult(
                 kind="Err",
                 slot=self.download_request.slot,
                 err=self.map_tonic_error_code_to_download_block_error(
@@ -601,7 +606,7 @@ class GrpcDownloadBlockTaskRun:
                 ),
             )
 
-        return task_id, DownloadTaskResult(
+        return DownloadTaskResult(
             kind="Err",
             slot=self.download_request.slot,
             err=DownloadBlockError(kind="FailedDownload", message="Failed download"),

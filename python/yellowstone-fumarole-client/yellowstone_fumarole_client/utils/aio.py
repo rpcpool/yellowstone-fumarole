@@ -1,12 +1,9 @@
 
-
-
-
-
 import asyncio
 from collections import deque
 import threading
 import logging
+from typing import Coroutine
 import uuid
 
 LOGGER = logging.getLogger(__name__)
@@ -45,7 +42,7 @@ class JoinSet:
             self._loop = asyncio.get_event_loop()
         self.tasks = set()
         self.ready = set()
-        self.waker = set()
+        self.waker = asyncio.Event()
         self.my_thread = threading.get_ident()
 
     def spawn(self, fut: asyncio.Future) -> CancelHandle:
@@ -58,14 +55,8 @@ class JoinSet:
 
         def callback(task: asyncio.Task):
             self.tasks.discard(task)
-            try:
-                waker = self.waker.pop()
-                if not waker.cancelled():
-                    waker.set_result(task)
-            except KeyError:
-                # No waker available, add task to the ready queue
-                pass
             self.ready.add(task)
+            self.waker.set()
 
         task.add_done_callback(callback)
 
@@ -82,7 +73,7 @@ class JoinSet:
         self.my_thread = threading.get_ident()
         return self
 
-    def join_next(self) -> asyncio.Future | None:
+    def join_next(self) -> Coroutine:
         """
         Join the next task in the set if any, otherwise return None
 
@@ -99,61 +90,16 @@ class JoinSet:
         if not self.tasks and not self.ready:
             return None
         
-        fut  = self._loop.create_future()
+        self.waker.clear()
 
         # assert not self.waker, "JoinSet.join_next requires exclusive access to join set"
 
-        while True:
-            try:
-                task = self.ready.pop()
-                task: asyncio.Task = task
-                fut.set_result(task)
-                return fut
-            except KeyError:
-                LOGGER.debug("No tasks ready")
-                # No tasks are ready
-                break
-        
-        # No tasks are ready
-        # Add the future to the set
-
-        def deregister_waker(task):
-            try:
-                if task.cancelled():
-                    # If the task is cancelled, remove it from the set
-                    self.waker.remove(fut)
-                else:
-                    actual_task = task.result()
-                    self.ready.discard(actual_task)
-            except KeyError:
-                pass
-
-        fut.add_done_callback(deregister_waker)
-
-        self.waker.add(fut)
+        async def my_fut():
+            await self.waker.wait()
+            return self.ready.pop()
 
         # Check if there are any tasks that are already ready
         # in between the time we added the future and now
-        try:
-            task = self.ready.pop()
-            LOGGER.debug("Task ready in between")
-        except KeyError:
-            if not self.tasks:
-                # No tasks are ready, return the future
-                LOGGER.debug("No tasks ready, returning None")
-                return None
-            LOGGER.debug("No tasks ready, but tasks exist, returning future")
-            return fut
-
-        # If there is a task ready, set the future to the result
-        try:
-            waker = self.waker.pop()
-            waker.set_result(task)
-            LOGGER.debug("Task ready, setting waker")
-            return waker
-        except KeyError:
-            LOGGER.debug("No waker available, adding task to the ready queue")
-            # No waker available, add task to the ready queue
-            fut = self._loop.create_future()
-            fut.set_result(task)
-            return fut
+        if self.ready:
+            self.waker.set()
+        return my_fut()

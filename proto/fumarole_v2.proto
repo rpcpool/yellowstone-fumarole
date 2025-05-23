@@ -132,6 +132,7 @@ message BlockchainEvent {
   optional string dead_error = 9;
 }
 
+
 message BlockchainHistory {
   repeated BlockchainEvent events = 1;
 }
