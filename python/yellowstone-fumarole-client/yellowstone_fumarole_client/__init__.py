@@ -8,13 +8,11 @@ from dataclasses import dataclass
 from . import config
 from yellowstone_fumarole_client.runtime.aio import (
     AsyncioFumeDragonsmouthRuntime,
-    GrpcDownloadTaskRunner,
-    DownloadTaskRunnerChannels,
-    DataPlaneConn,
     FumaroleSM,
     DEFAULT_GC_INTERVAL,
     DEFAULT_SLOT_MEMORY_RETENTION,
     DragonsmouthSubscribeRequestBidi,
+    GrpcSlotDownloader,
 )
 from yellowstone_fumarole_proto.geyser_pb2 import SubscribeRequest, SubscribeUpdate
 from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
@@ -48,7 +46,7 @@ __all__ = [
 
 # Constants
 DEFAULT_DRAGONSMOUTH_CAPACITY = 10000
-DEFAULT_COMMIT_INTERVAL = 10.0  # seconds
+DEFAULT_COMMIT_INTERVAL = 5.0  # seconds
 DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT = 3
 DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP = 10
 
@@ -136,7 +134,6 @@ class FumaroleClient:
     ) -> DragonsmouthAdapterSession:
         """Subscribe to a dragonsmouth stream with custom configuration."""
         dragonsmouth_outlet = asyncio.Queue(maxsize=config.data_channel_capacity)
-        dragonsmouth_inlet = asyncio.Queue(maxsize=config.data_channel_capacity)
         fume_control_plane_q = asyncio.Queue(maxsize=100)
 
         initial_join = JoinControlPlane(consumer_group_name=consumer_group_name)
@@ -155,22 +152,21 @@ class FumaroleClient:
                 except asyncio.QueueShutDown:
                     break
 
-
         fume_control_plane_stream_rx: grpc.aio.StreamStreamMultiCallable = (
             self.stub.Subscribe(control_plane_sink())
         )
 
-        
         control_response: ControlResponse = await fume_control_plane_stream_rx.read()
         init = control_response.init
         if init is None:
             raise ValueError(f"Unexpected initial response: {control_response}")
-        
+
         # Once we have the initial response, we can spin a task to read from the stream
         # and put the updates into the queue.
         # This is a bit of a hack, but we need a Queue not a StreamStreamMultiCallable
         # because Queue are cancel-safe, while Stream are not, or at least didn't find any docs about it.
         fume_control_plane_rx_q = asyncio.Queue(maxsize=100)
+
         async def control_plane_source():
             while True:
                 try:
@@ -178,9 +174,8 @@ class FumaroleClient:
                         await fume_control_plane_rx_q.put(update)
                 except asyncio.QueueShutDown:
                     break
-                
-        _cp_src_task = asyncio.create_task(control_plane_source())
 
+        _cp_src_task = asyncio.create_task(control_plane_source())
 
         FumaroleClient.logger.debug(f"Control response: {control_response}")
 
@@ -192,37 +187,15 @@ class FumaroleClient:
         subscribe_request_queue = asyncio.Queue(maxsize=100)
         dm_bidi = DragonsmouthSubscribeRequestBidi(rx=subscribe_request_queue)
 
-        data_plane_channel_vec = []
-        for _ in range(1):  # TODO: support multiple connections
-            client = await self.connector.connect()
-            conn = DataPlaneConn(
-                permits=config.concurrent_download_limit_per_tcp, client=client, rev=0
-            )
-            data_plane_channel_vec.append(conn)
+        data_plane_client = await self.connector.connect()
 
-        download_task_runner_cnc_queue = asyncio.Queue(maxsize=10)
-        download_task_queue = asyncio.Queue(maxsize=10)
-        download_result_queue = asyncio.Queue(maxsize=10)
-
-        grpc_download_task_runner = GrpcDownloadTaskRunner(
-            data_plane_channel_vec=data_plane_channel_vec,
-            connector=self.connector,
-            cnc_rx=download_task_runner_cnc_queue,
-            download_task_queue=download_task_queue,
-            outlet=download_result_queue,
-            max_download_attempt_by_slot=config.max_failed_slot_download_attempt,
-            subscribe_request=request,
-        )
-
-        download_task_runner_chans = DownloadTaskRunnerChannels(
-            download_task_queue_tx=download_task_queue,
-            cnc_tx=download_task_runner_cnc_queue,
-            download_result_rx=download_result_queue,
+        grpc_slot_downloader = GrpcSlotDownloader(
+            client=data_plane_client,
         )
 
         rt = AsyncioFumeDragonsmouthRuntime(
             sm=sm,
-            download_task_runner_chans=download_task_runner_chans,
+            slot_downloader=grpc_slot_downloader,
             dragonsmouth_bidi=dm_bidi,
             subscribe_request=request,
             consumer_group_name=consumer_group_name,
@@ -231,35 +204,14 @@ class FumaroleClient:
             dragonsmouth_outlet=dragonsmouth_outlet,
             commit_interval=config.commit_interval,
             gc_interval=config.gc_interval,
+            max_concurrent_download=config.concurrent_download_limit_per_tcp,
         )
 
-        download_task_runner_task = asyncio.create_task(grpc_download_task_runner.run())
-        rt_task = asyncio.create_task(rt.run())
-
-        async def runtime_fut():
-            tasks = [download_task_runner_task, rt_task]
-            done, pending = await asyncio.wait(
-                tasks, return_when=asyncio.FIRST_COMPLETED
-            )
-
-            for task in pending:
-                task.cancel()
-
-            for task in done:
-                if task == tasks[0]:
-                    FumaroleClient.logger.info(
-                        f"Download task runner completed with {task.result()}"
-                    )
-                elif task == tasks[1]:
-                    FumaroleClient.logger.info(
-                        f"Runtime task completed with {task.result()}"
-                    )
-
-        fumarole_handle = asyncio.create_task(runtime_fut())
+        fumarole_handle = asyncio.create_task(rt.run())
         FumaroleClient.logger.debug(f"Fumarole handle created: {fumarole_handle}")
         return DragonsmouthAdapterSession(
             sink=subscribe_request_queue,
-            source=dragonsmouth_inlet,
+            source=dragonsmouth_outlet,
             fumarole_handle=fumarole_handle,
         )
 

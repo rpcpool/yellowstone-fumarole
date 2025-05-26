@@ -1,8 +1,10 @@
 # DataPlaneConn
+from abc import abstractmethod, ABC
 import asyncio
+import uuid
 import grpc
 from typing import Optional, List
-from collections import deque
+from collections import abc, deque
 from dataclasses import dataclass
 import time
 from yellowstone_fumarole_client.runtime.state_machine import (
@@ -10,7 +12,6 @@ from yellowstone_fumarole_client.runtime.state_machine import (
     FumeDownloadRequest,
     FumeOffset,
     FumeShardIdx,
-    CommitmentLevel,
 )
 from yellowstone_fumarole_proto.geyser_pb2 import (
     SubscribeRequest,
@@ -29,13 +30,13 @@ from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
 from yellowstone_fumarole_proto.fumarole_v2_pb2_grpc import (
     Fumarole as GrpcFumaroleClient,
 )
-from yellowstone_fumarole_client.utils.aio import JoinSet, never, CancelHandle
+from yellowstone_fumarole_client.utils.aio import Interval
 from yellowstone_fumarole_client.grpc_connectivity import FumaroleGrpcConnector
 import logging
 
 
 # Constants
-DEFAULT_GC_INTERVAL = 100
+DEFAULT_GC_INTERVAL = 5
 
 DEFAULT_SLOT_MEMORY_RETENTION = 10000
 
@@ -82,13 +83,22 @@ class DragonsmouthSubscribeRequestBidi:
 LOGGER = logging.getLogger(__name__)
 
 
+class AsyncSlotDownloader(ABC):
+
+    @abstractmethod
+    async def run_download(
+        self, subscribe_request: SubscribeRequest, spec: "DownloadTaskArgs"
+    ) -> DownloadTaskResult:
+        pass
+
+
 # TokioFumeDragonsmouthRuntime
 class AsyncioFumeDragonsmouthRuntime:
 
     def __init__(
         self,
         sm: FumaroleSM,
-        download_task_runner_chans: "DownloadTaskRunnerChannels",
+        slot_downloader: AsyncSlotDownloader,
         dragonsmouth_bidi: DragonsmouthSubscribeRequestBidi,
         subscribe_request: SubscribeRequest,
         consumer_group_name: str,
@@ -97,9 +107,10 @@ class AsyncioFumeDragonsmouthRuntime:
         dragonsmouth_outlet: asyncio.Queue,
         commit_interval: float,  # in seconds
         gc_interval: int,
+        max_concurrent_download: int = 10,
     ):
         self.sm = sm
-        self.download_task_runner_chans = download_task_runner_chans
+        self.slot_downloader: AsyncSlotDownloader = slot_downloader
         self.dragonsmouth_bidi = dragonsmouth_bidi
         self.subscribe_request = subscribe_request
         self.consumer_group_name = consumer_group_name
@@ -107,8 +118,10 @@ class AsyncioFumeDragonsmouthRuntime:
         self.control_plane_rx = control_plane_rx_q
         self.dragonsmouth_outlet = dragonsmouth_outlet
         self.commit_interval = commit_interval
-        self.last_commit = time.time()
         self.gc_interval = gc_interval
+        self.max_concurrent_download = max_concurrent_download
+        self.download_tasks = dict()
+        self.inner_runtime_channel: asyncio.Queue = asyncio.Queue()
 
     def build_poll_history_cmd(
         self, from_offset: Optional[FumeOffset]
@@ -147,24 +160,32 @@ class AsyncioFumeDragonsmouthRuntime:
 
     def schedule_download_task_if_any(self):
         while True:
-            download_task_queue_tx = self.download_task_runner_chans.download_task_queue_tx
-            assert download_task_queue_tx.maxsize == 10
-            if download_task_queue_tx.full():
+            LOGGER.debug("Checking for download tasks to schedule")
+            if len(self.download_tasks) >= self.max_concurrent_download:
                 break
 
+            # Pop a slot to download from the state machine
+            LOGGER.debug("Popping slot to download")
             download_request = self.sm.pop_slot_to_download(self.commitment_level())
             if not download_request:
+                LOGGER.debug("No download request available")
                 break
+
+            LOGGER.debug(f"Download request for slot {download_request.slot} popped")
+            assert (
+                download_request.blockchain_id
+            ), "Download request must have a blockchain ID"
             download_task_args = DownloadTaskArgs(
                 download_request=download_request,
                 dragonsmouth_outlet=self.dragonsmouth_outlet,
             )
-            LOGGER.debug(f"Scheduling download task for slot {download_request.slot}")
-            asyncio.create_task(
-                download_task_queue_tx.put(
-                    download_task_args
-                )
+
+            coro = self.slot_downloader.run_download(
+                self.subscribe_request, download_task_args
             )
+            donwload_task = asyncio.create_task(coro)
+            self.download_tasks[donwload_task] = download_request
+            LOGGER.debug(f"Scheduling download task for slot {download_request.slot}")
 
     def handle_download_result(self, download_result: DownloadTaskResult):
         if download_result.kind == "Ok":
@@ -222,7 +243,6 @@ class AsyncioFumeDragonsmouthRuntime:
                         dead_error=slot_status.dead_error,
                     ),
                 )
-                LOGGER.debug(f"Sending dragonsmouth update: {update}")
                 try:
                     await self.dragonsmouth_outlet.put(update)
                 except asyncio.QueueFull:
@@ -239,11 +259,8 @@ class AsyncioFumeDragonsmouthRuntime:
         self.handle_control_response(result)
         return True
 
-    async def handle_new_subscribe_request(self, subscribe_request: SubscribeRequest):
+    def handle_new_subscribe_request(self, subscribe_request: SubscribeRequest):
         self.subscribe_request = subscribe_request
-        await self.download_task_runner_chans.cnc_tx.put(
-            DownloadTaskRunnerCommand.UpdateSubscribeRequest(subscribe_request)
-        )
 
     async def run(self):
         LOGGER.debug(f"Fumarole runtime starting...")
@@ -252,60 +269,69 @@ class AsyncioFumeDragonsmouthRuntime:
         await self.force_commit_offset()
         LOGGER.debug("Initial commit offset command sent")
         ticks = 0
-        while True:
+
+        task_map = {
+            asyncio.create_task(self.dragonsmouth_bidi.rx.get()): "dragonsmouth_bidi",
+            asyncio.create_task(self.control_plane_rx.get()): "control_plane_rx",
+            asyncio.create_task(Interval(self.commit_interval).tick()): "commit_tick",
+        }
+
+        pending = set(task_map.keys())
+        while pending:
             ticks += 1
             LOGGER.debug(f"Runtime loop tick")
             if ticks % self.gc_interval == 0:
                 LOGGER.debug("Running garbage collection")
                 self.sm.gc()
                 ticks = 0
-
-            commit_deadline = self.last_commit + self.commit_interval
+            LOGGER.debug(f"Polling history if needed")
             await self.poll_history_if_needed()
+            LOGGER.debug("Scheduling download tasks if any")
             self.schedule_download_task_if_any()
-            
-            # asyncio queues are cancel safe
-            tasks = [
-                asyncio.create_task(self.dragonsmouth_bidi.rx.get()),
-                asyncio.create_task(self.control_plane_rx.get()),
-                asyncio.create_task(
-                    self.download_task_runner_chans.download_result_rx.get()
-                ),
-                asyncio.create_task(
-                    asyncio.sleep(max(0, commit_deadline - time.time()))
-                ),
-            ]
+            for t in self.download_tasks.keys():
+                pending.add(t)
+                task_map[t] = "download_task"
 
-            select_group = select_group()
-
-            branch_idx = select_group.add_branch(awaitable)
-
-            done, pending = await asyncio.wait(
-                tasks, return_when=asyncio.FIRST_COMPLETED
+            download_task_inflight = len(self.download_tasks)
+            LOGGER.debug(
+                f"Current download tasks in flight: {download_task_inflight} / {self.max_concurrent_download}"
             )
-            for task in pending:
-                task.cancel()
-
-            for task in done:
-                try:
-                    result = task.result()
-                    if task == tasks[0]:  # dragonsmouth_bidi.rx
+            done, pending = await asyncio.wait(
+                pending, return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in done:
+                result = t.result()
+                name = task_map.pop(t)
+                match name:
+                    case "dragonsmouth_bidi":
                         LOGGER.debug("Dragonsmouth subscribe request received")
-                        await self.handle_new_subscribe_request(result)
-                    elif task == tasks[1]:  # control_plane_rx
+                        self.handle_new_subscribe_request(result.subscribe_request)
+                        new_task = asyncio.create_task(self.dragonsmouth_bidi.rx.get())
+                        task_map[new_task] = "dragonsmouth_bidi"
+                        pending.add(new_task)
+                        pass
+                    case "control_plane_rx":
+                        LOGGER.debug("Control plane response received")
                         if not await self.handle_control_plane_resp(result):
                             LOGGER.debug("Control plane error")
                             return
-                    elif task == tasks[2]:  # download_result_rx
+                        new_task = asyncio.create_task(self.control_plane_rx.get())
+                        task_map[new_task] = "control_plane_rx"
+                        pending.add(new_task)
+                    case "download_task":
+                        LOGGER.debug("Download task result received")
+                        assert self.download_tasks.pop(t)
                         self.handle_download_result(result)
-                    elif task == tasks[3]:  # sleep
-                        LOGGER.debug("Commit deadline reached")
+                    case "commit_tick":
+                        LOGGER.debug("Commit tick reached")
                         await self.commit_offset()
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    LOGGER.error(f"Error: {e}")
-                    raise e
+                        new_task = asyncio.create_task(
+                            Interval(self.commit_interval).tick()
+                        )
+                        task_map[new_task] = "commit_tick"
+                        pending.add(new_task)
+                    case unknown:
+                        raise RuntimeError(f"Unexpected task name: {unknown}")
 
             await self.drain_slot_status()
 
@@ -338,175 +364,32 @@ class DownloadTaskArgs:
     dragonsmouth_outlet: asyncio.Queue
 
 
-# DataPlaneTaskMeta
-@dataclass
-class DataPlaneTaskMeta:
-    client_idx: int
-    request: FumeDownloadRequest
-    dragonsmouth_outlet: asyncio.Queue
-    scheduled_at: float
-    client_rev: int
+class GrpcSlotDownloader(AsyncSlotDownloader):
 
-
-# GrpcDownloadTaskRunner
-class GrpcDownloadTaskRunner:
     def __init__(
         self,
-        data_plane_channel_vec: List[DataPlaneConn],
-        connector: FumaroleGrpcConnector,
-        cnc_rx: asyncio.Queue,
-        download_task_queue: asyncio.Queue,
-        outlet: asyncio.Queue,
-        max_download_attempt_by_slot: int,
-        subscribe_request: SubscribeRequest,
+        client: GrpcFumaroleClient,
     ):
-        self.data_plane_channel_vec = data_plane_channel_vec
-        self.connector = connector
-        self.tasks = JoinSet()
-        self.task_meta = {}
-        self.cnc_rx = cnc_rx
-        self.download_task_queue = download_task_queue
-        self.download_attempts = {}
-        self.outlet = outlet
-        self.max_download_attempt_per_slot = max_download_attempt_by_slot
-        self.subscribe_request = subscribe_request
+        self.client = client
 
-    def find_least_use_client(self) -> Optional[int]:
-        max_permits = -1
-        best_idx = None
-        for idx, conn in enumerate(self.data_plane_channel_vec):
-            if conn.has_permit() and conn.permits > max_permits:
-                max_permits = conn.permits
-                best_idx = idx
-        return best_idx
+    async def run_download(
+        self, subscribe_request: SubscribeRequest, spec: DownloadTaskArgs
+    ) -> DownloadTaskResult:
 
-    async def handle_data_plane_task_result(
-        self, task_id: int, result: DownloadTaskResult
-    ):
-        LOGGER.debug(f"Handling data plane task result for task {task_id}")
-        try:
-            task_meta = self.task_meta.pop(task_id)
-        except KeyError as e:
-            LOGGER.error(f"Task {task_id} not found in task meta")
-            raise e
-        slot = task_meta.request.slot
-        conn = self.data_plane_channel_vec[task_meta.client_idx]
-        conn.permits += 1
-
-        if result.kind == "Ok":
-            completed = result.completed
-            elapsed = time.time() - task_meta.scheduled_at
-            LOGGER.debug(
-                f"Downloaded slot {slot} in {elapsed}s, total events: {completed.total_event_downloaded}"
-            )
-            self.download_attempts.pop(slot, None)
-            await self.outlet.put(result)
-        else:
-            err = result.err
-            download_attempt = self.download_attempts.get(slot, 0)
-            if err.kind in ("Disconnected", "FailedDownload"):
-                if download_attempt >= self.max_download_attempt_per_slot:
-                    LOGGER.error(
-                        f"Download slot {slot} failed: {err.message}, max attempts reached"
-                    )
-                    await self.outlet.put(
-                        DownloadTaskResult(kind="Err", slot=slot, err=err)
-                    )
-                    return
-                remaining = self.max_download_attempt_per_slot - download_attempt
-                LOGGER.debug(
-                    f"Download slot {slot} failed: {err.message}, remaining attempts: {remaining}"
-                )
-                if task_meta.client_rev == conn.rev:
-                    conn.client = await self.connector.connect()
-                    conn.rev += 1
-                LOGGER.debug(f"Download slot {slot} failed, rescheduling for retry...")
-                task_spec = DownloadTaskArgs(
-                    download_request=task_meta.request,
-                    dragonsmouth_outlet=task_meta.dragonsmouth_outlet,
-                )
-                self.spawn_grpc_download_task(task_meta.client_idx, task_spec)
-            elif err.kind == "OutletDisconnected":
-                LOGGER.debug("Dragonsmouth outlet disconnected")
-            elif err.kind == "BlockShardNotFound":
-                LOGGER.error(f"Slot {slot} not found")
-                await self.outlet.put(
-                    DownloadTaskResult(kind="Err", slot=slot, err=err)
-                )
-            elif err.kind == "Fatal":
-                raise RuntimeError(f"Fatal error: {err.message}")
-
-    def spawn_grpc_download_task(self, client_idx: int, task_spec: DownloadTaskArgs):
-        conn = self.data_plane_channel_vec[client_idx]
-        client = conn.client  # Clone not needed in Python
-        download_request = task_spec.download_request
-        slot = download_request.slot
-        task = GrpcDownloadBlockTaskRun(
-            download_request=download_request,
-            client=client,
+        download_task = GrpcDownloadBlockTaskRun(
+            download_request=spec.download_request,
+            client=self.client,
             filters=BlockFilters(
-                accounts=self.subscribe_request.accounts,
-                transactions=self.subscribe_request.transactions,
-                entries=self.subscribe_request.entry,
-                blocks_meta=self.subscribe_request.blocks_meta,
+                accounts=subscribe_request.accounts,
+                transactions=subscribe_request.transactions,
+                entries=subscribe_request.entry,
+                blocks_meta=subscribe_request.blocks_meta,
             ),
-            dragonsmouth_oulet=task_spec.dragonsmouth_outlet,
-        )
-        ch: CancelHandle = self.tasks.spawn(task.run())
-        task_id = ch.id()
-        LOGGER.debug(f"Spawned download task {task_id} for slot {slot}")
-        self.download_attempts[slot] = self.download_attempts.get(slot, 0) + 1
-        conn.permits -= 1
-        self.task_meta[task_id] = DataPlaneTaskMeta(
-            client_idx=client_idx,
-            request=download_request,
-            dragonsmouth_outlet=task_spec.dragonsmouth_outlet,
-            scheduled_at=time.time(),
-            client_rev=conn.rev,
+            dragonsmouth_oulet=spec.dragonsmouth_outlet,
         )
 
-    def handle_control_command(self, cmd: DownloadTaskRunnerCommand):
-        if cmd.kind == "UpdateSubscribeRequest":
-            self.subscribe_request = cmd.subscribe_request
-
-    async def run(self):
-        while True:
-            maybe_available_client_idx = self.find_least_use_client()
-            tasks = [asyncio.create_task(self.cnc_rx.get())]
-            if maybe_available_client_idx is not None:
-                tasks.append(asyncio.create_task(self.download_task_queue.get()))
-            else:
-                tasks.append(asyncio.create_task(never()))
-
-            next_download_result_co = self.tasks.join_next()
-            if next_download_result_co:
-                tasks.append(asyncio.create_task(next_download_result_co))
-            else:
-                tasks.append(asyncio.create_task(never()))
-
-            assert len(tasks) == 3
-            if tasks:
-                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                for task in pending:
-                    task.cancel()
-
-                for task in done:
-                    try:
-                        result = task.result()
-                        if task == tasks[0]:  # cnc_rx
-                            self.handle_control_command(result)
-                        elif task == tasks[1]:  # download_task_queue
-                            assert maybe_available_client_idx is not None
-                            self.spawn_grpc_download_task(
-                                maybe_available_client_idx, result
-                            )
-                        elif task == tasks[2]:  # download_result_rx
-                            download_task = task.result()
-                            task_id = download_task.get_name()
-                            result = download_task.result()
-                            await self.handle_data_plane_task_result(task_id, result)
-                    except asyncio.QueueShutDown as e:
-                        return
+        LOGGER.debug(f"Running download task for slot {spec.download_request.slot}")
+        return await download_task.run()
 
 
 # GrpcDownloadBlockTaskRun
@@ -556,6 +439,9 @@ class GrpcDownloadBlockTaskRun:
             blockFilters=self.filters,
         )
         try:
+            LOGGER.debug(
+                f"Requesting download for block {self.download_request.block_uid.hex()} at slot {self.download_request.slot}"
+            )
             resp = self.client.DownloadBlock(request)
         except grpc.aio.AioRpcError as e:
             LOGGER.error(f"Download block error: {e}")
@@ -577,14 +463,19 @@ class GrpcDownloadBlockTaskRun:
                         try:
                             await self.dragonsmouth_oulet.put(update)
                         except asyncio.QueueShutDown:
+                            LOGGER.error("Dragonsmouth outlet is disconnected")
                             return DownloadTaskResult(
                                 kind="Err",
                                 slot=self.download_request.slot,
                                 err=DownloadBlockError(
-                                    kind="OutletDisconnected", message="Outlet disconnected"
+                                    kind="OutletDisconnected",
+                                    message="Outlet disconnected",
                                 ),
                             )
                     case "block_shard_download_finish":
+                        LOGGER.debug(
+                            f"Download finished for block {self.download_request.block_uid.hex()} at slot {self.download_request.slot}"
+                        )
                         return DownloadTaskResult(
                             kind="Ok",
                             completed=CompletedDownloadBlockTask(
@@ -601,9 +492,7 @@ class GrpcDownloadBlockTaskRun:
             return DownloadTaskResult(
                 kind="Err",
                 slot=self.download_request.slot,
-                err=self.map_tonic_error_code_to_download_block_error(
-                    e
-                ),
+                err=self.map_tonic_error_code_to_download_block_error(e),
             )
 
         return DownloadTaskResult(

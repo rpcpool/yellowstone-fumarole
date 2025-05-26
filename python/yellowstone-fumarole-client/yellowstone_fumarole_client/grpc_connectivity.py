@@ -74,7 +74,7 @@ class MetadataInterceptor(
     async def intercept_unary_unary(
         self, continuation, client_call_details: grpc.aio.ClientCallDetails, request
     ):
-        logging.debug("intercept_unary_unary")
+        # logging.debug("intercept_unary_unary")
         new_details = client_call_details._replace(
             metadata=self._merge_metadata(client_call_details.metadata)
         )
@@ -83,7 +83,7 @@ class MetadataInterceptor(
     async def intercept_unary_stream(
         self, continuation, client_call_details: grpc.aio.ClientCallDetails, request
     ):
-        logging.debug("intercept_unary_stream")
+        # logging.debug("intercept_unary_stream")
         new_details = client_call_details._replace(
             metadata=self._merge_metadata(client_call_details.metadata)
         )
@@ -92,7 +92,7 @@ class MetadataInterceptor(
     async def intercept_stream_unary(
         self, continuation, client_call_details: grpc.aio.ClientCallDetails, request
     ):
-        logging.debug("intercept_stream_unary")
+        # logging.debug("intercept_stream_unary")
         new_details = client_call_details._replace(
             metadata=self._merge_metadata(client_call_details.metadata)
         )
@@ -101,7 +101,7 @@ class MetadataInterceptor(
     async def intercept_stream_stream(
         self, continuation, client_call_details: grpc.aio.ClientCallDetails, request
     ):
-        logging.debug("intercept_stream_stream")
+        # logging.debug("intercept_stream_stream")
         new_details = client_call_details._replace(
             metadata=self._merge_metadata(client_call_details.metadata)
         )
