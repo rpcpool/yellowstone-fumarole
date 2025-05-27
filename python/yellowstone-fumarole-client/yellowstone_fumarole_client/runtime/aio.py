@@ -41,19 +41,12 @@ DEFAULT_GC_INTERVAL = 5
 DEFAULT_SLOT_MEMORY_RETENTION = 10000
 
 
-@dataclass
-class DataPlaneConn:
-    permits: int
-    client: GrpcFumaroleClient
-    rev: int
-
-    def has_permit(self) -> bool:
-        return self.permits > 0
-
 
 # DownloadTaskResult
 @dataclass
 class CompletedDownloadBlockTask:
+    """Represents a completed download block task.
+    """
     slot: int
     block_uid: bytes
     shard_idx: FumeShardIdx
@@ -62,44 +55,46 @@ class CompletedDownloadBlockTask:
 
 @dataclass
 class DownloadBlockError:
+    """Represents an error that occurred during the download of a block.
+    """
     kind: str  # 'Disconnected', 'OutletDisconnected', 'BlockShardNotFound', 'FailedDownload', 'Fatal'
     message: str
 
 
 @dataclass
 class DownloadTaskResult:
+    """Represents the result of a download task.
+    """
     kind: str  # 'Ok' or 'Err'
     completed: Optional[CompletedDownloadBlockTask] = None
     slot: Optional[int] = None
     err: Optional[DownloadBlockError] = None
 
 
-# DragonsmouthSubscribeRequestBidi
-@dataclass
-class DragonsmouthSubscribeRequestBidi:
-    rx: asyncio.Queue
-
 
 LOGGER = logging.getLogger(__name__)
 
 
 class AsyncSlotDownloader(ABC):
-
+    """Abstract base class for slot downloaders."""
     @abstractmethod
     async def run_download(
         self, subscribe_request: SubscribeRequest, spec: "DownloadTaskArgs"
     ) -> DownloadTaskResult:
+        """Run the download task for a given slot.
+        """
         pass
 
 
 # TokioFumeDragonsmouthRuntime
 class AsyncioFumeDragonsmouthRuntime:
-
+    """Asynchronous runtime for Fumarole with Dragonsmouth-like stream support.
+    """
     def __init__(
         self,
         sm: FumaroleSM,
         slot_downloader: AsyncSlotDownloader,
-        dragonsmouth_bidi: DragonsmouthSubscribeRequestBidi,
+        subscribe_request_update_q: asyncio.Queue,
         subscribe_request: SubscribeRequest,
         consumer_group_name: str,
         control_plane_tx_q: asyncio.Queue,
@@ -109,9 +104,24 @@ class AsyncioFumeDragonsmouthRuntime:
         gc_interval: int,
         max_concurrent_download: int = 10,
     ):
+        """Initialize the runtime with the given parameters.
+
+        Args:
+            sm (FumaroleSM): The state machine managing the Fumarole state.
+            slot_downloader (AsyncSlotDownloader): The downloader for slots.
+            subscribe_request_update_q (asyncio.Queue): The queue for subscribe request updates.
+            subscribe_request (SubscribeRequest): The initial subscribe request.
+            consumer_group_name (str): The name of the consumer group.
+            control_plane_tx_q (asyncio.Queue): The queue for sending control commands.
+            control_plane_rx_q (asyncio.Queue): The queue for receiving control responses.
+            dragonsmouth_outlet (asyncio.Queue): The outlet for Dragonsmouth updates.
+            commit_interval (float): The interval for committing offsets, in seconds.
+            gc_interval (int): The interval for garbage collection, in seconds.
+            max_concurrent_download (int): The maximum number of concurrent download tasks.
+        """
         self.sm = sm
         self.slot_downloader: AsyncSlotDownloader = slot_downloader
-        self.dragonsmouth_bidi = dragonsmouth_bidi
+        self.subscribe_request_update_q = subscribe_request_update_q
         self.subscribe_request = subscribe_request
         self.consumer_group_name = consumer_group_name
         self.control_plane_tx = control_plane_tx_q
@@ -123,16 +133,19 @@ class AsyncioFumeDragonsmouthRuntime:
         self.download_tasks = dict()
         self.inner_runtime_channel: asyncio.Queue = asyncio.Queue()
 
-    def build_poll_history_cmd(
+    def _build_poll_history_cmd(
         self, from_offset: Optional[FumeOffset]
     ) -> ControlCommand:
+        """Build a command to poll the blockchain history.
+        """
         return ControlCommand(poll_hist=PollBlockchainHistory(shard_id=0, limit=None))
 
-    def build_commit_offset_cmd(self, offset: FumeOffset) -> ControlCommand:
+    def _build_commit_offset_cmd(self, offset: FumeOffset) -> ControlCommand:
         return ControlCommand(commit_offset=CommitOffset(offset=offset, shard_id=0))
 
-    def handle_control_response(self, control_response: ControlResponse):
-
+    def _handle_control_response(self, control_response: ControlResponse):
+        """Handle the control response received from the control plane.
+        """
         response_field = control_response.WhichOneof("response")
         assert response_field is not None, "Control response is empty"
 
@@ -151,14 +164,20 @@ class AsyncioFumeDragonsmouthRuntime:
                 raise ValueError("Unexpected control response")
 
     async def poll_history_if_needed(self):
+        """Poll the history if the state machine needs new events.
+        """
         if self.sm.need_new_blockchain_events():
-            cmd = self.build_poll_history_cmd(self.sm.committable_offset)
+            cmd = self._build_poll_history_cmd(self.sm.committable_offset)
             await self.control_plane_tx.put(cmd)
 
     def commitment_level(self):
+        """Gets the commitment level from the subscribe request.
+        """
         return self.subscribe_request.commitment
 
-    def schedule_download_task_if_any(self):
+    def _schedule_download_task_if_any(self):
+        """Schedules download tasks if there are any available slots.
+        """
         while True:
             LOGGER.debug("Checking for download tasks to schedule")
             if len(self.download_tasks) >= self.max_concurrent_download:
@@ -187,7 +206,9 @@ class AsyncioFumeDragonsmouthRuntime:
             self.download_tasks[donwload_task] = download_request
             LOGGER.debug(f"Scheduling download task for slot {download_request.slot}")
 
-    def handle_download_result(self, download_result: DownloadTaskResult):
+    def _handle_download_result(self, download_result: DownloadTaskResult):
+        """Handles the result of a download task.
+        """
         if download_result.kind == "Ok":
             completed = download_result.completed
             LOGGER.debug(
@@ -199,19 +220,21 @@ class AsyncioFumeDragonsmouthRuntime:
             err = download_result.err
             raise RuntimeError(f"Failed to download slot {slot}: {err.message}")
 
-    async def force_commit_offset(self):
+    async def _force_commit_offset(self):
         LOGGER.debug(f"Force committing offset {self.sm.committable_offset}")
         await self.control_plane_tx.put(
-            self.build_commit_offset_cmd(self.sm.committable_offset)
+            self._build_commit_offset_cmd(self.sm.committable_offset)
         )
 
-    async def commit_offset(self):
+    async def _commit_offset(self):
         if self.sm.last_committed_offset < self.sm.committable_offset:
             LOGGER.debug(f"Committing offset {self.sm.committable_offset}")
-            await self.force_commit_offset()
+            await self._force_commit_offset()
         self.last_commit = time.time()
 
-    async def drain_slot_status(self):
+    async def _drain_slot_status(self):
+        """Drains the slot status from the state machine and sends updates to the Dragonsmouth outlet.
+        """
         commitment = self.subscribe_request.commitment
         slot_status_vec = deque()
         while slot_status := self.sm.pop_next_slot_status():
@@ -250,28 +273,32 @@ class AsyncioFumeDragonsmouthRuntime:
 
             self.sm.mark_event_as_processed(slot_status.session_sequence)
 
-    async def handle_control_plane_resp(
+    async def _handle_control_plane_resp(
         self, result: ControlResponse | Exception
     ) -> bool:
+        """Handles the control plane response.
+        """
         if isinstance(result, Exception):
             await self.dragonsmouth_outlet.put(result)
             return False
-        self.handle_control_response(result)
+        self._handle_control_response(result)
         return True
 
     def handle_new_subscribe_request(self, subscribe_request: SubscribeRequest):
         self.subscribe_request = subscribe_request
 
     async def run(self):
+        """Runs the Fumarole asyncio runtime.
+        """
         LOGGER.debug(f"Fumarole runtime starting...")
-        await self.control_plane_tx.put(self.build_poll_history_cmd(None))
+        await self.control_plane_tx.put(self._build_poll_history_cmd(None))
         LOGGER.debug("Initial poll history command sent")
-        await self.force_commit_offset()
+        await self._force_commit_offset()
         LOGGER.debug("Initial commit offset command sent")
         ticks = 0
 
         task_map = {
-            asyncio.create_task(self.dragonsmouth_bidi.rx.get()): "dragonsmouth_bidi",
+            asyncio.create_task(self.subscribe_request_update_q.get()): "dragonsmouth_bidi",
             asyncio.create_task(self.control_plane_rx.get()): "control_plane_rx",
             asyncio.create_task(Interval(self.commit_interval).tick()): "commit_tick",
         }
@@ -287,7 +314,7 @@ class AsyncioFumeDragonsmouthRuntime:
             LOGGER.debug(f"Polling history if needed")
             await self.poll_history_if_needed()
             LOGGER.debug("Scheduling download tasks if any")
-            self.schedule_download_task_if_any()
+            self._schedule_download_task_if_any()
             for t in self.download_tasks.keys():
                 pending.add(t)
                 task_map[t] = "download_task"
@@ -306,13 +333,13 @@ class AsyncioFumeDragonsmouthRuntime:
                     case "dragonsmouth_bidi":
                         LOGGER.debug("Dragonsmouth subscribe request received")
                         self.handle_new_subscribe_request(result.subscribe_request)
-                        new_task = asyncio.create_task(self.dragonsmouth_bidi.rx.get())
+                        new_task = asyncio.create_task(self.subscribe_request_update_q.get())
                         task_map[new_task] = "dragonsmouth_bidi"
                         pending.add(new_task)
                         pass
                     case "control_plane_rx":
                         LOGGER.debug("Control plane response received")
-                        if not await self.handle_control_plane_resp(result):
+                        if not await self._handle_control_plane_resp(result):
                             LOGGER.debug("Control plane error")
                             return
                         new_task = asyncio.create_task(self.control_plane_rx.get())
@@ -321,10 +348,10 @@ class AsyncioFumeDragonsmouthRuntime:
                     case "download_task":
                         LOGGER.debug("Download task result received")
                         assert self.download_tasks.pop(t)
-                        self.handle_download_result(result)
+                        self._handle_download_result(result)
                     case "commit_tick":
                         LOGGER.debug("Commit tick reached")
-                        await self.commit_offset()
+                        await self._commit_offset()
                         new_task = asyncio.create_task(
                             Interval(self.commit_interval).tick()
                         )
@@ -333,7 +360,7 @@ class AsyncioFumeDragonsmouthRuntime:
                     case unknown:
                         raise RuntimeError(f"Unexpected task name: {unknown}")
 
-            await self.drain_slot_status()
+            await self._drain_slot_status()
 
         LOGGER.debug("Fumarole runtime exiting")
 

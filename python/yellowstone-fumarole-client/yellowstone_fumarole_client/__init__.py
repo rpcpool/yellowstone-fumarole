@@ -11,7 +11,6 @@ from yellowstone_fumarole_client.runtime.aio import (
     FumaroleSM,
     DEFAULT_GC_INTERVAL,
     DEFAULT_SLOT_MEMORY_RETENTION,
-    DragonsmouthSubscribeRequestBidi,
     GrpcSlotDownloader,
 )
 from yellowstone_fumarole_proto.geyser_pb2 import SubscribeRequest, SubscribeUpdate
@@ -104,7 +103,10 @@ class FumaroleClient:
 
     @staticmethod
     async def connect(config: config.FumaroleConfig) -> "FumaroleClient":
-        """Connect to the Fumarole server using the provided configuration."""
+        """Connect to the Fumarole server using the provided configuration.
+        Args:
+            config (FumaroleConfig): Configuration for the Fumarole client.
+        """
         endpoint = config.endpoint
         connector = FumaroleGrpcConnector(config=config, endpoint=endpoint)
         FumaroleClient.logger.debug(f"Connecting to {endpoint}")
@@ -113,7 +115,8 @@ class FumaroleClient:
         return FumaroleClient(connector=connector, stub=client)
 
     async def version(self) -> VersionResponse:
-        """Get the version of the Fumarole server."""
+        """Get the version of the Fumarole server.
+        """
         request = VersionRequest()
         response = await self.stub.version(request)
         return response
@@ -121,7 +124,12 @@ class FumaroleClient:
     async def dragonsmouth_subscribe(
         self, consumer_group_name: str, request: SubscribeRequest
     ) -> DragonsmouthAdapterSession:
-        """Subscribe to a dragonsmouth stream with default configuration."""
+        """Subscribe to a dragonsmouth stream with default configuration.
+        
+        Args:
+            consumer_group_name (str): The name of the consumer group.
+            request (SubscribeRequest): The request to subscribe to the dragonsmouth stream.
+        """
         return await self.dragonsmouth_subscribe_with_config(
             consumer_group_name, request, FumaroleSubscribeConfig()
         )
@@ -132,7 +140,13 @@ class FumaroleClient:
         request: SubscribeRequest,
         config: FumaroleSubscribeConfig,
     ) -> DragonsmouthAdapterSession:
-        """Subscribe to a dragonsmouth stream with custom configuration."""
+        """Subscribe to a dragonsmouth stream with custom configuration.
+        
+        Args:
+            consumer_group_name (str): The name of the consumer group.
+            request (SubscribeRequest): The request to subscribe to the dragonsmouth stream.
+            config (FumaroleSubscribeConfig): The configuration for the dragonsmouth subscription.
+        """
         dragonsmouth_outlet = asyncio.Queue(maxsize=config.data_channel_capacity)
         fume_control_plane_q = asyncio.Queue(maxsize=100)
 
@@ -185,7 +199,6 @@ class FumaroleClient:
 
         sm = FumaroleSM(last_committed_offset, config.slot_memory_retention)
         subscribe_request_queue = asyncio.Queue(maxsize=100)
-        dm_bidi = DragonsmouthSubscribeRequestBidi(rx=subscribe_request_queue)
 
         data_plane_client = await self.connector.connect()
 
@@ -196,7 +209,7 @@ class FumaroleClient:
         rt = AsyncioFumeDragonsmouthRuntime(
             sm=sm,
             slot_downloader=grpc_slot_downloader,
-            dragonsmouth_bidi=dm_bidi,
+            subscribe_request_update_q=subscribe_request_queue,
             subscribe_request=request,
             consumer_group_name=consumer_group_name,
             control_plane_tx_q=fume_control_plane_q,
@@ -224,7 +237,12 @@ class FumaroleClient:
     async def get_consumer_group_info(
         self, consumer_group_name: str
     ) -> Optional[ConsumerGroupInfo]:
-        """Gets information about a consumer group by name."""
+        """Gets information about a consumer group by name.
+        Returns None if the consumer group does not exist.
+
+        Args:
+            consumer_group_name (str): The name of the consumer group to retrieve information for.
+        """
         try:
             return await self.stub.GetConsumerGroupInfo(
                 GetConsumerGroupInfoRequest(consumer_group_name=consumer_group_name)
@@ -238,7 +256,12 @@ class FumaroleClient:
     async def delete_consumer_group(
         self, consumer_group_name: str
     ) -> DeleteConsumerGroupResponse:
-        """Delete a consumer group by name."""
+        """Delete a consumer group by name.
+
+        NOTE: this operation is idempotent, meaning that if the consumer group does not exist, it will not raise an error.
+        Args:
+            consumer_group_name (str): The name of the consumer group to delete.
+        """
         return await self.stub.DeleteConsumerGroup(
             DeleteConsumerGroupRequest(consumer_group_name=consumer_group_name)
         )
@@ -246,7 +269,8 @@ class FumaroleClient:
     async def delete_all_consumer_groups(
         self,
     ) -> DeleteConsumerGroupResponse:
-        """Deletes all consumer groups."""
+        """Deletes all consumer groups.
+        """
         consumer_group_list = await self.list_consumer_groups()
 
         tasks = []
@@ -268,5 +292,8 @@ class FumaroleClient:
     async def create_consumer_group(
         self, request: CreateConsumerGroupRequest
     ) -> CreateConsumerGroupResponse:
-        """Creates a new consumer group."""
+        """Creates a new consumer group.
+        Args:
+            request (CreateConsumerGroupRequest): The request to create a consumer group.
+        """
         return await self.stub.CreateConsumerGroup(request)

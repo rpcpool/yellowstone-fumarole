@@ -11,4 +11,6 @@ The following directories and their subdirectories are licensed under Apache-2.0
 ```
 examples
 crates
+apps
+python
 ```

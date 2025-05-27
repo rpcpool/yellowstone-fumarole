@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "yellowstone-fumarole-client"
-version = "0.1.0"
+version = "0.1.0-pre.1"
 homepage = "https://github.com/rpcpool/yellowstone-fumarole"
 repository = "https://github.com/rpcpool/yellowstone-fumarole"
 description = "Yellowstone Fumarole Python Client"
