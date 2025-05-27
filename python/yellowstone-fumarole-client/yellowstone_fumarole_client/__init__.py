@@ -115,8 +115,7 @@ class FumaroleClient:
         return FumaroleClient(connector=connector, stub=client)
 
     async def version(self) -> VersionResponse:
-        """Get the version of the Fumarole server.
-        """
+        """Get the version of the Fumarole server."""
         request = VersionRequest()
         response = await self.stub.version(request)
         return response
@@ -125,7 +124,7 @@ class FumaroleClient:
         self, consumer_group_name: str, request: SubscribeRequest
     ) -> DragonsmouthAdapterSession:
         """Subscribe to a dragonsmouth stream with default configuration.
-        
+
         Args:
             consumer_group_name (str): The name of the consumer group.
             request (SubscribeRequest): The request to subscribe to the dragonsmouth stream.
@@ -141,7 +140,7 @@ class FumaroleClient:
         config: FumaroleSubscribeConfig,
     ) -> DragonsmouthAdapterSession:
         """Subscribe to a dragonsmouth stream with custom configuration.
-        
+
         Args:
             consumer_group_name (str): The name of the consumer group.
             request (SubscribeRequest): The request to subscribe to the dragonsmouth stream.
@@ -269,8 +268,7 @@ class FumaroleClient:
     async def delete_all_consumer_groups(
         self,
     ) -> DeleteConsumerGroupResponse:
-        """Deletes all consumer groups.
-        """
+        """Deletes all consumer groups."""
         consumer_group_list = await self.list_consumer_groups()
 
         tasks = []
