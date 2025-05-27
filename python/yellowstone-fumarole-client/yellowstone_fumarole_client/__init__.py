@@ -58,7 +58,7 @@ class FumaroleSubscribeConfig:
     """Configuration for subscribing to a dragonsmouth stream."""
 
     # The maximum number of concurrent download tasks per TCP connection.
-    concurrent_download_limit_per_tcp: int = DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP
+    concurrent_download_limit: int = DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP
 
     # The interval at which to commit the slot memory.
     commit_interval: float = DEFAULT_COMMIT_INTERVAL
@@ -216,7 +216,7 @@ class FumaroleClient:
             dragonsmouth_outlet=dragonsmouth_outlet,
             commit_interval=config.commit_interval,
             gc_interval=config.gc_interval,
-            max_concurrent_download=config.concurrent_download_limit_per_tcp,
+            max_concurrent_download=config.concurrent_download_limit,
         )
 
         fumarole_handle = asyncio.create_task(rt.run())

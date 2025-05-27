@@ -323,7 +323,10 @@ class AsyncioFumeDragonsmouthRuntime:
                 match name:
                     case "dragonsmouth_bidi":
                         LOGGER.debug("Dragonsmouth subscribe request received")
-                        self.handle_new_subscribe_request(result.subscribe_request)
+                        assert isinstance(
+                            result, SubscribeRequest
+                        ), "Expected SubscribeRequest"
+                        self.handle_new_subscribe_request(result)
                         new_task = asyncio.create_task(
                             self.subscribe_request_update_q.get()
                         )
