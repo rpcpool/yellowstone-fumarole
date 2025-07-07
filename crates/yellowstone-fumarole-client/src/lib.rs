@@ -227,9 +227,9 @@ pub mod config;
 #[cfg(feature = "prometheus")]
 pub mod metrics;
 
+pub(crate) mod grpc;
 pub(crate) mod runtime;
 pub(crate) mod util;
-pub(crate) mod grpc;
 
 use {
     config::FumaroleConfig,
@@ -279,10 +279,10 @@ pub mod proto {
 }
 
 use {
+    crate::grpc::FumaroleGrpcConnector,
     proto::{fumarole_client::FumaroleClient as TonicFumaroleClient, JoinControlPlane},
     runtime::tokio::DataPlaneConn,
     tonic::transport::Endpoint,
-    crate::grpc::FumaroleGrpcConnector,
 };
 
 #[derive(Clone)]
@@ -359,6 +359,12 @@ pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: usize = 3;
 ///
 pub const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP: usize = 10;
 
+///
+/// Default refresh tip interval for the fumarole client.
+/// Only useful if you enable `prometheus` feature flags.
+///
+pub const DEFAULT_REFRESH_TIP_INTERVAL: Duration = Duration::from_secs(5); // seconds
+
 pub(crate) type GrpcFumaroleClient =
     TonicFumaroleClient<InterceptedService<Channel, FumeInterceptor>>;
 ///
@@ -424,6 +430,11 @@ pub struct FumaroleSubscribeConfig {
     /// How far back in time the fumarole client should retain slot memory.
     /// This is used to avoid downloading the same slot multiple times.
     pub slot_memory_retention: usize,
+
+    ///
+    /// Interval to refresh the tip stats from the fumarole service.
+    ///
+    pub refresh_tip_stats_interval: Duration,
 }
 
 impl Default for FumaroleSubscribeConfig {
@@ -439,6 +450,7 @@ impl Default for FumaroleSubscribeConfig {
             data_channel_capacity: NonZeroUsize::new(DEFAULT_DRAGONSMOUTH_CAPACITY).unwrap(),
             gc_interval: DEFAULT_GC_INTERVAL,
             slot_memory_retention: DEFAULT_SLOT_MEMORY_RETENTION,
+            refresh_tip_stats_interval: DEFAULT_REFRESH_TIP_INTERVAL, // Default to 5 seconds
         }
     }
 }
@@ -580,6 +592,11 @@ impl FumaroleClient {
     where
         S: AsRef<str>,
     {
+        assert!(
+            config.refresh_tip_stats_interval >= Duration::from_secs(5),
+            "refresh_tip_stats_interval must be greater than or equal to 5 seconds"
+        );
+
         use {proto::ControlCommand, runtime::tokio::DragonsmouthSubscribeRequestBidi};
 
         let (dragonsmouth_outlet, dragonsmouth_inlet) =
@@ -667,6 +684,8 @@ impl FumaroleClient {
 
         let tokio_rt = TokioFumeDragonsmouthRuntime {
             sm,
+            fumarole_client: self.clone(),
+            blockchain_id: initial_state.blockchain_id,
             dragonsmouth_bidi: dm_bidi,
             subscribe_request: request,
             download_task_runner_chans,
@@ -676,7 +695,10 @@ impl FumaroleClient {
             dragonsmouth_outlet,
             commit_interval: config.commit_interval,
             last_commit: Instant::now(),
+            get_tip_interval: config.refresh_tip_stats_interval,
+            last_tip: Instant::now(),
             gc_interval: config.gc_interval,
+            non_critical_background_jobs: Default::default(),
         };
         let download_task_runner_jh = handle.spawn(grpc_download_task_runner.run());
         let fumarole_rt_jh = handle.spawn(tokio_rt.run());
@@ -729,5 +751,12 @@ impl FumaroleClient {
     ) -> std::result::Result<tonic::Response<proto::CreateConsumerGroupResponse>, tonic::Status>
     {
         self.inner.create_consumer_group(request).await
+    }
+
+    pub async fn get_chain_tip(
+        &mut self,
+        request: impl tonic::IntoRequest<proto::GetChainTipRequest>,
+    ) -> std::result::Result<tonic::Response<proto::GetChainTipResponse>, tonic::Status> {
+        self.inner.get_chain_tip(request).await
     }
 }

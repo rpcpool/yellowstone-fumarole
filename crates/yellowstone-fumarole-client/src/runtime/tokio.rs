@@ -11,9 +11,9 @@ use {
     crate::{
         proto::{
             self, data_response, BlockFilters, CommitOffset, ControlCommand, DownloadBlockShard,
-            PollBlockchainHistory,
+            GetChainTipResponse, PollBlockchainHistory,
         },
-        FumaroleGrpcConnector, GrpcFumaroleClient,
+        FumaroleClient, FumaroleGrpcConnector, GrpcFumaroleClient,
     },
     futures::StreamExt,
     solana_sdk::clock::Slot,
@@ -61,6 +61,10 @@ pub enum DownloadTaskResult {
     Err { slot: Slot, err: DownloadBlockError },
 }
 
+pub enum BackgroundJobResult {
+    UpdateTip(GetChainTipResponse),
+}
+
 ///
 /// Fumarole runtime based on Tokio outputting Dragonsmouth only events.
 ///
@@ -68,6 +72,8 @@ pub enum DownloadTaskResult {
 ///
 pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub sm: FumaroleSM,
+    pub blockchain_id: Vec<u8>,
+    pub fumarole_client: FumaroleClient,
     pub download_task_runner_chans: DownloadTaskRunnerChannels,
     pub dragonsmouth_bidi: DragonsmouthSubscribeRequestBidi,
     pub subscribe_request: SubscribeRequest,
@@ -77,8 +83,12 @@ pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub control_plane_rx: mpsc::Receiver<Result<proto::ControlResponse, tonic::Status>>,
     pub dragonsmouth_outlet: mpsc::Sender<Result<geyser::SubscribeUpdate, tonic::Status>>,
     pub commit_interval: Duration,
+    pub get_tip_interval: Duration,
     pub last_commit: Instant,
+    pub last_tip: Instant,
+
     pub gc_interval: usize, // in ticks
+    pub non_critical_background_jobs: JoinSet<BackgroundJobResult>,
 }
 
 const fn build_poll_history_cmd(from: Option<FumeOffset>) -> ControlCommand {
@@ -231,7 +241,10 @@ impl TokioFumeDragonsmouthRuntime {
             .expect("failed to commit offset");
         #[cfg(feature = "prometheus")]
         {
+            use crate::metrics::set_max_offset_committed;
+
             inc_offset_commitment_count(Self::RUNTIME_NAME);
+            set_max_offset_committed(Self::RUNTIME_NAME, self.sm.committable_offset);
         }
     }
 
@@ -339,6 +352,51 @@ impl TokioFumeDragonsmouthRuntime {
             .expect("failed to send subscribe request");
     }
 
+    async fn update_tip(&mut self) {
+        #[cfg(feature = "prometheus")]
+        {
+            use crate::proto::GetChainTipRequest;
+
+            let mut fumarole_client = self.fumarole_client.clone();
+            let blockchain_id = self.blockchain_id.clone();
+            let job = async move {
+                let result = fumarole_client
+                    .get_chain_tip(GetChainTipRequest { blockchain_id })
+                    .await
+                    .expect("failed to get chain tip")
+                    .into_inner();
+                BackgroundJobResult::UpdateTip(result)
+            };
+
+            self.non_critical_background_jobs.spawn(job);
+        }
+        self.last_tip = Instant::now();
+    }
+
+    fn handle_non_critical_job_result(&mut self, result: BackgroundJobResult) {
+        match result {
+            BackgroundJobResult::UpdateTip(get_tip_response) => {
+                tracing::debug!("received get tip response: {get_tip_response:?}");
+                let GetChainTipResponse {
+                    shard_to_max_offset_map,
+                    ..
+                } = get_tip_response;
+                if shard_to_max_offset_map.is_empty() {
+                    tracing::warn!("get tip response is empty, no shard to max offset map");
+                    return;
+                }
+                if let Some(tip) = shard_to_max_offset_map.values().max() {
+                    tracing::trace!("tip is {tip}");
+                    #[cfg(feature = "prometheus")]
+                    {
+                        use crate::metrics::set_fumarole_blockchain_offset_tip;
+                        set_fumarole_blockchain_offset_tip(Self::RUNTIME_NAME, *tip);
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) async fn run(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let inital_load_history_cmd = build_poll_history_cmd(None);
 
@@ -369,6 +427,7 @@ impl TokioFumeDragonsmouthRuntime {
                 set_slot_status_update_queue_len(Self::RUNTIME_NAME, slot_status_update_queue_len);
             }
 
+            let get_tip_deadline = self.last_tip + self.get_tip_interval;
             let commit_deadline = self.last_commit + self.commit_interval;
 
             self.poll_history_if_needed().await;
@@ -398,6 +457,16 @@ impl TokioFumeDragonsmouthRuntime {
                         }
                     }
                 }
+                Some(result) = self.non_critical_background_jobs.join_next() => {
+                    match result {
+                        Ok(result) => {
+                            self.handle_non_critical_job_result(result);
+                        }
+                        Err(e) => {
+                            tracing::warn!("non critical background job error with: {e:?}");
+                        }
+                    }
+                }
                 maybe = self.download_task_runner_chans.download_result_rx.recv() => {
                     match maybe {
                         Some(result) => {
@@ -412,6 +481,9 @@ impl TokioFumeDragonsmouthRuntime {
                 _ = tokio::time::sleep_until(commit_deadline.into()) => {
                     tracing::trace!("commit deadline reached");
                     self.commit_offset().await;
+                }
+                _ = tokio::time::sleep_until(get_tip_deadline.into()) => {
+                    self.update_tip().await;
                 }
             }
             self.drain_slot_status().await;

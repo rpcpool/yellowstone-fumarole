@@ -15,10 +15,21 @@ service Fumarole {
   // Represents subscription to the data plane
   rpc SubscribeData(stream DataCommand) returns (stream DataResponse) {}
 
+  rpc GetChainTip(GetChainTipRequest) returns (GetChainTipResponse) {}
+
   // Represents subscription to the control plane
   rpc Subscribe(stream ControlCommand) returns (stream ControlResponse) {}
 
   rpc Version(VersionRequest) returns (VersionResponse) {}
+}
+
+message GetChainTipRequest {
+  bytes blockchain_id = 1;
+}
+
+message GetChainTipResponse {
+  bytes blockchain_id = 1;
+  map<int32, int64> shard_to_max_offset_map = 2;
 }
 
 message VersionRequest {}
@@ -51,6 +62,7 @@ message ConsumerGroupInfo {
   string id = 1;
   string consumer_group_name = 2;
   bool is_stale = 3;
+  bytes blockchain_id = 4;
 }
 
 message GetSlotLagInfoRequest {
