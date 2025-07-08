@@ -268,12 +268,16 @@ fn summarize_account(account: SubscribeUpdateAccount) -> Option<String> {
     // let pubkey = Pubkey::try_from(account.pubkey).expect("Failed to parse pubkey");
     // let owner = Pubkey::try_from(account.owner).expect("Failed to parse owner");
     let tx_sig = account.txn_signature;
+    let account_pubkey = Pubkey::try_from(account.pubkey).expect("Failed to parse pubkey");
+    let owner = Pubkey::try_from(account.owner).expect("Failed to parse owner");
     let tx_sig = if let Some(tx_sig_bytes) = tx_sig {
         bs58::encode(tx_sig_bytes).into_string()
     } else {
         "None".to_string()
     };
-    Some(format!("account,{slot},{tx_sig}"))
+    Some(format!(
+        "account,{slot},pk={account_pubkey},owner={owner},tx={tx_sig}"
+    ))
 }
 
 fn summarize_tx(tx: SubscribeUpdateTransaction) -> Option<String> {

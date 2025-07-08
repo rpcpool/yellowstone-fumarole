@@ -105,6 +105,64 @@ lazy_static! {
         ),
         &["runtime"],
     ).unwrap();
+
+    pub(crate) static ref MAX_OFFSET_COMMITTED: IntGaugeVec = IntGaugeVec::new(
+        Opts::new(
+            "fumarole_max_offset_committed",
+            "Max offset committed to Fumarole runtime",
+        ),
+        &["runtime"],
+    ).unwrap();
+
+    pub(crate) static ref FUMAROLE_BLOCKCHAIN_OFFSET_TIP: IntGaugeVec = IntGaugeVec::new(
+        Opts::new(
+            "fumarole_blockchain_offset_tip",
+            "The current offset tip of the Fumarole blockchain",
+        ),
+        &["runtime"],
+    ).unwrap();
+
+    pub(crate) static ref FUMAROLE_OFFSET_LAG_FROM_TIP: IntGaugeVec = IntGaugeVec::new(
+        Opts::new(
+            "fumarole_offset_lag_from_tip",
+            "The difference between last committed offset and the current tip of the Fumarole blockchain",
+        ),
+        &["runtime"],
+    ).unwrap();
+}
+
+pub(crate) fn set_fumarole_blockchain_offset_tip(name: impl AsRef<str>, offset: i64) {
+    FUMAROLE_BLOCKCHAIN_OFFSET_TIP
+        .with_label_values(&[name.as_ref()])
+        .set(offset);
+    update_fumarole_offset_lag_from_tip(name);
+}
+
+fn update_fumarole_offset_lag_from_tip(name: impl AsRef<str>) {
+    let tip = FUMAROLE_BLOCKCHAIN_OFFSET_TIP
+        .get_metric_with_label_values(&[name.as_ref()])
+        .map(|m| m.get())
+        .unwrap_or(0);
+
+    let committed = MAX_OFFSET_COMMITTED
+        .get_metric_with_label_values(&[name.as_ref()])
+        .map(|m| m.get())
+        .unwrap_or(0);
+
+    let tip = tip.max(0) as u64;
+
+    let lag = tip.saturating_sub(committed.max(0) as u64);
+
+    FUMAROLE_OFFSET_LAG_FROM_TIP
+        .with_label_values(&[name.as_ref()])
+        .set(lag as i64);
+}
+
+pub(crate) fn set_max_offset_committed(name: impl AsRef<str>, offset: i64) {
+    MAX_OFFSET_COMMITTED
+        .with_label_values(&[name.as_ref()])
+        .set(offset);
+    update_fumarole_offset_lag_from_tip(name);
 }
 
 pub(crate) fn inc_total_event_downloaded(name: impl AsRef<str>, amount: usize) {
@@ -215,5 +273,14 @@ pub fn register_metrics(registry: &prometheus::Registry) {
         .unwrap();
     registry
         .register(Box::new(SLOT_STATUS_UPDATE_QUEUE_LEN.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(MAX_OFFSET_COMMITTED.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(FUMAROLE_BLOCKCHAIN_OFFSET_TIP.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(FUMAROLE_OFFSET_LAG_FROM_TIP.clone()))
         .unwrap();
 }

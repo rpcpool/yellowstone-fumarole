@@ -1,6 +1,13 @@
-use tonic::{service::interceptor::InterceptedService, transport::{Channel, Endpoint}};
-
-use crate::{config::FumaroleConfig, proto::fumarole_client::FumaroleClient, string_pairs_to_metadata_header, FumeInterceptor};
+use {
+    crate::{
+        config::FumaroleConfig, proto::fumarole_client::FumaroleClient,
+        string_pairs_to_metadata_header, FumeInterceptor,
+    },
+    tonic::{
+        service::interceptor::InterceptedService,
+        transport::{Channel, Endpoint},
+    },
+};
 
 #[derive(Clone)]
 pub struct FumaroleGrpcConnector {
@@ -11,10 +18,8 @@ pub struct FumaroleGrpcConnector {
 impl FumaroleGrpcConnector {
     pub async fn connect(
         &self,
-    ) -> Result<
-        FumaroleClient<InterceptedService<Channel, FumeInterceptor>>,
-        tonic::transport::Error,
-    > {
+    ) -> Result<FumaroleClient<InterceptedService<Channel, FumeInterceptor>>, tonic::transport::Error>
+    {
         let channel = self.endpoint.connect().await?;
         let interceptor = FumeInterceptor {
             x_token: self
