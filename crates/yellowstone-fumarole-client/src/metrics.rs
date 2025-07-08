@@ -134,32 +134,34 @@ lazy_static! {
 pub(crate) fn set_fumarole_blockchain_offset_tip(name: impl AsRef<str>, offset: i64) {
     FUMAROLE_BLOCKCHAIN_OFFSET_TIP
         .with_label_values(&[name.as_ref()])
-        .set(offset as i64);
+        .set(offset);
     update_fumarole_offset_lag_from_tip(name);
 }
 
 fn update_fumarole_offset_lag_from_tip(name: impl AsRef<str>) {
     let tip = FUMAROLE_BLOCKCHAIN_OFFSET_TIP
         .get_metric_with_label_values(&[name.as_ref()])
-        .map(|m| m.get() as i64)
+        .map(|m| m.get())
         .unwrap_or(0);
 
     let committed = MAX_OFFSET_COMMITTED
         .get_metric_with_label_values(&[name.as_ref()])
-        .map(|m| m.get() as i64)
+        .map(|m| m.get())
         .unwrap_or(0);
 
-    let lag = tip.saturating_sub(committed);
+    let tip = tip.max(0) as u64;
+
+    let lag = tip.saturating_sub(committed.max(0) as u64);
 
     FUMAROLE_OFFSET_LAG_FROM_TIP
         .with_label_values(&[name.as_ref()])
-        .set(lag);
+        .set(lag as i64);
 }
 
 pub(crate) fn set_max_offset_committed(name: impl AsRef<str>, offset: i64) {
     MAX_OFFSET_COMMITTED
         .with_label_values(&[name.as_ref()])
-        .set(offset as i64);
+        .set(offset);
     update_fumarole_offset_lag_from_tip(name);
 }
 
