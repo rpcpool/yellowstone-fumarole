@@ -56,6 +56,13 @@ By default, if you don't provide `--config`, fumarole CLI will use the value at 
 otherwise fallback to `~/.fumarole/config.yaml`.
 
 
+```sh
+export FUMAROLE_CONFIG=path/to/config.toml
+fume test-config
+Successfully connected to Fumarole Service
+```
+
+
 ## Create a Persistent Subscriber
 
 ```sh
@@ -130,3 +137,20 @@ fume -- subscribe --name test1 \
 The above command stream all data required by [DAS](https://github.com/rpcpool/digital-asset-validator-plugin).
 
 **Note**: This command serves more as a testing tool/playground for you to try it out as it only prints summarized data.
+
+
+### Enabling Prometheus metrics
+
+When subscribing, you can enable prometheus metrics and bind to a port to view fumarole related metrics into HTML format.
+
+```sh
+fume subscribe --name test1 --prometheus 0
+```
+
+Using `--prometheus 0` this will bind to a random port on `127.0.0.1`.
+
+You can specify the address like this:
+
+```sh
+fume subscribe --name test1 --prometheus 127.0.0.1:9999
+```
