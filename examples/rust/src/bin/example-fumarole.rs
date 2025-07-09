@@ -12,7 +12,7 @@ use {
 };
 
 #[derive(Debug, Clone, Parser)]
-#[clap(author, version, about = "Yellowstone gRPC ScyllaDB Tool")]
+#[clap(author, version, about = "Yellowstone Fumarole Example")]
 struct Args {
     /// Path to static config file
     #[clap(long)]

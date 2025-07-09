@@ -8,7 +8,7 @@ resolver = "2"
 
 [workspace.package]
 authors = ["Triton One"]
-edition = "2021"
+edition = "2024"
 homepage = "https://triton.one"
 repository = "https://github.com/rpcpool/yellowstone-fumarole"
 license = "AGPL-3.0"

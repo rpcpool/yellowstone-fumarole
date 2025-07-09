@@ -6,7 +6,8 @@ fn main() {
 
     let yellowstone_grpc_proto_dir = path.join("yellowstone-grpc-proto");
     let proto_dir = path.join("proto");
-    env::set_var("PROTOC", protobuf_src::protoc());
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { env::set_var("PROTOC", protobuf_src::protoc()) };
 
     tonic_build::configure()
         .build_server(false)
