@@ -8,8 +8,7 @@ resolver = "2"
 
 [workspace.package]
 authors = ["Triton One"]
-version = "0.1.1+solana.2.1.11"
-edition = "2021"
+edition = "2024"
 homepage = "https://triton.one"
 repository = "https://github.com/rpcpool/yellowstone-fumarole"
 license = "AGPL-3.0"
@@ -19,6 +18,7 @@ publish = false
 
 [workspace.dependencies]
 async-trait = "~0.1.88"
+bs58 = "~0.5.1"
 clap = "^4.5.7"
 clap-verbosity-flag = "^3.0.2"
 futures = "~0.3.31"
@@ -34,7 +34,8 @@ protobuf-src = "~1.1.0"
 serde = "~1.0.203"
 serde_with = "^3.8.1"
 serde_yaml = "~0.9.34"
-solana-sdk = "~2.1.21"
+solana-clock = "~2.2.1"
+solana-pubkey = "~2.4.0"
 tabled = "~0.18.0"
 thiserror = "^1.0.61"
 tokio = "1"
@@ -45,9 +46,9 @@ tower = "~0.5.2"
 tracing = "~0.1.41"
 tracing-subscriber = { version = "~0.3.18", features = ["env-filter"] }
 uuid = { version = "1" }
-yellowstone-fumarole-client = { path = "crates/yellowstone-fumarole-client", version = "0.2.0-pre.3+solana.2.1" }
-yellowstone-grpc-client = "5"
-yellowstone-grpc-proto = "5"
+yellowstone-fumarole-client = { path = "crates/yellowstone-fumarole-client", version = "0.2.0-rc1+solana.2" }
+yellowstone-grpc-client = "8"
+yellowstone-grpc-proto = "8"
 
 [workspace.lints.clippy]
 clone_on_ref_ptr = "deny"

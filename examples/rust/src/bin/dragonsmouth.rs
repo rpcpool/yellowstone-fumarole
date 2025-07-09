@@ -1,6 +1,6 @@
 use {
     clap::Parser,
-    solana_sdk::{bs58, pubkey::Pubkey},
+    solana_pubkey::Pubkey,
     std::{collections::HashMap, path::PathBuf},
     tokio_stream::StreamExt,
     yellowstone_fumarole_client::config::FumaroleConfig,
@@ -12,7 +12,7 @@ use {
 };
 
 #[derive(Debug, Clone, Parser)]
-#[clap(author, version, about = "Yellowstone gRPC ScyllaDB Tool")]
+#[clap(author, version, about = "Yellowstone Dragonsmouth Example")]
 struct Args {
     /// Path to static config file
     #[clap(long)]

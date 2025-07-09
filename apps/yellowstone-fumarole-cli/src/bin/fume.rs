@@ -1,7 +1,7 @@
 use {
     clap::Parser,
     futures::{future::BoxFuture, FutureExt},
-    solana_sdk::{bs58, pubkey::Pubkey},
+    solana_pubkey::Pubkey,
     std::{
         collections::{HashMap, HashSet},
         env,
@@ -605,7 +605,6 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
             }
         }
     }
-    println!("Exiting subscribe loop");
 }
 
 async fn test_config(mut fumarole_client: FumaroleClient) {

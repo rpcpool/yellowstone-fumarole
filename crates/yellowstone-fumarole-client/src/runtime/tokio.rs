@@ -16,7 +16,7 @@ use {
         FumaroleClient, FumaroleGrpcConnector, GrpcFumaroleClient,
     },
     futures::StreamExt,
-    solana_sdk::clock::Slot,
+    solana_clock::Slot,
     std::{
         collections::{HashMap, VecDeque},
         time::{Duration, Instant},

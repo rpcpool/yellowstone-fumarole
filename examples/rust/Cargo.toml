@@ -1,7 +1,6 @@
 [package]
 name = "yellowstone-fumarole-client-simple"
 description = "Simple Yellowstone Fumarole Client examples"
-version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }
 homepage = { workspace = true }
@@ -17,9 +16,10 @@ name = "example-fumarole"
 name = "dragonsmouth"
 
 [dependencies]
-solana-sdk = { workspace = true }
+bs58 = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde_yaml = { workspace = true }
+solana-pubkey = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
