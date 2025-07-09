@@ -1,6 +1,6 @@
 use {
     clap::Parser,
-    solana_sdk::{bs58, pubkey::Pubkey},
+    solana_pubkey::Pubkey,
     std::{collections::HashMap, path::PathBuf},
     tokio_stream::StreamExt,
     yellowstone_fumarole_client::config::FumaroleConfig,

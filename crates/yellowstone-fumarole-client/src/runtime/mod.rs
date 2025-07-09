@@ -6,7 +6,7 @@ pub(crate) mod tokio;
 use {
     crate::proto::{self, BlockchainEvent},
     fxhash::FxHashMap,
-    solana_sdk::clock::Slot,
+    solana_clock::Slot,
     std::{
         cmp::Reverse,
         collections::{hash_map, BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque},
