@@ -72,6 +72,7 @@ pub enum BackgroundJobResult {
 ///
 pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub sm: FumaroleSM,
+    #[allow(dead_code)]
     pub blockchain_id: Vec<u8>,
     pub fumarole_client: FumaroleClient,
     pub download_task_runner_chans: DownloadTaskRunnerChannels,

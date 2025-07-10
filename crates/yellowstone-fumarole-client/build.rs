@@ -14,7 +14,6 @@ fn main() {
         .compile_protos(
             &[
                 proto_dir.join("fumarole.proto"),
-                proto_dir.join("fumarole_v2.proto"),
             ],
             &[proto_dir, yellowstone_grpc_proto_dir],
         )

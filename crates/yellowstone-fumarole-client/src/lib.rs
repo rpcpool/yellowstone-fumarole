@@ -275,7 +275,7 @@ mod geyser {
 #[allow(clippy::missing_const_for_fn)]
 #[allow(clippy::all)]
 pub mod proto {
-    include!(concat!(env!("OUT_DIR"), "/fumarole_v2.rs"));
+    include!(concat!(env!("OUT_DIR"), "/fumarole.rs"));
 }
 
 use {
@@ -353,7 +353,7 @@ pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: usize = 3;
 /// Default number of parallel data streams (TCP connections) to open to fumarole.
 ///
 // const _DEFAULT_PARA_DATA_STREAMS: u8 = 3; /**TODO: enable this after beta*/
-
+///
 ///
 /// Default maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
 ///
@@ -400,7 +400,7 @@ pub struct FumaroleSubscribeConfig {
     /// Number of parallel data streams (TCP connections) to open to fumarole
     ///
     // pub num_data_plane_tcp_connections: NonZeroU8, /*TODO: enable this after beta */
-
+    ///
     ///
     /// Maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
     ///
