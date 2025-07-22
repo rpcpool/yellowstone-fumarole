@@ -233,28 +233,28 @@ pub(crate) mod util;
 
 use {
     config::FumaroleConfig,
-    futures::future::{select, Either},
+    futures::future::{Either, select},
     proto::control_response::Response,
     runtime::{
+        DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM,
         tokio::{
-            DownloadTaskRunnerChannels, GrpcDownloadTaskRunner, TokioFumeDragonsmouthRuntime,
-            DEFAULT_GC_INTERVAL,
+            DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, GrpcDownloadTaskRunner,
+            TokioFumeDragonsmouthRuntime,
         },
-        FumaroleSM, DEFAULT_SLOT_MEMORY_RETENTION,
     },
     std::{
         collections::HashMap,
-        num::NonZeroUsize,
+        num::{NonZeroU8, NonZeroUsize},
         time::{Duration, Instant},
     },
     tokio::sync::mpsc,
     tokio_stream::wrappers::ReceiverStream,
     tonic::{
         metadata::{
-            errors::{InvalidMetadataKey, InvalidMetadataValue},
             Ascii, MetadataKey, MetadataValue,
+            errors::{InvalidMetadataKey, InvalidMetadataValue},
         },
-        service::{interceptor::InterceptedService, Interceptor},
+        service::{Interceptor, interceptor::InterceptedService},
         transport::{Channel, ClientTlsConfig},
     },
     util::grpc::into_bounded_mpsc_rx,
@@ -280,7 +280,7 @@ pub mod proto {
 
 use {
     crate::grpc::FumaroleGrpcConnector,
-    proto::{fumarole_client::FumaroleClient as TonicFumaroleClient, JoinControlPlane},
+    proto::{JoinControlPlane, fumarole_client::FumaroleClient as TonicFumaroleClient},
     runtime::tokio::DataPlaneConn,
     tonic::transport::Endpoint,
 };
@@ -350,10 +350,14 @@ pub const DEFAULT_COMMIT_INTERVAL: Duration = Duration::from_secs(10);
 pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: usize = 3;
 
 ///
+/// MAXIMUM number of parallel data streams (TCP connections) to open to fumarole.
+const MAX_PARA_DATA_STREAMS: u8 = 4;
+
+///
 /// Default number of parallel data streams (TCP connections) to open to fumarole.
 ///
-// const _DEFAULT_PARA_DATA_STREAMS: u8 = 3; /**TODO: enable this after beta*/
-///
+pub const DEFAULT_PARA_DATA_STREAMS: u8 = 1;
+
 ///
 /// Default maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
 ///
@@ -399,7 +403,8 @@ pub struct FumaroleSubscribeConfig {
     ///
     /// Number of parallel data streams (TCP connections) to open to fumarole
     ///
-    // pub num_data_plane_tcp_connections: NonZeroU8, /*TODO: enable this after beta */
+    pub num_data_plane_tcp_connections: NonZeroU8,
+
     ///
     ///
     /// Maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
@@ -440,7 +445,7 @@ pub struct FumaroleSubscribeConfig {
 impl Default for FumaroleSubscribeConfig {
     fn default() -> Self {
         Self {
-            // num_data_plane_tcp_connections: NonZeroU8::new(DEFAULT_PARA_DATA_STREAMS).unwrap(), /**THIS FEATURE WILL BE DONE AFTER BETA */
+            num_data_plane_tcp_connections: NonZeroU8::new(DEFAULT_PARA_DATA_STREAMS).unwrap(),
             concurrent_download_limit_per_tcp: NonZeroUsize::new(
                 DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
             )
@@ -593,6 +598,11 @@ impl FumaroleClient {
         S: AsRef<str>,
     {
         assert!(
+            config.num_data_plane_tcp_connections.get() <= MAX_PARA_DATA_STREAMS,
+            "num_data_plane_tcp_connections must be less than or equal to {MAX_PARA_DATA_STREAMS}"
+        );
+
+        assert!(
             config.refresh_tip_stats_interval >= Duration::from_secs(5),
             "refresh_tip_stats_interval must be greater than or equal to 5 seconds"
         );
@@ -651,7 +661,7 @@ impl FumaroleClient {
 
         let mut data_plane_channel_vec = Vec::with_capacity(1);
         // TODO: support config.num_data_plane_tcp_connections
-        for _ in 0..1 {
+        for _ in 0..config.num_data_plane_tcp_connections.get() {
             let client = self
                 .connector
                 .connect()

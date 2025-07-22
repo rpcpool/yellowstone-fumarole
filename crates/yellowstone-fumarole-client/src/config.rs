@@ -1,4 +1,4 @@
-use {serde::Deserialize, std::collections::BTreeMap};
+use {serde::Deserialize, std::collections::BTreeMap, tonic::codec::CompressionEncoding};
 
 ///
 /// Configuration for the fumarole service
@@ -20,9 +20,46 @@ pub struct FumaroleConfig {
     /// Must be a mapping of string to string
     #[serde(default, rename = "x-metadata")]
     pub x_metadata: BTreeMap<String, String>,
+
+    /// Optional compression encoding to use for the response
+    /// If set, the client will accept compressed responses using this encoding
+    /// Supported values are "gzip" and "zstd"
+    #[serde(
+        default,
+        alias = "response-compression",
+        deserialize_with = "FumaroleConfig::deser_compression"
+    )]
+    pub response_compression: Option<CompressionEncoding>,
+
+    ///
+    /// Optional compression encoding to use for the request
+    /// If set, the client will compress requests using this encoding
+    /// Supported values are "gzip" and "zstd"
+    #[serde(
+        default,
+        alias = "request-compression",
+        deserialize_with = "FumaroleConfig::deser_compression"
+    )]
+    pub request_compression: Option<CompressionEncoding>,
 }
 
 impl FumaroleConfig {
+    ///
+    /// Deserialize the [`CompressionEncoding`] field from a string
+    ///
+    fn deser_compression<'de, D>(deserializer: D) -> Result<Option<CompressionEncoding>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value: Option<String> = Option::deserialize(deserializer)?;
+        match value {
+            Some(ref s) if s == "gzip" => Ok(Some(CompressionEncoding::Gzip)),
+            Some(ref s) if s == "zstd" => Ok(Some(CompressionEncoding::Zstd)),
+            Some(_) => Err(serde::de::Error::custom("Invalid compression encoding")),
+            None => Ok(None),
+        }
+    }
+
     ///
     /// Returns the default maximum size of a message that can be decoded
     ///  

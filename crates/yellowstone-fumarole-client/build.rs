@@ -12,9 +12,7 @@ fn main() {
     tonic_build::configure()
         .build_server(false)
         .compile_protos(
-            &[
-                proto_dir.join("fumarole.proto"),
-            ],
+            &[proto_dir.join("fumarole.proto")],
             &[proto_dir, yellowstone_grpc_proto_dir],
         )
         .expect("Failed to compile protos");

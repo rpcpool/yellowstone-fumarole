@@ -1,40 +1,40 @@
 use {
     clap::Parser,
-    futures::{future::BoxFuture, FutureExt},
+    futures::{FutureExt, future::BoxFuture},
     solana_pubkey::Pubkey,
     std::{
         collections::{HashMap, HashSet},
         env,
         fmt::{self, Debug},
         fs::File,
-        io::{stdout, Write},
+        io::{Write, stdout},
         net::{AddrParseError, SocketAddr},
-        num::NonZeroUsize,
+        num::{NonZeroU8, NonZeroUsize},
         path::PathBuf,
         str::FromStr,
         time::Duration,
     },
-    tabled::{builder::Builder, Table},
+    tabled::{Table, builder::Builder},
     tokio::{
         io::{self, AsyncBufReadExt, BufReader},
-        signal::unix::{signal, SignalKind},
+        signal::unix::{SignalKind, signal},
     },
     tonic::Code,
     tracing_subscriber::EnvFilter,
     yellowstone_fumarole_cli::prom::prometheus_server,
     yellowstone_fumarole_client::{
+        DragonsmouthAdapterSession, FumaroleClient, FumaroleSubscribeConfig,
         config::FumaroleConfig,
         proto::{
             ConsumerGroupInfo, CreateConsumerGroupRequest, DeleteConsumerGroupRequest,
             GetConsumerGroupInfoRequest, InitialOffsetPolicy, ListConsumerGroupsRequest,
         },
-        DragonsmouthAdapterSession, FumaroleClient, FumaroleSubscribeConfig,
     },
     yellowstone_grpc_proto::geyser::{
-        subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
-        SubscribeRequestFilterAccounts, SubscribeRequestFilterBlocksMeta,
-        SubscribeRequestFilterSlots, SubscribeRequestFilterTransactions, SubscribeUpdateAccount,
-        SubscribeUpdateBlockMeta, SubscribeUpdateSlot, SubscribeUpdateTransaction,
+        CommitmentLevel, SubscribeRequest, SubscribeRequestFilterAccounts,
+        SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterSlots,
+        SubscribeRequestFilterTransactions, SubscribeUpdateAccount, SubscribeUpdateBlockMeta,
+        SubscribeUpdateSlot, SubscribeUpdateTransaction, subscribe_update::UpdateOneof,
     },
 };
 
@@ -260,6 +260,10 @@ struct SubscribeArgs {
     /// List of account public keys that must be included in the transaction
     #[clap(long, short)]
     tx_account: Vec<Pubkey>,
+
+    /// Number of parallel data streams (TCP connections) to open to fumarole.
+    #[clap(long, short, default_value = "1")]
+    para: NonZeroU8,
 }
 
 fn summarize_account(account: SubscribeUpdateAccount) -> Option<String> {
@@ -472,6 +476,7 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
         owner,
         tx_account: tx_pubkey,
         out,
+        para,
     } = args;
 
     let mut out: Box<dyn Write> = if let Some(out) = out {
@@ -540,6 +545,7 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     let subscribe_config = FumaroleSubscribeConfig {
         concurrent_download_limit_per_tcp: NonZeroUsize::new(1).unwrap(),
         commit_interval: Duration::from_secs(1),
+        num_data_plane_tcp_connections: para,
         ..Default::default()
     };
     let dragonsmouth_session = client

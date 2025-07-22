@@ -9,7 +9,7 @@ use {
     solana_clock::Slot,
     std::{
         cmp::Reverse,
-        collections::{hash_map, BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque},
+        collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque, hash_map},
     },
     yellowstone_grpc_proto::geyser::{self, CommitmentLevel},
 };
@@ -303,21 +303,23 @@ impl FumaroleSM {
     pub fn pop_next_slot_status(&mut self) -> Option<FumeSlotStatus> {
         loop {
             let slot_status = self.slot_status_update_queue.pop_front()?;
-            match self.slot_commitment_progression.get_mut(&slot_status.slot)
-            { Some(commitment_history) => {
-                if commitment_history
-                    .processed_commitment_levels
-                    .insert(slot_status.commitment_level)
-                {
-                    return Some(slot_status);
-                } else {
-                    // We already processed this commitment level
-                    continue;
+            match self.slot_commitment_progression.get_mut(&slot_status.slot) {
+                Some(commitment_history) => {
+                    if commitment_history
+                        .processed_commitment_levels
+                        .insert(slot_status.commitment_level)
+                    {
+                        return Some(slot_status);
+                    } else {
+                        // We already processed this commitment level
+                        continue;
+                    }
                 }
-            } _ => {
-                // This slot has not been downloaded yet, but still has a status to process
-                unreachable!("slot status should not be available here");
-            }}
+                _ => {
+                    // This slot has not been downloaded yet, but still has a status to process
+                    unreachable!("slot status should not be available here");
+                }
+            }
         }
     }
 

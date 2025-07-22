@@ -9,11 +9,11 @@ use crate::metrics::{
 use {
     super::{FumaroleSM, FumeDownloadRequest, FumeOffset, FumeShardIdx},
     crate::{
-        proto::{
-            self, data_response, BlockFilters, CommitOffset, ControlCommand, DownloadBlockShard,
-            GetChainTipResponse, PollBlockchainHistory,
-        },
         FumaroleClient, FumaroleGrpcConnector, GrpcFumaroleClient,
+        proto::{
+            self, BlockFilters, CommitOffset, ControlCommand, DownloadBlockShard,
+            GetChainTipResponse, PollBlockchainHistory, data_response,
+        },
     },
     futures::StreamExt,
     solana_clock::Slot,

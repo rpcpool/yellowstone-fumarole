@@ -6,8 +6,8 @@ use {
     yellowstone_fumarole_client::config::FumaroleConfig,
     yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcBuilder},
     yellowstone_grpc_proto::geyser::{
-        subscribe_update::UpdateOneof, SubscribeRequest, SubscribeRequestFilterAccounts,
-        SubscribeRequestFilterTransactions, SubscribeUpdateAccount, SubscribeUpdateTransaction,
+        SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterTransactions,
+        SubscribeUpdateAccount, SubscribeUpdateTransaction, subscribe_update::UpdateOneof,
     },
 };
 
