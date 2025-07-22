@@ -198,6 +198,11 @@ impl TokioFumeDragonsmouthRuntime {
             let permit = match result {
                 Ok(permit) => permit,
                 Err(TrySendError::Full(_)) => {
+                    #[cfg(feature = "prometheus")]
+                    {
+                        use crate::metrics::incr_download_queue_full_detection_count;
+                        incr_download_queue_full_detection_count(Self::RUNTIME_NAME);
+                    }
                     break;
                 }
                 Err(TrySendError::Closed(_)) => {
@@ -800,7 +805,7 @@ impl GrpcDownloadTaskRunner {
             .entry(slot)
             .and_modify(|e| *e += 1)
             .or_insert(1);
-        conn.permits.checked_sub(1).expect("underflow");
+        conn.permits = conn.permits.checked_sub(1).expect("underflow");
 
         #[cfg(feature = "prometheus")]
         {
@@ -818,9 +823,26 @@ impl GrpcDownloadTaskRunner {
         }
     }
 
+    fn available_download_permit(&self) -> usize {
+        self.data_plane_channel_vec
+            .iter()
+            .map(|conn| conn.permits)
+            .sum()
+    }
+
     pub(crate) async fn run(mut self) -> Result<(), DownloadBlockError> {
         while !self.outlet.is_closed() {
             let maybe_available_client_idx = self.find_least_use_client();
+
+            #[cfg(feature = "prometheus")]
+            {
+                use crate::metrics::set_available_download_permit;
+                set_available_download_permit(
+                    Self::RUNTIME_NAME,
+                    self.available_download_permit() as i64,
+                );
+            }
+
             tokio::select! {
                 maybe = self.cnc_rx.recv() => {
                     match maybe {

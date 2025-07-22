@@ -670,7 +670,6 @@ impl FumaroleClient {
             let conn = DataPlaneConn::new(client, config.concurrent_download_limit_per_tcp.get());
             data_plane_channel_vec.push(conn);
         }
-
         let (download_task_runner_cnc_tx, download_task_runner_cnc_rx) = mpsc::channel(10);
         // Make sure the channel capacity is really low, since the grpc runner already implements its own concurrency control
         let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(10);
