@@ -146,6 +146,20 @@ lazy_static! {
         ),
         &["runtime"],
     ).unwrap();
+
+    pub(crate) static ref POLL_HISTORY_CALL_COUNT: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "fumarole_poll_history_call_count",
+            "The number of times the poll history command was sent",
+        ),
+        &["runtime"],
+    ).unwrap();
+}
+
+pub(crate) fn inc_poll_history_call_count(name: impl AsRef<str>) {
+    POLL_HISTORY_CALL_COUNT
+        .with_label_values(&[name.as_ref()])
+        .inc();
 }
 
 pub(crate) fn incr_download_queue_full_detection_count(name: impl AsRef<str>) {
@@ -317,5 +331,8 @@ pub fn register_metrics(registry: &prometheus::Registry) {
         .unwrap();
     registry
         .register(Box::new(DOWNLOAD_QUEUE_FULL_DETECTION_COUNT.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(POLL_HISTORY_CALL_COUNT.clone()))
         .unwrap();
 }

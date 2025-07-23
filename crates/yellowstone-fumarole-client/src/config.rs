@@ -25,7 +25,7 @@ pub struct FumaroleConfig {
     /// If set, the client will accept compressed responses using this encoding
     /// Supported values are "gzip" and "zstd"
     #[serde(
-        default,
+        default = "FumaroleConfig::no_compression",
         alias = "response-compression",
         deserialize_with = "FumaroleConfig::deser_compression"
     )]
@@ -36,7 +36,7 @@ pub struct FumaroleConfig {
     /// If set, the client will compress requests using this encoding
     /// Supported values are "gzip" and "zstd"
     #[serde(
-        default,
+        default = "FumaroleConfig::no_compression",
         alias = "request-compression",
         deserialize_with = "FumaroleConfig::deser_compression"
     )]
@@ -44,6 +44,10 @@ pub struct FumaroleConfig {
 }
 
 impl FumaroleConfig {
+    const fn no_compression() -> Option<CompressionEncoding> {
+        None
+    }
+
     ///
     /// Deserialize the [`CompressionEncoding`] field from a string
     ///

@@ -232,11 +232,12 @@ pub(crate) mod runtime;
 pub(crate) mod util;
 
 use {
+    crate::proto::GetSlotRangeRequest,
     config::FumaroleConfig,
     futures::future::{Either, select},
     proto::control_response::Response,
     runtime::{
-        DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM,
+        state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
         tokio::{
             DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, GrpcDownloadTaskRunner,
             TokioFumeDragonsmouthRuntime,
@@ -258,6 +259,7 @@ use {
         transport::{Channel, ClientTlsConfig},
     },
     util::grpc::into_bounded_mpsc_rx,
+    uuid::Uuid,
 };
 
 mod solana {
@@ -361,7 +363,7 @@ pub const DEFAULT_PARA_DATA_STREAMS: u8 = 1;
 ///
 /// Default maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
 ///
-pub const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP: usize = 10;
+pub const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP: usize = 1;
 
 ///
 /// Default refresh tip interval for the fumarole client.
@@ -708,6 +710,7 @@ impl FumaroleClient {
             last_tip: Instant::now(),
             gc_interval: config.gc_interval,
             non_critical_background_jobs: Default::default(),
+            last_history_poll: Default::default(),
         };
         let download_task_runner_jh = handle.spawn(grpc_download_task_runner.run());
         let fumarole_rt_jh = handle.spawn(tokio_rt.run());
@@ -767,5 +770,15 @@ impl FumaroleClient {
         request: impl tonic::IntoRequest<proto::GetChainTipRequest>,
     ) -> std::result::Result<tonic::Response<proto::GetChainTipResponse>, tonic::Status> {
         self.inner.get_chain_tip(request).await
+    }
+
+    pub async fn get_slot_range(
+        &mut self,
+    ) -> std::result::Result<tonic::Response<proto::GetSlotRangeResponse>, tonic::Status> {
+        self.inner
+            .get_slot_range(GetSlotRangeRequest {
+                blockchain_id: Uuid::nil().as_bytes().to_vec(),
+            })
+            .await
     }
 }

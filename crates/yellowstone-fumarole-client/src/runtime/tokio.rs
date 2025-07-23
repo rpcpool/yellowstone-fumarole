@@ -7,7 +7,7 @@ use crate::metrics::{
     set_processed_slot_status_offset_queue_len, set_slot_status_update_queue_len,
 };
 use {
-    super::{FumaroleSM, FumeDownloadRequest, FumeOffset, FumeShardIdx},
+    super::state_machine::{FumaroleSM, FumeDownloadRequest, FumeOffset, FumeShardIdx},
     crate::{
         FumaroleClient, FumaroleGrpcConnector, GrpcFumaroleClient,
         proto::{
@@ -87,10 +87,12 @@ pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub get_tip_interval: Duration,
     pub last_commit: Instant,
     pub last_tip: Instant,
-
+    pub last_history_poll: Option<Instant>,
     pub gc_interval: usize, // in ticks
     pub non_critical_background_jobs: JoinSet<BackgroundJobResult>,
 }
+
+const DEFAULT_HISTORY_POLL_SIZE: i64 = 100;
 
 const fn build_poll_history_cmd(from: Option<FumeOffset>) -> ControlCommand {
     ControlCommand {
@@ -99,7 +101,7 @@ const fn build_poll_history_cmd(from: Option<FumeOffset>) -> ControlCommand {
             PollBlockchainHistory {
                 shard_id: 0, /*ALWAYS 0-FOR FIRST VERSION OF FUMAROLE */
                 from,
-                limit: None,
+                limit: Some(DEFAULT_HISTORY_POLL_SIZE),
             },
         )),
     }
@@ -152,6 +154,7 @@ impl TokioFumeDragonsmouthRuntime {
                 self.sm.update_committed_offset(commit_offset_result.offset);
             }
             proto::control_response::Response::PollHist(blockchain_history) => {
+                self.last_history_poll = None;
                 if !blockchain_history.events.is_empty() {
                     tracing::debug!(
                         "polled blockchain history : {} events",
@@ -175,9 +178,15 @@ impl TokioFumeDragonsmouthRuntime {
     }
 
     async fn poll_history_if_needed(&mut self) {
-        if self.sm.need_new_blockchain_events() {
+        if self.last_history_poll.is_none() && self.sm.need_new_blockchain_events() {
+            #[cfg(feature = "prometheus")]
+            {
+                use crate::metrics::inc_poll_history_call_count;
+                inc_poll_history_call_count(Self::RUNTIME_NAME);
+            }
             let cmd = build_poll_history_cmd(Some(self.sm.committable_offset));
             self.control_plane_tx.send(cmd).await.expect("disconnected");
+            self.last_history_poll = Some(Instant::now());
         }
     }
 
@@ -404,12 +413,7 @@ impl TokioFumeDragonsmouthRuntime {
     }
 
     pub(crate) async fn run(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let inital_load_history_cmd = build_poll_history_cmd(None);
-
-        self.control_plane_tx
-            .send(inital_load_history_cmd)
-            .await
-            .expect("disconnected");
+        self.poll_history_if_needed().await;
 
         // Always start to commit offset, to make sure not another instance is committing to the same offset.
         unsafe {

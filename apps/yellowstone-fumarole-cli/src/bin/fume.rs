@@ -112,6 +112,8 @@ enum Action {
     DeleteAll,
     /// Subscribe to fumarole events
     Subscribe(SubscribeArgs),
+    /// Returns the slot range of remote fumarole service
+    SlotRange,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -121,11 +123,45 @@ pub struct GetCgInfoArgs {
     name: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct InitialOffsetPolicyArg(pub InitialOffsetPolicy);
+
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid initial offset policy: {0}")]
+pub struct InitialOffsetPolicyParseError(String);
+
+impl FromStr for InitialOffsetPolicyArg {
+    type Err = InitialOffsetPolicyParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "latest" => Ok(InitialOffsetPolicyArg(InitialOffsetPolicy::Latest)),
+            "from-slot" => Ok(InitialOffsetPolicyArg(InitialOffsetPolicy::FromSlot)),
+            unknown => Err(InitialOffsetPolicyParseError(unknown.to_owned())),
+        }
+    }
+}
+
+impl Default for InitialOffsetPolicyArg {
+    fn default() -> Self {
+        InitialOffsetPolicyArg(InitialOffsetPolicy::Latest)
+    }
+}
+
 #[derive(Debug, Clone, Parser)]
 pub struct CreateCgArgs {
     /// Name of the persistent subscriber to create
     #[clap(long)]
     name: String,
+
+    /// Initial offset policy for the persistent subscriber (from-slot or latest)
+    #[clap(short, long, default_value = "latest")]
+    initial_offset_policy: InitialOffsetPolicyArg,
+
+    /// If the initial offset policy is "from-slot", this is the slot to start from.
+    /// If not specified, the subscriber will start from the latest slot.
+    #[clap(long)]
+    from_slot: Option<u64>,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -338,10 +374,15 @@ async fn get_cg_info(args: GetCgInfoArgs, mut client: FumaroleClient) {
 }
 
 async fn create_cg(args: CreateCgArgs, mut client: FumaroleClient) {
-    let CreateCgArgs { name } = args;
+    let CreateCgArgs {
+        name,
+        initial_offset_policy,
+        from_slot,
+    } = args;
     let request = CreateConsumerGroupRequest {
         consumer_group_name: name.clone(),
-        initial_offset_policy: InitialOffsetPolicy::Latest.into(),
+        initial_offset_policy: initial_offset_policy.0.into(),
+        from_slot,
     };
 
     let result = client.create_consumer_group(request).await;
@@ -613,6 +654,22 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     }
 }
 
+async fn slot_range(mut fumarole_client: FumaroleClient) {
+    let result = fumarole_client.get_slot_range().await;
+    match result {
+        Ok(response) => {
+            let slot_range = response.into_inner();
+            println!(
+                "Slot range: {} - {}",
+                slot_range.min_slot, slot_range.max_slot
+            );
+        }
+        Err(e) => {
+            eprintln!("Failed to get slot range: {}", e);
+        }
+    }
+}
+
 async fn test_config(mut fumarole_client: FumaroleClient) {
     let result = fumarole_client.version().await;
     match result {
@@ -697,6 +754,9 @@ async fn main() {
         }
         Action::Subscribe(subscribe_args) => {
             subscribe(fumarole_client, subscribe_args).await;
+        }
+        Action::SlotRange => {
+            slot_range(fumarole_client).await;
         }
     }
 }
