@@ -1,4 +1,0 @@
-[fumarole]
-endpoints = ["localhost:9090"]
-# x-token = "00000000-00000000-00000000-00000000"
-x-subscription-id = "11111111-11111111-11111111-11111111"

@@ -5,29 +5,61 @@ import public "geyser.proto";
 package fumarole;
 
 service Fumarole {
-  rpc ListAvailableCommitmentLevels(ListAvailableCommitmentLevelsRequest) returns (ListAvailableCommitmentLevelsResponse) {}
   rpc GetConsumerGroupInfo(GetConsumerGroupInfoRequest) returns (ConsumerGroupInfo) {}
   rpc ListConsumerGroups(ListConsumerGroupsRequest) returns (ListConsumerGroupsResponse) {}
   rpc DeleteConsumerGroup(DeleteConsumerGroupRequest) returns (DeleteConsumerGroupResponse) {}
-  rpc CreateStaticConsumerGroup(CreateStaticConsumerGroupRequest) returns (CreateStaticConsumerGroupResponse) {}
-  rpc Subscribe(stream SubscribeRequest) returns (stream geyser.SubscribeUpdate) {}
-  rpc GetSlotLagInfo(GetSlotLagInfoRequest) returns (GetSlotLagInfoResponse) {}
-  rpc GetOldestSlot(GetOldestSlotRequest) returns (GetOldestSlotResponse) {}
+  rpc CreateConsumerGroup(CreateConsumerGroupRequest) returns (CreateConsumerGroupResponse) {}
+
+  rpc DownloadBlock(DownloadBlockShard) returns (stream DataResponse) {}
+
+  // Represents subscription to the data plane
+  rpc SubscribeData(stream DataCommand) returns (stream DataResponse) {}
+
+  rpc GetChainTip(GetChainTipRequest) returns (GetChainTipResponse) {}
+
+  // Represents subscription to the control plane
+  rpc Subscribe(stream ControlCommand) returns (stream ControlResponse) {}
+
+  rpc Version(VersionRequest) returns (VersionResponse) {}
+  
+  rpc GetSlotRange(GetSlotRangeRequest) returns (GetSlotRangeResponse) {}
 }
 
-message ListAvailableCommitmentLevelsRequest {}
 
-message ListAvailableCommitmentLevelsResponse {
-  repeated geyser.CommitmentLevel commitment_levels = 1;
+
+message GetSlotRangeRequest {
+  bytes blockchain_id = 1;
 }
+
+message GetSlotRangeResponse {
+  bytes blockchain_id = 1;
+  int64 min_slot = 2;
+  int64 max_slot = 3;
+}
+
+
+message GetChainTipRequest {
+  bytes blockchain_id = 1;
+}
+
+message GetChainTipResponse {
+  bytes blockchain_id = 1;
+  map<int32, int64> shard_to_max_offset_map = 2;
+}
+
+message VersionRequest {}
+
+message VersionResponse {
+  string version = 1;
+}
+
 
 message GetConsumerGroupInfoRequest {
-  string consumer_group_label = 1;
+  string consumer_group_name = 1;
 }
 
-
 message DeleteConsumerGroupRequest {
-  string consumer_group_label = 1;
+  string consumer_group_name = 1;
 }
 
 message DeleteConsumerGroupResponse {
@@ -43,63 +75,140 @@ message ListConsumerGroupsResponse {
 
 message ConsumerGroupInfo {
   string id = 1;
-  string consumer_group_label = 2;
-  ConsumerGroupType consumer_group_type = 3;
-  uint32 member_count = 4;
-  geyser.CommitmentLevel commitment_level = 5;
-  EventSubscriptionPolicy event_subscription_policy = 6;
-  bool is_stale = 7;
+  string consumer_group_name = 2;
+  bool is_stale = 3;
+  bytes blockchain_id = 4;
 }
 
 message GetSlotLagInfoRequest {
-  string consumer_group_label = 1;
+  string consumer_group_name = 1;
 }
 
-message GetSlotLagInfoResponse {
-  uint64 max_slot_seen = 1;
-  uint64 global_max_slot = 2;
+message BlockFilters {
+    map<string, geyser.SubscribeRequestFilterAccounts> accounts = 1;
+    map<string, geyser.SubscribeRequestFilterTransactions> transactions = 2;
+    map<string, geyser.SubscribeRequestFilterEntry> entries = 3;
+    map<string, geyser.SubscribeRequestFilterBlocksMeta> blocks_meta = 4;
 }
 
-message SubscribeRequest {
-  string consumer_group_label = 1;
-  optional uint32 consumer_id = 2;
-  map<string, geyser.SubscribeRequestFilterAccounts> accounts = 3;
-  map<string, geyser.SubscribeRequestFilterTransactions> transactions = 4;
+message DownloadBlockShard {
+    bytes blockchain_id = 1;
+    bytes block_uid = 2;
+    int32 shard_idx = 3;
+    optional BlockFilters blockFilters = 4;
 }
 
-message CreateStaticConsumerGroupResponse {
-  string group_id = 1;
+
+message Ping {
+  uint32 ping_id = 1;
 }
 
-enum ConsumerGroupType {
-  STATIC = 0;
+message Pong {
+  uint32 ping_id = 1;
+}
+
+message DataCommand {
+  oneof command {
+    DownloadBlockShard download_block_shard = 1;
+    BlockFilters filter_update = 2;
+  } 
+}
+
+message BlockShardDownloadFinish {}
+
+message BlockNotFound {
+  bytes blockchain_id = 1;
+  bytes block_uid = 2;
+  int32 shard_idx = 3;
+}
+
+message DataError {
+  oneof error {
+    BlockNotFound not_found = 1;
+  }
+}
+
+message DataResponse {
+  oneof response {
+    geyser.SubscribeUpdate update = 1;
+    BlockShardDownloadFinish block_shard_download_finish = 2;
+  }
+}
+
+message CommitOffset {
+  int64 offset = 1;
+  int32 shard_id = 2;
+}
+
+
+message PollBlockchainHistory {
+  int32 shard_id = 1;
+  optional int64 from = 2;
+  optional int64 limit = 3;
+}
+
+message BlockchainEvent {
+  int64 offset = 1;
+  bytes blockchain_id = 2;
+  bytes block_uid = 3;
+  uint32 num_shards = 4;
+  uint64 slot = 5;
+  optional uint64 parent_slot = 6;
+  geyser.CommitmentLevel commitment_level = 7;
+  int32 blockchain_shard_id = 8;
+  optional string dead_error = 9;
+}
+
+
+message BlockchainHistory {
+  repeated BlockchainEvent events = 1;
+}
+
+message JoinControlPlane {
+  optional string consumer_group_name = 1;
+}
+
+message ControlCommand {
+    oneof command {
+        JoinControlPlane initial_join = 1;
+        CommitOffset commit_offset = 2;
+        PollBlockchainHistory poll_hist = 3;
+        Ping ping = 4;
+    }
+}
+
+message ControlResponse {
+    oneof response {
+        InitialConsumerGroupState init = 1;
+        CommitOffsetResult commit_offset = 2;
+        BlockchainHistory poll_hist = 3;
+        Pong pong = 4;
+    }
+}
+
+
+message CommitOffsetResult {
+  int64 offset = 1;
+  int32 shard_id = 2;
+}
+
+message InitialConsumerGroupState {
+  bytes blockchain_id = 1;
+  map<int32, int64> last_committed_offsets = 2; 
+}
+
+
+message CreateConsumerGroupResponse {
+  string consumer_group_id = 1;
 }
 
 enum InitialOffsetPolicy {
-  EARLIEST = 0;
-  LATEST = 1;
-  SLOT = 2;
+  LATEST = 0;
+  FROM_SLOT = 1;
 }
 
-enum EventSubscriptionPolicy {
-  ACCOUNT_UPDATE_ONLY = 0;
-  TRANSACTION_ONLY = 1;
-  BOTH = 2;
-}
-
-message CreateStaticConsumerGroupRequest {
-  string consumer_group_label = 1;
-  optional uint32 member_count = 2;
-  InitialOffsetPolicy initial_offset_policy = 3;
-  geyser.CommitmentLevel commitment_level = 4;
-  EventSubscriptionPolicy event_subscription_policy = 5;
-  optional int64 at_slot = 6;
-}
-
-message GetOldestSlotRequest {
-  geyser.CommitmentLevel commitment_level = 1;
-}
-
-message GetOldestSlotResponse {
-  optional uint64 slot = 1;
+message CreateConsumerGroupRequest {
+  string consumer_group_name = 1;
+  InitialOffsetPolicy initial_offset_policy = 2;
+  optional uint64 from_slot = 3;
 }

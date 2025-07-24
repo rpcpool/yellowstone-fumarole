@@ -1,7 +1,7 @@
 [package]
 name = "yellowstone-fumarole-client"
 description = "Yellowstone Fumarole Client"
-version = "0.1.1-pre.2+solana.2.1.11"
+version = "0.2.0-rc5+solana.2"
 authors = { workspace = true }
 edition = { workspace = true }
 homepage = { workspace = true }
@@ -10,6 +10,10 @@ license = { workspace = true }
 keywords = { workspace = true }
 publish = true
 
+[features]
+default = []
+prometheus = ["dep:prometheus"]
+
 [package.metadata]
 include = [
     "proto/**",
@@ -17,18 +21,25 @@ include = [
 ]
 
 [dependencies]
-solana-sdk = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+fxhash = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true }
+solana-clock = { workspace = true }
+lazy_static = { workspace = true }
+prometheus = { workspace = true, optional = true }
 prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_with = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
 tokio-stream = { workspace = true }
-tonic = { workspace = true, features = ["tls", "tls-native-roots"] }
+tonic = { workspace = true, features = ["tls", "tls-native-roots", "gzip", "zstd"] }
 tower = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 yellowstone-grpc-proto = { workspace = true }
 
 [build-dependencies]

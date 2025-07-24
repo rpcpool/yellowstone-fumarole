@@ -1,0 +1,39 @@
+[package]
+name = "yellowstone-fumarole-cli"
+description = "Yellowstone Fumarole CLI"
+version = "0.1.0-rc5+solana.2"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+publish = true
+
+[[bin]]
+name = "fume"
+
+[dependencies]
+bs58 = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+clap-verbosity-flag = { workspace = true, features = ["tracing"] }
+futures = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["http1"] }
+hyper-util = { workspace = true, features = ["http1"] }
+prometheus = { workspace = true }
+serde_yaml = { workspace = true }
+solana-pubkey = { workspace = true }
+tabled = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+yellowstone-fumarole-client = { workspace = true, features = ["prometheus"] }
+yellowstone-grpc-client = { workspace = true }
+yellowstone-grpc-proto = { workspace = true }
+
+[lints]
+workspace = true
