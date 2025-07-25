@@ -4846,7 +4846,7 @@ dependencies = [
 
 [[package]]
 name = "yellowstone-fumarole-cli"
-version = "0.1.0-rc5+solana.2"
+version = "0.1.0-rc6+solana.2"
 dependencies = [
  "bs58",
  "clap",
@@ -4873,7 +4873,7 @@ dependencies = [
 
 [[package]]
 name = "yellowstone-fumarole-client"
-version = "0.2.0-rc5+solana.2"
+version = "0.2.0-rc6+solana.2"
 dependencies = [
  "async-trait",
  "bytesize",
