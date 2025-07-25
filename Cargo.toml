@@ -19,6 +19,7 @@ publish = false
 [workspace.dependencies]
 async-trait = "~0.1.88"
 bs58 = "~0.5.1"
+bytesize = "2"
 clap = "^4.5.7"
 clap-verbosity-flag = "^3.0.2"
 futures = "~0.3.31"

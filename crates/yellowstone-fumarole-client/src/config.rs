@@ -1,4 +1,7 @@
-use {serde::Deserialize, std::collections::BTreeMap, tonic::codec::CompressionEncoding};
+use {
+    bytesize::ByteSize, serde::Deserialize, std::collections::BTreeMap,
+    tonic::codec::CompressionEncoding,
+};
 
 ///
 /// Configuration for the fumarole service
@@ -41,9 +44,30 @@ pub struct FumaroleConfig {
         deserialize_with = "FumaroleConfig::deser_compression"
     )]
     pub request_compression: Option<CompressionEncoding>,
+
+    #[serde(default = "FumaroleConfig::default_initial_connection_window_size")]
+    pub initial_connection_window_size: ByteSize,
+
+    #[serde(default = "FumaroleConfig::default_initial_stream_window_size")]
+    pub initial_stream_window_size: ByteSize,
+
+    #[serde(default = "FumaroleConfig::default_enable_http2_adaptive_window")]
+    pub enable_http2_adaptive_window: bool,
 }
 
 impl FumaroleConfig {
+    const fn default_enable_http2_adaptive_window() -> bool {
+        true
+    }
+
+    const fn default_initial_connection_window_size() -> ByteSize {
+        ByteSize::mb(100)
+    }
+
+    const fn default_initial_stream_window_size() -> ByteSize {
+        ByteSize::mib(9)
+    }
+
     const fn no_compression() -> Option<CompressionEncoding> {
         None
     }

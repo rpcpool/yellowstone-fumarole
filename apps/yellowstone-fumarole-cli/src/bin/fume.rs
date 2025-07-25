@@ -1,3 +1,5 @@
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
 use {
     clap::Parser,
     futures::{FutureExt, future::BoxFuture},
@@ -37,6 +39,10 @@ use {
         SubscribeUpdateSlot, SubscribeUpdateTransaction, subscribe_update::UpdateOneof,
     },
 };
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 const FUMAROLE_CONFIG_ENV: &str = "FUMAROLE_CONFIG";
 
@@ -702,14 +708,21 @@ fn home_dir() -> Option<PathBuf> {
 async fn main() {
     let args = Args::parse();
     let verbosity = args.verbose.tracing_level_filter();
-    let curr_crate = env!("CARGO_PKG_NAME");
+    let curr_exec = env::current_exe()
+        .expect("Failed to get current executable path")
+        .file_name()
+        .expect("Failed to get current executable file name")
+        .to_string_lossy()
+        .to_string();
 
-    let filter = format!("{curr_crate}={verbosity},yellowstone_fumarole_client={verbosity}");
+    let filter = format!("{curr_exec}={verbosity},yellowstone_fumarole_client={verbosity}");
     let env_filter = EnvFilter::new(filter);
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_line_number(true)
         .init();
+
+    tracing::trace!("starting Yellowstone Fumarole CLI");
 
     let maybe_config = args.config;
     let config_file = if let Some(config_path) = maybe_config {
@@ -728,6 +741,8 @@ async fn main() {
     };
     let config: FumaroleConfig =
         serde_yaml::from_reader(config_file).expect("failed to parse fumarole config");
+
+    tracing::debug!("Using config: {config:?}");
 
     let fumarole_client = FumaroleClient::connect(config.clone())
         .await
