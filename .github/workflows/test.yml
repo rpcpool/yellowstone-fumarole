@@ -9,7 +9,6 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
-  id-token: write
 
 on:
   push:
@@ -23,7 +22,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04]
-    runs-on: [self-hosted, "${{ matrix.os }}", baremetal]
+    runs-on: ["${{ matrix.os }}"]
 
     steps:
       - name: Checkout repo
