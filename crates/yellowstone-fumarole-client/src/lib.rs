@@ -526,8 +526,21 @@ fn string_pairs_to_metadata_header(
 
 impl FumaroleClient {
     pub async fn connect(config: FumaroleConfig) -> Result<FumaroleClient, ConnectError> {
+        let connection_window_size: u32 = config
+            .initial_connection_window_size
+            .as_u64()
+            .try_into()
+            .expect("initial_connection_window_size must fit in u32");
+        let stream_window_size: u32 = config
+            .initial_stream_window_size
+            .as_u64()
+            .try_into()
+            .expect("initial_stream_window_size must fit in u32");
         let endpoint = Endpoint::from_shared(config.endpoint.clone())?
-            .tls_config(ClientTlsConfig::new().with_native_roots())?;
+            .tls_config(ClientTlsConfig::new().with_native_roots())?
+            .initial_connection_window_size(connection_window_size)
+            .initial_stream_window_size(stream_window_size)
+            .http2_adaptive_window(config.enable_http2_adaptive_window);
 
         let connector = FumaroleGrpcConnector {
             config: config.clone(),
@@ -739,6 +752,7 @@ impl FumaroleClient {
         request: impl tonic::IntoRequest<proto::ListConsumerGroupsRequest>,
     ) -> std::result::Result<tonic::Response<proto::ListConsumerGroupsResponse>, tonic::Status>
     {
+        tracing::trace!("list_consumer_groups called");
         self.inner.list_consumer_groups(request).await
     }
 
@@ -746,6 +760,7 @@ impl FumaroleClient {
         &mut self,
         request: impl tonic::IntoRequest<proto::GetConsumerGroupInfoRequest>,
     ) -> std::result::Result<tonic::Response<proto::ConsumerGroupInfo>, tonic::Status> {
+        tracing::trace!("get_consumer_group_info called");
         self.inner.get_consumer_group_info(request).await
     }
 
@@ -754,6 +769,7 @@ impl FumaroleClient {
         request: impl tonic::IntoRequest<proto::DeleteConsumerGroupRequest>,
     ) -> std::result::Result<tonic::Response<proto::DeleteConsumerGroupResponse>, tonic::Status>
     {
+        tracing::trace!("delete_consumer_group called");
         self.inner.delete_consumer_group(request).await
     }
 
@@ -762,6 +778,7 @@ impl FumaroleClient {
         request: impl tonic::IntoRequest<proto::CreateConsumerGroupRequest>,
     ) -> std::result::Result<tonic::Response<proto::CreateConsumerGroupResponse>, tonic::Status>
     {
+        tracing::trace!("create_consumer_group called");
         self.inner.create_consumer_group(request).await
     }
 
@@ -769,12 +786,14 @@ impl FumaroleClient {
         &mut self,
         request: impl tonic::IntoRequest<proto::GetChainTipRequest>,
     ) -> std::result::Result<tonic::Response<proto::GetChainTipResponse>, tonic::Status> {
+        tracing::trace!("get_chain_tip called");
         self.inner.get_chain_tip(request).await
     }
 
     pub async fn get_slot_range(
         &mut self,
     ) -> std::result::Result<tonic::Response<proto::GetSlotRangeResponse>, tonic::Status> {
+        tracing::trace!("get_slot_range called");
         self.inner
             .get_slot_range(GetSlotRangeRequest {
                 blockchain_id: Uuid::nil().as_bytes().to_vec(),

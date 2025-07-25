@@ -19,6 +19,7 @@ publish = false
 [workspace.dependencies]
 async-trait = "~0.1.88"
 bs58 = "~0.5.1"
+bytesize = "2"
 clap = "^4.5.7"
 clap-verbosity-flag = "^3.0.2"
 futures = "~0.3.31"
@@ -46,7 +47,7 @@ tower = "~0.5.2"
 tracing = "~0.1.41"
 tracing-subscriber = { version = "~0.3.18", features = ["env-filter"] }
 uuid = { version = "1" }
-yellowstone-fumarole-client = { path = "crates/yellowstone-fumarole-client", version = "0.2.0-rc5+solana.2" }
+yellowstone-fumarole-client = { path = "crates/yellowstone-fumarole-client", version = "0.2.0-rc6+solana.2" }
 yellowstone-grpc-client = "8"
 yellowstone-grpc-proto = "8"
 
