@@ -178,7 +178,7 @@ The above command stream all data required by [DAS](https://github.com/rpcpool/d
 ### Parallel subscription
 
 By default, fumarole CLI tool only open one TCP connection to Fumarole service.
-In case you need to subscribe to alot of data, enable parallel TCP connections will help alot with performance.
+In case you need to subscribe to a lot of traffic, enabling parallel TCP connections will help alot with performance.
 
 ```sh
 fume --config '<path/to/config.yaml>' subscribe --name example --para 4
