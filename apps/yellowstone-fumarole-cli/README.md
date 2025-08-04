@@ -110,7 +110,7 @@ fume --config '<path/to/config.yaml>' list
 +--------------------------------------+---------+-------+
 ```
 
-The stale column indicates if your persistent subscriber falled behind the fumarole log.
+The stale column indicates if your persistent subscriber fell behind the fumarole log.
 
 ## Delete a persistent subscribers
 
