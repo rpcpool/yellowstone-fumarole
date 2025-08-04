@@ -62,7 +62,7 @@ Successfully connected to Fumarole Service
 
 ### Enabling ZSTD compression
 
-If you plan to subscribe to alot of data or if your internet connection have high latency,
+If you plan to subscribe to a lot of data or if your internet connection have high latency,
 you should enable ZSTD compression like so:
 
 ```yaml
