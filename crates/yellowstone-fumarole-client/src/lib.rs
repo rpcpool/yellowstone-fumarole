@@ -51,6 +51,7 @@
 //! ```yaml
 //! endpoint: https://example.com
 //! x-token: 00000000-0000-0000-0000-000000000000
+//! response_compression: zstd
 //! ```
 //!
 //!
@@ -187,6 +188,48 @@
 //!     }
 //! }
 //! ```
+//!
+//! ## High-traffic workload: parallel subscription + zstd
+//!
+//! For high-traffic workload or for higher latency connection, using parallel subscription and zstd will greatly improve performance to stay on-tip.
+//!
+//! Inside your `config.yaml` file enable compression with `response_compression: zstd`:
+//!
+//! ```yaml
+//! endpoint: https://fumarole.endpoint.rpcpool.com
+//! x-token: 00000000-0000-0000-0000-000000000000
+//! response_compression: zstd
+//! ```
+//!
+//! Uses `FumaroleSubscribeConfig` to configure the parallel subscription and zstd compression.
+//!
+//! ```rust
+//! let config: FumaroleConfig = serde_yaml::from_reader("<path/to/config.yaml>").expect("failed to parse fumarole config");
+//!
+//! let request = SubscribeRequest {
+//!    transactions: HashMap::from([(
+//!        "f1".to_owned(),
+//!        SubscribeRequestFilterTransactions::default(),
+//!    )]),
+//!    ..Default::default()
+//! };
+//!
+//!
+//! let mut fumarole_client = FumaroleClient::connect(config)
+//!    .await
+//!    .expect("Failed to connect to fumarole");
+//!
+//! let subscribe_config = FumaroleSubscribeConfig {
+//!    num_data_plane_tcp_connections: NonZeroU8::new(4).unwrap(), // maximum of 4 TCP connections is allowed
+//!    ..Default::default()
+//! };
+//!
+//! let dragonsmouth_session = fumarole_client
+//!    .dragonsmouth_subscribe_with_config(args.name, request, subscribe_config)
+//!    .await
+//!    .expect("Failed to subscribe");
+//! ```
+//!
 //!
 //! ## Enable Prometheus Metrics
 //!
@@ -353,12 +396,13 @@ pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: usize = 3;
 
 ///
 /// MAXIMUM number of parallel data streams (TCP connections) to open to fumarole.
+///
 const MAX_PARA_DATA_STREAMS: u8 = 4;
 
 ///
 /// Default number of parallel data streams (TCP connections) to open to fumarole.
 ///
-pub const DEFAULT_PARA_DATA_STREAMS: u8 = 1;
+pub const DEFAULT_PARA_DATA_STREAMS: u8 = 4;
 
 ///
 /// Default maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
