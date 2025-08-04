@@ -530,6 +530,7 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
         Box::new(
             File::options()
                 .write(true)
+                .create(true)
                 .open(PathBuf::from(out))
                 .expect("Failed to open output file"),
         )
