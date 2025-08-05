@@ -203,7 +203,7 @@ impl FumaroleSM {
         self.last_committed_offset = offset;
     }
 
-    fn next_sequence(&mut self) -> u64 {
+    const fn next_sequence(&mut self) -> u64 {
         let ret = self.sequence;
         self.sequence += 1;
         ret

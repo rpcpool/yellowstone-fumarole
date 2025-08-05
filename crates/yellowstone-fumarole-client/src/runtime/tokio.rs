@@ -74,6 +74,7 @@ pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub sm: FumaroleSM,
     #[allow(dead_code)]
     pub blockchain_id: Vec<u8>,
+    #[allow(dead_code)]
     pub fumarole_client: FumaroleClient,
     pub download_task_runner_chans: DownloadTaskRunnerChannels,
     pub dragonsmouth_bidi: DragonsmouthSubscribeRequestBidi,

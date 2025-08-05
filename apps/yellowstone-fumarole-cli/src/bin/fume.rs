@@ -521,7 +521,7 @@ pub fn create_shutdown() -> BoxFuture<'static, ()> {
 }
 
 impl SubscribeArgs {
-    fn into_subscribe_request(&self) -> SubscribeRequest {
+    fn as_subscribe_request(&self) -> SubscribeRequest {
         let commitment_level: CommitmentLevel = self.commitment.into();
         // This request listen for all account updates and transaction updates
         let mut request = SubscribeRequest {
@@ -596,12 +596,12 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     yellowstone_fumarole_client::metrics::register_metrics(&registry);
 
     if let Some(bind_addr) = &args.prometheus {
-        let socket_addr: SocketAddr = bind_addr.0.into();
+        let socket_addr: SocketAddr = bind_addr.0;
         tokio::spawn(prometheus_server(socket_addr, registry));
     }
 
     // This request listen for all account updates and transaction updates
-    let request = args.into_subscribe_request();
+    let request = args.as_subscribe_request();
     let cg_name = args.name.clone();
 
     println!("Subscribing to consumer group {}", cg_name);
@@ -694,10 +694,10 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
     yellowstone_fumarole_client::metrics::register_metrics(&registry);
 
     if let Some(bind_addr) = &args.prometheus {
-        let socket_addr: SocketAddr = bind_addr.0.into();
+        let socket_addr: SocketAddr = bind_addr.0;
         tokio::spawn(prometheus_server(socket_addr, registry));
     }
-    let request = args.into_subscribe_request();
+    let request = args.as_subscribe_request();
     let cg_name = args.name.clone();
     println!("Subscribing to consumer group {}", cg_name);
     let subscribe_config = FumaroleSubscribeConfig {

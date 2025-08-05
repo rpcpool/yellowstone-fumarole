@@ -172,7 +172,7 @@ fn summarize_tx(tx: SubscribeUpdateTransaction) -> Option<String> {
 
 /// This code serves as a reference to compare fumarole against dragonsmouth original client
 async fn block_stats_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, args: SubscribeArgs) {
-    let request = args.into_subscribe_request();
+    let request = args.as_subscribe_request();
 
     let (_sink, mut rx) = client
         .subscribe_with_request(Some(request))
@@ -278,7 +278,7 @@ async fn block_stats_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, ar
 }
 
 impl SubscribeArgs {
-    fn into_subscribe_request(&self) -> SubscribeRequest {
+    fn as_subscribe_request(&self) -> SubscribeRequest {
         let commitment_level: CommitmentLevel = self.commitment.into();
         // This request listen for all account updates and transaction updates
         let mut request = SubscribeRequest {
@@ -336,7 +336,7 @@ impl SubscribeArgs {
 }
 
 async fn stream_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, args: SubscribeArgs) {
-    let request = args.into_subscribe_request();
+    let request = args.as_subscribe_request();
 
     let (_sink, mut rx) = client
         .subscribe_with_request(Some(request))
