@@ -48,7 +48,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 
 const FUMAROLE_CONFIG_ENV: &str = "FUMAROLE_CONFIG";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct PrometheusBindAddr(SocketAddr);
 
 impl From<PrometheusBindAddr> for SocketAddr {
@@ -181,7 +181,7 @@ pub struct DeleteCgArgs {
     name: String,
 }
 
-#[derive(Debug, Clone, Parser, Default)]
+#[derive(Debug, Clone, Parser, Default, Copy)]
 pub enum CommitmentOption {
     Finalized,
     Confirmed,
@@ -520,20 +520,66 @@ pub fn create_shutdown() -> BoxFuture<'static, ()> {
     .boxed()
 }
 
-async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
-    let SubscribeArgs {
-        prometheus,
-        name: cg_name,
-        include,
-        commitment,
-        account: pubkey,
-        owner,
-        tx_account: tx_pubkey,
-        out,
-        para,
-    } = args;
+impl SubscribeArgs {
+    fn into_subscribe_request(&self) -> SubscribeRequest {
+        let commitment_level: CommitmentLevel = self.commitment.into();
+        // This request listen for all account updates and transaction updates
+        let mut request = SubscribeRequest {
+            commitment: Some(commitment_level.into()),
+            ..Default::default()
+        };
 
-    let mut out: Box<dyn Write> = if let Some(out) = out {
+        for to_include in &self.include.set {
+            match to_include {
+                SubscribeDataType::Account => {
+                    request.accounts = HashMap::from([(
+                        "fumarole".to_owned(),
+                        SubscribeRequestFilterAccounts {
+                            account: self.account.iter().map(|p| p.to_string()).collect(),
+                            owner: self.owner.iter().map(|p| p.to_string()).collect(),
+                            ..Default::default()
+                        },
+                    )]);
+                }
+                SubscribeDataType::Transaction => {
+                    request.transactions = HashMap::from([(
+                        "fumarole".to_owned(),
+                        SubscribeRequestFilterTransactions {
+                            account_include: self
+                                .tx_account
+                                .iter()
+                                .map(|p| p.to_string())
+                                .collect(),
+                            ..Default::default()
+                        },
+                    )]);
+                }
+                SubscribeDataType::Slot => {
+                    request.slots = HashMap::from([(
+                        "fumarole".to_owned(),
+                        SubscribeRequestFilterSlots {
+                            interslot_updates: Some(true),
+                            ..Default::default()
+                        },
+                    )]);
+                }
+                SubscribeDataType::BlockMeta => {
+                    request.blocks_meta = HashMap::from([(
+                        "fumarole".to_owned(),
+                        SubscribeRequestFilterBlocksMeta::default(),
+                    )]);
+                }
+                SubscribeDataType::Entry => {
+                    request.entry = HashMap::from([("fumarole".to_owned(), Default::default())]);
+                }
+            }
+        }
+        request
+    }
+}
+
+async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
+    let mut out: Box<dyn Write> = if let Some(out) = &args.out {
         Box::new(
             File::options()
                 .write(true)
@@ -549,62 +595,20 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     let registry = prometheus::Registry::new();
     yellowstone_fumarole_client::metrics::register_metrics(&registry);
 
-    if let Some(bind_addr) = prometheus {
-        let socket_addr: SocketAddr = bind_addr.into();
+    if let Some(bind_addr) = &args.prometheus {
+        let socket_addr: SocketAddr = bind_addr.0.into();
         tokio::spawn(prometheus_server(socket_addr, registry));
     }
 
-    let commitment_level: CommitmentLevel = commitment.into();
     // This request listen for all account updates and transaction updates
-    let mut request = SubscribeRequest {
-        commitment: Some(commitment_level.into()),
-        ..Default::default()
-    };
-
-    for to_include in include.set {
-        match to_include {
-            SubscribeDataType::Account => {
-                request.accounts = HashMap::from([(
-                    "fumarole".to_owned(),
-                    SubscribeRequestFilterAccounts {
-                        account: pubkey.iter().map(|p| p.to_string()).collect(),
-                        owner: owner.iter().map(|p| p.to_string()).collect(),
-                        ..Default::default()
-                    },
-                )]);
-            }
-            SubscribeDataType::Transaction => {
-                request.transactions = HashMap::from([(
-                    "fumarole".to_owned(),
-                    SubscribeRequestFilterTransactions {
-                        account_include: tx_pubkey.iter().map(|p| p.to_string()).collect(),
-                        ..Default::default()
-                    },
-                )]);
-            }
-            SubscribeDataType::Slot => {
-                request.slots = HashMap::from([(
-                    "fumarole".to_owned(),
-                    SubscribeRequestFilterSlots::default(),
-                )]);
-            }
-            SubscribeDataType::BlockMeta => {
-                request.blocks_meta = HashMap::from([(
-                    "fumarole".to_owned(),
-                    SubscribeRequestFilterBlocksMeta::default(),
-                )]);
-            }
-            SubscribeDataType::Entry => {
-                request.entry = HashMap::from([("fumarole".to_owned(), Default::default())]);
-            }
-        }
-    }
+    let request = args.into_subscribe_request();
+    let cg_name = args.name.clone();
 
     println!("Subscribing to consumer group {}", cg_name);
     let subscribe_config = FumaroleSubscribeConfig {
         concurrent_download_limit_per_tcp: NonZeroUsize::new(1).unwrap(),
         commit_interval: Duration::from_secs(1),
-        num_data_plane_tcp_connections: para,
+        num_data_plane_tcp_connections: args.para,
         ..Default::default()
     };
     let dragonsmouth_session = client
@@ -673,19 +677,7 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
 }
 
 async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
-    let SubscribeArgs {
-        prometheus,
-        name: cg_name,
-        include,
-        commitment,
-        account: pubkey,
-        owner,
-        tx_account: tx_pubkey,
-        out,
-        para,
-    } = args;
-
-    let mut out: Box<dyn Write> = if let Some(out) = out {
+    let mut out: Box<dyn Write> = if let Some(out) = &args.out {
         Box::new(
             File::options()
                 .write(true)
@@ -701,62 +693,17 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
     let registry = prometheus::Registry::new();
     yellowstone_fumarole_client::metrics::register_metrics(&registry);
 
-    if let Some(bind_addr) = prometheus {
-        let socket_addr: SocketAddr = bind_addr.into();
+    if let Some(bind_addr) = &args.prometheus {
+        let socket_addr: SocketAddr = bind_addr.0.into();
         tokio::spawn(prometheus_server(socket_addr, registry));
     }
-
-    let commitment_level: CommitmentLevel = commitment.into();
-    // This request listen for all account updates and transaction updates
-    let mut request = SubscribeRequest {
-        commitment: Some(commitment_level.into()),
-        ..Default::default()
-    };
-
-    for to_include in include.set {
-        match to_include {
-            SubscribeDataType::Account => {
-                request.accounts = HashMap::from([(
-                    "fumarole".to_owned(),
-                    SubscribeRequestFilterAccounts {
-                        account: pubkey.iter().map(|p| p.to_string()).collect(),
-                        owner: owner.iter().map(|p| p.to_string()).collect(),
-                        ..Default::default()
-                    },
-                )]);
-            }
-            SubscribeDataType::Transaction => {
-                request.transactions = HashMap::from([(
-                    "fumarole".to_owned(),
-                    SubscribeRequestFilterTransactions {
-                        account_include: tx_pubkey.iter().map(|p| p.to_string()).collect(),
-                        ..Default::default()
-                    },
-                )]);
-            }
-            SubscribeDataType::Slot => {
-                request.slots = HashMap::from([(
-                    "fumarole".to_owned(),
-                    SubscribeRequestFilterSlots::default(),
-                )]);
-            }
-            SubscribeDataType::BlockMeta => {
-                request.blocks_meta = HashMap::from([(
-                    "fumarole".to_owned(),
-                    SubscribeRequestFilterBlocksMeta::default(),
-                )]);
-            }
-            SubscribeDataType::Entry => {
-                request.entry = HashMap::from([("fumarole".to_owned(), Default::default())]);
-            }
-        }
-    }
-
+    let request = args.into_subscribe_request();
+    let cg_name = args.name.clone();
     println!("Subscribing to consumer group {}", cg_name);
     let subscribe_config = FumaroleSubscribeConfig {
         concurrent_download_limit_per_tcp: NonZeroUsize::new(1).unwrap(),
         commit_interval: Duration::from_secs(1),
-        num_data_plane_tcp_connections: para,
+        num_data_plane_tcp_connections: args.para,
         ..Default::default()
     };
     let dragonsmouth_session = client

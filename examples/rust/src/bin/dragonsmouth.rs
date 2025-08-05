@@ -1,13 +1,21 @@
 use {
     clap::Parser,
     solana_pubkey::Pubkey,
-    std::{collections::HashMap, path::PathBuf},
+    solana_signature::Signature,
+    std::{
+        collections::{HashMap, HashSet},
+        fmt,
+        path::PathBuf,
+        str::FromStr,
+    },
     tokio_stream::StreamExt,
     yellowstone_fumarole_client::config::FumaroleConfig,
-    yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcBuilder},
+    yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcBuilder, GeyserGrpcClient, Interceptor},
     yellowstone_grpc_proto::geyser::{
-        SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterTransactions,
-        SubscribeUpdateAccount, SubscribeUpdateTransaction, subscribe_update::UpdateOneof,
+        CommitmentLevel, SlotStatus, SubscribeRequest, SubscribeRequestFilterAccounts,
+        SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterSlots,
+        SubscribeRequestFilterTransactions, SubscribeUpdateAccount, SubscribeUpdateBlockMeta,
+        SubscribeUpdateTransaction, subscribe_update::UpdateOneof,
     },
 };
 
@@ -17,6 +25,134 @@ struct Args {
     /// Path to static config file
     #[clap(long)]
     config: PathBuf,
+
+    #[clap(subcommand)]
+    action: Action,
+}
+
+#[derive(Debug, Clone, Parser)]
+enum Action {
+    /// Run the block stats example
+    Block(SubscribeArgs),
+    /// Run the account and transaction updates example
+    Stream(SubscribeArgs),
+}
+
+#[derive(Debug, Clone, Parser, Default, Copy)]
+pub enum CommitmentOption {
+    Finalized,
+    Confirmed,
+    #[default]
+    Processed,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid commitment option {0}")]
+pub struct FromStrCommitmentOptionErr(String);
+
+impl FromStr for CommitmentOption {
+    type Err = FromStrCommitmentOptionErr;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "finalized" => Ok(CommitmentOption::Finalized),
+            "confirmed" => Ok(CommitmentOption::Confirmed),
+            "processed" => Ok(CommitmentOption::Processed),
+            whatever => Err(FromStrCommitmentOptionErr(whatever.to_owned())),
+        }
+    }
+}
+
+impl fmt::Display for CommitmentOption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CommitmentOption::Finalized => write!(f, "finalized"),
+            CommitmentOption::Confirmed => write!(f, "confirmed"),
+            CommitmentOption::Processed => write!(f, "processed"),
+        }
+    }
+}
+
+impl From<CommitmentOption> for CommitmentLevel {
+    fn from(commitment: CommitmentOption) -> Self {
+        match commitment {
+            CommitmentOption::Finalized => CommitmentLevel::Finalized,
+            CommitmentOption::Confirmed => CommitmentLevel::Confirmed,
+            CommitmentOption::Processed => CommitmentLevel::Processed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SubscribeDataType {
+    Account,
+    Transaction,
+    Slot,
+    BlockMeta,
+    Entry,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubscribeInclude {
+    set: HashSet<SubscribeDataType>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid include type {0}")]
+pub struct FromStrSubscribeIncludeErr(String);
+
+impl FromStr for SubscribeInclude {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let include = s
+            .split(',')
+            .map(|s| s.trim())
+            .map(|s| match s {
+                "account" => Ok(vec![SubscribeDataType::Account]),
+                "tx" => Ok(vec![SubscribeDataType::Transaction]),
+                "meta" => Ok(vec![SubscribeDataType::BlockMeta]),
+                "slot" => Ok(vec![SubscribeDataType::Slot]),
+                "all" => Ok(vec![
+                    SubscribeDataType::Account,
+                    SubscribeDataType::Transaction,
+                    SubscribeDataType::Slot,
+                    SubscribeDataType::BlockMeta,
+                    SubscribeDataType::Entry,
+                ]),
+                "entry" => Ok(vec![SubscribeDataType::Entry]),
+                unknown => Err(format!("Invalid include type: {unknown}")),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let include = include.into_iter().flatten().collect::<HashSet<_>>();
+        Ok(SubscribeInclude { set: include })
+    }
+}
+
+#[derive(Debug, Clone, Parser)]
+struct SubscribeArgs {
+    ///
+    /// Comma separate list of Geyser event types you want to subscribe to.
+    /// Valid values are: [account, tx, slot, block_meta, all]
+    /// If not specified, all event types will be subscribed to.
+    /// Examples: account,tx, all, slot,meta,tx, tx
+    #[clap(long, default_value = "all")]
+    include: SubscribeInclude,
+
+    #[clap(long, default_value = "processed")]
+    commitment: CommitmentOption,
+
+    /// List of account public keys to subscribe to
+    #[clap(short, long)]
+    account: Vec<Pubkey>,
+
+    /// List of account owners to subscribe to
+    #[clap(short, long)]
+    owner: Vec<Pubkey>,
+
+    /// List of account public keys that must be included in the transaction
+    #[clap(long, short)]
+    tx_account: Vec<Pubkey>,
 }
 
 fn summarize_account(account: SubscribeUpdateAccount) -> Option<String> {
@@ -35,6 +171,197 @@ fn summarize_tx(tx: SubscribeUpdateTransaction) -> Option<String> {
 }
 
 /// This code serves as a reference to compare fumarole against dragonsmouth original client
+async fn block_stats_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, args: SubscribeArgs) {
+    let request = args.into_subscribe_request();
+
+    let (_sink, mut rx) = client
+        .subscribe_with_request(Some(request))
+        .await
+        .expect("Failed to subscribe");
+
+    #[derive(Default)]
+    struct BlockInfo {
+        success_tx: HashSet<Signature>,
+        failed_tx: HashSet<Signature>,
+        account_updates: HashSet<(Pubkey, Signature)>,
+        entry_count: usize,
+        block_meta: Option<SubscribeUpdateBlockMeta>,
+    }
+
+    let mut block_map: HashMap<u64, BlockInfo> = HashMap::new();
+
+    let summarized_block = |block_info: &BlockInfo| {
+        let success_count = block_info.success_tx.len();
+        let failed_count = block_info.failed_tx.len();
+        let entry_count = block_info.entry_count;
+        let account_updates = block_info.account_updates.len();
+        let block_meta = block_info
+            .block_meta
+            .as_ref()
+            .expect("Block meta should be present");
+        let expected_tx_count = block_meta.executed_transaction_count;
+        let expected_entry_count = block_meta.entries_count;
+        let total_tx_cnt = success_count + failed_count;
+        format!(
+            "good tx: {success_count}, failed tx: {failed_count}, total tx: {total_tx_cnt}/{expected_tx_count}, entries: {entry_count}/{expected_entry_count}, account updates: {account_updates}"
+        )
+    };
+
+    while let Some(result) = rx.next().await {
+        let event = result.expect("Failed to receive event");
+        let Some(oneof) = event.update_oneof else {
+            continue;
+        };
+        match oneof {
+            UpdateOneof::Account(account_update) => {
+                let slot = account_update.slot;
+                let Some(block) = block_map.get_mut(&slot) else {
+                    continue;
+                };
+                let account = account_update
+                    .account
+                    .as_ref()
+                    .expect("Account should be present");
+                let pubkey =
+                    Pubkey::try_from(account.pubkey.as_slice()).expect("Failed to parse pubkey");
+                let Some(tx_sig_bytes) = account.txn_signature.as_ref() else {
+                    continue;
+                };
+                let tx_sig = Signature::try_from(tx_sig_bytes.as_slice())
+                    .expect("Failed to parse transaction signature");
+                block.account_updates.insert((pubkey, tx_sig));
+            }
+            UpdateOneof::Transaction(tx) => {
+                let slot = tx.slot;
+                let Some(block) = block_map.get_mut(&slot) else {
+                    continue;
+                };
+                let transaction = tx
+                    .transaction
+                    .as_ref()
+                    .expect("Transaction should be present");
+                let tx_sig = Signature::try_from(transaction.signature.as_slice())
+                    .expect("Failed to parse transaction signature");
+                if transaction.meta.as_ref().unwrap().err.is_some() {
+                    block.failed_tx.insert(tx_sig);
+                } else {
+                    block.success_tx.insert(tx_sig);
+                }
+            }
+            UpdateOneof::Entry(entry) => {
+                let slot = entry.slot;
+                let Some(block) = block_map.get_mut(&slot) else {
+                    continue;
+                };
+                block.entry_count += 1;
+            }
+            UpdateOneof::BlockMeta(block_meta) => {
+                let slot = block_meta.slot;
+                let Some(mut block) = block_map.remove(&slot) else {
+                    continue;
+                };
+                block.block_meta = Some(block_meta);
+                println!("{slot} -- {}", summarized_block(&block));
+            }
+            UpdateOneof::Slot(slot) => {
+                if matches!(
+                    slot.status(),
+                    SlotStatus::SlotFirstShredReceived | SlotStatus::SlotCreatedBank
+                ) {
+                    let slot = slot.slot;
+                    block_map.entry(slot).or_default();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl SubscribeArgs {
+    fn into_subscribe_request(&self) -> SubscribeRequest {
+        let commitment_level: CommitmentLevel = self.commitment.into();
+        // This request listen for all account updates and transaction updates
+        let mut request = SubscribeRequest {
+            commitment: Some(commitment_level.into()),
+            ..Default::default()
+        };
+
+        for to_include in &self.include.set {
+            match to_include {
+                SubscribeDataType::Account => {
+                    request.accounts = HashMap::from([(
+                        "fumarole".to_owned(),
+                        SubscribeRequestFilterAccounts {
+                            account: self.account.iter().map(|p| p.to_string()).collect(),
+                            owner: self.owner.iter().map(|p| p.to_string()).collect(),
+                            ..Default::default()
+                        },
+                    )]);
+                }
+                SubscribeDataType::Transaction => {
+                    request.transactions = HashMap::from([(
+                        "fumarole".to_owned(),
+                        SubscribeRequestFilterTransactions {
+                            account_include: self
+                                .tx_account
+                                .iter()
+                                .map(|p| p.to_string())
+                                .collect(),
+                            ..Default::default()
+                        },
+                    )]);
+                }
+                SubscribeDataType::Slot => {
+                    request.slots = HashMap::from([(
+                        "fumarole".to_owned(),
+                        SubscribeRequestFilterSlots {
+                            interslot_updates: Some(true),
+                            ..Default::default()
+                        },
+                    )]);
+                }
+                SubscribeDataType::BlockMeta => {
+                    request.blocks_meta = HashMap::from([(
+                        "fumarole".to_owned(),
+                        SubscribeRequestFilterBlocksMeta::default(),
+                    )]);
+                }
+                SubscribeDataType::Entry => {
+                    request.entry = HashMap::from([("fumarole".to_owned(), Default::default())]);
+                }
+            }
+        }
+        request
+    }
+}
+
+async fn stream_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, args: SubscribeArgs) {
+    let request = args.into_subscribe_request();
+
+    let (_sink, mut rx) = client
+        .subscribe_with_request(Some(request))
+        .await
+        .expect("Failed to subscribe");
+
+    while let Some(result) = rx.next().await {
+        let event = result.expect("Failed to receive event");
+        if let Some(oneof) = event.update_oneof {
+            match oneof {
+                UpdateOneof::Account(account_update) => {
+                    if let Some(message) = summarize_account(account_update) {
+                        println!("{}", message);
+                    }
+                }
+                UpdateOneof::Transaction(tx) => {
+                    if let Some(message) = summarize_tx(tx) {
+                        println!("{}", message);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -47,45 +374,23 @@ async fn main() {
 
     let endpoint = config.endpoint.clone();
 
-    let mut geyser = GeyserGrpcBuilder::from_shared(endpoint)
+    let geyser = GeyserGrpcBuilder::from_shared(endpoint)
         .expect("Failed to parse endpoint")
         .x_token(config.x_token)
         .expect("x_token")
         .tls_config(ClientTlsConfig::new().with_native_roots())
         .expect("tls_config")
+        .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
+        .http2_adaptive_window(true)
+        .initial_stream_window_size(9_000_000)
+        .initial_connection_window_size(100_000_000)
+        .max_decoding_message_size(config.max_decoding_message_size_bytes)
         .connect()
         .await
         .expect("Failed to connect to geyser");
 
-    // This request listen for all account updates and transaction updates
-    let request = SubscribeRequest {
-        accounts: HashMap::from([("f1".to_owned(), SubscribeRequestFilterAccounts::default())]),
-        transactions: HashMap::from([(
-            "f1".to_owned(),
-            SubscribeRequestFilterTransactions::default(),
-        )]),
-        ..Default::default()
-    };
-    let (_sink, mut rx) = geyser
-        .subscribe_with_request(Some(request))
-        .await
-        .expect("Failed to subscribe");
-
-    while let Some(result) = rx.next().await {
-        let event = result.expect("Failed to receive event");
-
-        let message = if let Some(oneof) = event.update_oneof {
-            match oneof {
-                UpdateOneof::Account(account_update) => summarize_account(account_update),
-                UpdateOneof::Transaction(tx) => summarize_tx(tx),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        if let Some(message) = message {
-            println!("{}", message);
-        }
+    match args.action {
+        Action::Block(args) => block_stats_example(geyser, args).await,
+        Action::Stream(args) => stream_example(geyser, args).await,
     }
 }

@@ -20,6 +20,8 @@ bs58 = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde_yaml = { workspace = true }
 solana-pubkey = { workspace = true }
+solana-signature = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }

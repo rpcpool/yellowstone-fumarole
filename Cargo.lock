@@ -4909,6 +4909,8 @@ dependencies = [
  "clap",
  "serde_yaml",
  "solana-pubkey",
+ "solana-signature",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
  "tonic",
