@@ -1,0 +1,5 @@
+endpoint: https://fumarole.endpoint.rpcpool.com
+x-token: 00000000-0000-0000-0000-000000000000
+
+# Uncomment the following line to enable response compression
+# response_compression: zstd
