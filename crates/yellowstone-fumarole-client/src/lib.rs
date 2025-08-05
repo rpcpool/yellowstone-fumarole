@@ -382,7 +382,7 @@ pub enum ConnectError {
 ///
 /// Default gRPC buffer capacity
 ///
-pub const DEFAULT_DRAGONSMOUTH_CAPACITY: usize = 10000;
+pub const DEFAULT_DRAGONSMOUTH_CAPACITY: usize = 100000;
 
 ///
 /// Default Fumarole commit offset interval
