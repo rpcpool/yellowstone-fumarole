@@ -62,6 +62,7 @@ pub enum DownloadTaskResult {
 }
 
 pub enum BackgroundJobResult {
+    #[allow(dead_code)]
     UpdateTip(GetChainTipResponse),
 }
 
@@ -828,6 +829,7 @@ impl GrpcDownloadTaskRunner {
         }
     }
 
+    #[allow(dead_code)]
     fn available_download_permit(&self) -> usize {
         self.data_plane_channel_vec
             .iter()

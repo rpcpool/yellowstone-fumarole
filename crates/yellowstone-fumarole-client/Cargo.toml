@@ -17,7 +17,6 @@ prometheus = ["dep:prometheus"]
 [package.metadata]
 include = [
     "proto/**",
-    "yellowstone-grpc-proto/**",
 ]
 
 [dependencies]

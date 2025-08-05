@@ -320,7 +320,7 @@ mod geyser {
 #[allow(clippy::missing_const_for_fn)]
 #[allow(clippy::all)]
 pub mod proto {
-    include!(concat!(env!("OUT_DIR"), "/fumarole.rs"));
+    tonic::include_proto!("fumarole");
 }
 
 use {
