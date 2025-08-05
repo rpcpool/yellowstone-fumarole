@@ -24,6 +24,7 @@ hyper-util = { workspace = true, features = ["http1"] }
 prometheus = { workspace = true }
 serde_yaml = { workspace = true }
 solana-pubkey = { workspace = true }
+solana-signature = { workspace = true }
 tabled = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }

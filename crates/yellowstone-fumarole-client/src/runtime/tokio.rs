@@ -874,6 +874,13 @@ impl GrpcDownloadTaskRunner {
                     }
                 }
                 Some(result) = self.tasks.join_next_with_id() => {
+                    if result.is_err() && (self.outlet.is_closed() || self.cnc_rx.is_closed()) {
+                        // When we do Ctrl+C or shutdown the runtime,
+                        // the task runner will be closed and we will receive an error.
+                        // We can safely ignore this error.
+                        tracing::debug!("task runner closed");
+                        break;
+                    }
                     let (task_id, result) = result.expect("should never panic");
                     self.handle_data_plane_task_result(task_id, result).await?;
                 }

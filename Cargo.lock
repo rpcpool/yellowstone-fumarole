@@ -4858,6 +4858,7 @@ dependencies = [
  "prometheus",
  "serde_yaml",
  "solana-pubkey",
+ "solana-signature",
  "tabled",
  "thiserror 1.0.69",
  "tikv-jemallocator",
