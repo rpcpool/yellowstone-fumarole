@@ -4892,6 +4892,7 @@ dependencies = [
  "prost",
  "protobuf-src",
  "serde",
+ "serde_json",
  "serde_with",
  "serde_yaml",
  "solana-clock",

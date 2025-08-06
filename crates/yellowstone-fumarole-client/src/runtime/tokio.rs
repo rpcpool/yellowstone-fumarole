@@ -92,6 +92,7 @@ pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub last_history_poll: Option<Instant>,
     pub gc_interval: usize, // in ticks
     pub non_critical_background_jobs: JoinSet<BackgroundJobResult>,
+    pub no_commit: bool,
 }
 
 const DEFAULT_HISTORY_POLL_SIZE: i64 = 100;
@@ -252,6 +253,11 @@ impl TokioFumeDragonsmouthRuntime {
     }
 
     async unsafe fn force_commit_offset(&mut self) {
+        if self.no_commit {
+            tracing::debug!("no_commit is set, skipping offset commitment");
+            self.sm.update_committed_offset(self.sm.committable_offset);
+            return;
+        }
         self.control_plane_tx
             .send(build_commit_offset_cmd(self.sm.committable_offset))
             .await

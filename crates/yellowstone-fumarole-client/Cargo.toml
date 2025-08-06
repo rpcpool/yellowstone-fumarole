@@ -31,6 +31,7 @@ lazy_static = { workspace = true }
 prometheus = { workspace = true, optional = true }
 prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 serde_with = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }

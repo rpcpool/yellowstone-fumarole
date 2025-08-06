@@ -351,7 +351,7 @@ impl FumaroleSM {
             let event_cl = geyser::CommitmentLevel::try_from(commitment_level)
                 .expect("invalid commitment level");
 
-            if event_cl < min_commitment {
+            if event_cl != min_commitment {
                 self.slot_status_update_queue.push_back(FumeSlotStatus {
                     session_sequence,
                     offset,
