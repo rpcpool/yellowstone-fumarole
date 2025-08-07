@@ -265,11 +265,9 @@ impl FromStr for SubscribePubkeyValue {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<&str> = s.split(':').collect();
         match parts.len() {
-            0 => {
-                Err(FromStrSubscribePubkeyValueErr::InvalidValue(
-                    "invalid pubkey filter, empty value".to_string(),
-                ))
-            }
+            0 => Err(FromStrSubscribePubkeyValueErr::InvalidValue(
+                "invalid pubkey filter, empty value".to_string(),
+            )),
             1 => {
                 let pubkey = Pubkey::from_str(parts[0])?;
                 Ok(SubscribePubkeyValue {
@@ -285,11 +283,9 @@ impl FromStr for SubscribePubkeyValue {
                     pubkey,
                 })
             }
-            _ => {
-                Err(FromStrSubscribePubkeyValueErr::InvalidValue(
-                    "invalid pubkey filter, too many parts".to_string(),
-                ))
-            }
+            _ => Err(FromStrSubscribePubkeyValueErr::InvalidValue(
+                "invalid pubkey filter, too many parts".to_string(),
+            )),
         }
     }
 }
