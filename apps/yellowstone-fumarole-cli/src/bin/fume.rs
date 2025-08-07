@@ -780,7 +780,14 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
         let socket_addr: SocketAddr = bind_addr.0;
         tokio::spawn(prometheus_server(socket_addr, registry));
     }
-    let request = args.as_subscribe_request();
+    let mut request = args.as_subscribe_request();
+    // For block stats, we need to track block meta and entry updates
+    request
+        .blocks_meta
+        .insert(args.default_filter_name(), Default::default());
+    request
+        .entry
+        .insert(args.default_filter_name(), Default::default());
     let cg_name = args.name.clone();
     println!("Subscribing to consumer group {}", cg_name);
     let subscribe_config = FumaroleSubscribeConfig {

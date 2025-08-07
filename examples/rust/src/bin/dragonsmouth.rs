@@ -364,7 +364,24 @@ where
 
 /// This code serves as a reference to compare fumarole against dragonsmouth original client
 async fn block_stats_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, args: SubscribeArgs) {
-    let request = args.as_subscribe_request();
+    let mut request = args.as_subscribe_request();
+    // For block stats, we need to track block meta and entry updates and slot intra update
+    request
+        .blocks_meta
+        .insert(args.default_filter_name(), Default::default());
+
+    request
+        .entry
+        .insert(args.default_filter_name(), Default::default());
+
+    request.slots.insert(
+        args.default_filter_name(),
+        SubscribeRequestFilterSlots {
+            interslot_updates: Some(true),
+            ..Default::default()
+        },
+    );
+
     println!("Subscribing with request: {request:?}");
     let (_sink, rx) = client
         .subscribe_with_request(Some(request))
