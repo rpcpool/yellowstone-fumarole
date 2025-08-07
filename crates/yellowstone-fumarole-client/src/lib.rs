@@ -320,7 +320,7 @@ mod geyser {
 #[allow(clippy::missing_const_for_fn)]
 #[allow(clippy::all)]
 pub mod proto {
-    include!(concat!(env!("OUT_DIR"), "/fumarole.rs"));
+    tonic::include_proto!("fumarole");
 }
 
 use {
@@ -486,6 +486,14 @@ pub struct FumaroleSubscribeConfig {
     /// Interval to refresh the tip stats from the fumarole service.
     ///
     pub refresh_tip_stats_interval: Duration,
+
+    ///
+    /// Whether to disable committing offsets to the fumarole service.
+    /// This is useful for testing or when you don't care about committing offsets.
+    /// If set to `true`, the fumarole client will not commit offsets to the fumarole service.
+    /// This mean the current session will never commit progression.
+    /// If set to `true`, [`FumaroleSubscribeConfig::commit_interval`] will be ignored.
+    pub no_commit: bool,
 }
 
 impl Default for FumaroleSubscribeConfig {
@@ -502,6 +510,7 @@ impl Default for FumaroleSubscribeConfig {
             gc_interval: DEFAULT_GC_INTERVAL,
             slot_memory_retention: DEFAULT_SLOT_MEMORY_RETENTION,
             refresh_tip_stats_interval: DEFAULT_REFRESH_TIP_INTERVAL, // Default to 5 seconds
+            no_commit: false,
         }
     }
 }
@@ -768,6 +777,7 @@ impl FumaroleClient {
             gc_interval: config.gc_interval,
             non_critical_background_jobs: Default::default(),
             last_history_poll: Default::default(),
+            no_commit: config.no_commit,
         };
         let download_task_runner_jh = handle.spawn(grpc_download_task_runner.run());
         let fumarole_rt_jh = handle.spawn(tokio_rt.run());

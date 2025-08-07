@@ -3,7 +3,7 @@ use tikv_jemallocator::Jemalloc;
 use {
     clap::Parser,
     futures::{FutureExt, future::BoxFuture},
-    solana_pubkey::Pubkey,
+    solana_pubkey::{ParsePubkeyError, Pubkey},
     solana_signature::Signature,
     std::{
         collections::{HashMap, HashSet},
@@ -133,42 +133,12 @@ pub struct GetCgInfoArgs {
     name: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct InitialOffsetPolicyArg(pub InitialOffsetPolicy);
-
-#[derive(Debug, thiserror::Error)]
-#[error("Invalid initial offset policy: {0}")]
-pub struct InitialOffsetPolicyParseError(String);
-
-impl FromStr for InitialOffsetPolicyArg {
-    type Err = InitialOffsetPolicyParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "latest" => Ok(InitialOffsetPolicyArg(InitialOffsetPolicy::Latest)),
-            "from-slot" => Ok(InitialOffsetPolicyArg(InitialOffsetPolicy::FromSlot)),
-            unknown => Err(InitialOffsetPolicyParseError(unknown.to_owned())),
-        }
-    }
-}
-
-impl Default for InitialOffsetPolicyArg {
-    fn default() -> Self {
-        InitialOffsetPolicyArg(InitialOffsetPolicy::Latest)
-    }
-}
-
 #[derive(Debug, Clone, Parser)]
 pub struct CreateCgArgs {
     /// Name of the persistent subscriber to create
     #[clap(long)]
     name: String,
 
-    /// Initial offset policy for the persistent subscriber (from-slot or latest)
-    #[clap(short, long, default_value = "latest")]
-    initial_offset_policy: InitialOffsetPolicyArg,
-
-    /// If the initial offset policy is "from-slot", this is the slot to start from.
     /// If not specified, the subscriber will start from the latest slot.
     #[clap(long)]
     from_slot: Option<u64>,
@@ -272,6 +242,54 @@ impl FromStr for SubscribeInclude {
     }
 }
 
+///
+/// Represents a subscription to a specific pubkey with an optional filterset name.
+///
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SubscribePubkeyValue {
+    pub filter: Option<String>,
+    pub pubkey: Pubkey,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FromStrSubscribePubkeyValueErr {
+    #[error(transparent)]
+    ParsePubkeyError(#[from] ParsePubkeyError),
+    #[error("{0}")]
+    InvalidValue(String),
+}
+
+impl FromStr for SubscribePubkeyValue {
+    type Err = FromStrSubscribePubkeyValueErr;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split(':').collect();
+        match parts.len() {
+            0 => Err(FromStrSubscribePubkeyValueErr::InvalidValue(
+                "invalid pubkey filter, empty value".to_string(),
+            )),
+            1 => {
+                let pubkey = Pubkey::from_str(parts[0])?;
+                Ok(SubscribePubkeyValue {
+                    filter: None,
+                    pubkey,
+                })
+            }
+            2 => {
+                let filter = parts[0].to_string();
+                let pubkey = Pubkey::from_str(parts[1])?;
+                Ok(SubscribePubkeyValue {
+                    filter: Some(filter),
+                    pubkey,
+                })
+            }
+            _ => Err(FromStrSubscribePubkeyValueErr::InvalidValue(
+                "invalid pubkey filter, too many parts".to_string(),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Parser)]
 struct SubscribeArgs {
     /// bind address <IP:PORT> for prometheus HTTP server endpoint, or "0" to bind to a random localhost port.
@@ -300,19 +318,30 @@ struct SubscribeArgs {
 
     /// List of account public keys to subscribe to
     #[clap(short, long)]
-    account: Vec<Pubkey>,
+    account: Vec<SubscribePubkeyValue>,
 
     /// List of account owners to subscribe to
     #[clap(short, long)]
-    owner: Vec<Pubkey>,
+    owner: Vec<SubscribePubkeyValue>,
 
     /// List of account public keys that must be included in the transaction
     #[clap(long, short)]
-    tx_account: Vec<Pubkey>,
+    tx_account: Vec<SubscribePubkeyValue>,
+
+    #[clap(long)]
+    tx_account_required: Vec<SubscribePubkeyValue>,
 
     /// Number of parallel data streams (TCP connections) to open to fumarole.
     #[clap(long, short, default_value = "1")]
     para: NonZeroU8,
+
+    /// If true, the fumarole client will not commit offsets to the fumarole service.
+    #[clap(long, default_value = "false")]
+    no_commit: bool,
+
+    /// Path to the output transaction collected during the block subscription.
+    #[clap(long)]
+    tx_out: Option<PathBuf>,
 }
 
 fn summarize_account(account: SubscribeUpdateAccount) -> Option<String> {
@@ -387,19 +416,20 @@ async fn get_cg_info(args: GetCgInfoArgs, mut client: FumaroleClient) {
 }
 
 async fn create_cg(args: CreateCgArgs, mut client: FumaroleClient) {
-    let CreateCgArgs {
-        name,
-        initial_offset_policy,
-        from_slot,
-    } = args;
+    let CreateCgArgs { name, from_slot } = args;
+
+    let mut initial_offset_policy = InitialOffsetPolicy::Latest;
+    if from_slot.is_some() {
+        initial_offset_policy = InitialOffsetPolicy::FromSlot;
+    }
+
     let request = CreateConsumerGroupRequest {
         consumer_group_name: name.clone(),
-        initial_offset_policy: initial_offset_policy.0.into(),
+        initial_offset_policy: initial_offset_policy.into(),
         from_slot,
     };
 
     let result = client.create_consumer_group(request).await;
-    // .expect("Failed to create consumer group");
 
     match result {
         Ok(_) => {
@@ -521,6 +551,62 @@ pub fn create_shutdown() -> BoxFuture<'static, ()> {
 }
 
 impl SubscribeArgs {
+    fn default_filter_name(&self) -> String {
+        "fumarole".to_string()
+    }
+
+    fn build_subscribe_account_filter(&self) -> HashMap<String, SubscribeRequestFilterAccounts> {
+        if self.account.is_empty() && self.owner.is_empty() {
+            // If no accounts or owners are specified, we return an empty filter
+            return HashMap::from([(self.default_filter_name(), Default::default())]);
+        }
+
+        let mut filter = HashMap::new();
+        for account in self.account.iter().cloned() {
+            let account_filter: &mut SubscribeRequestFilterAccounts = filter
+                .entry(account.filter.unwrap_or(self.default_filter_name()))
+                .or_default();
+            account_filter.account.push(account.pubkey.to_string());
+        }
+
+        for owner in self.owner.iter().cloned() {
+            let account_filter: &mut SubscribeRequestFilterAccounts = filter
+                .entry(owner.filter.unwrap_or(self.default_filter_name()))
+                .or_default();
+            account_filter.owner.push(owner.pubkey.to_string());
+        }
+
+        filter
+    }
+
+    fn build_subscribe_tx_filter(&self) -> HashMap<String, SubscribeRequestFilterTransactions> {
+        let mut filter = HashMap::new();
+
+        if self.tx_account.is_empty() && self.tx_account_required.is_empty() {
+            // If no tx accounts are specified, we return an empty filter
+            return HashMap::from([(self.default_filter_name(), Default::default())]);
+        }
+
+        for tx_account in self.tx_account.iter().cloned() {
+            let tx_filter: &mut SubscribeRequestFilterTransactions = filter
+                .entry(tx_account.filter.unwrap_or(self.default_filter_name()))
+                .or_default();
+            tx_filter
+                .account_include
+                .push(tx_account.pubkey.to_string());
+        }
+
+        for tx_account in self.tx_account_required.iter().cloned() {
+            let tx_filter: &mut SubscribeRequestFilterTransactions = filter
+                .entry(tx_account.filter.unwrap_or(self.default_filter_name()))
+                .or_default();
+            tx_filter
+                .account_required
+                .push(tx_account.pubkey.to_string());
+        }
+        filter
+    }
+
     fn as_subscribe_request(&self) -> SubscribeRequest {
         let commitment_level: CommitmentLevel = self.commitment.into();
         // This request listen for all account updates and transaction updates
@@ -532,31 +618,14 @@ impl SubscribeArgs {
         for to_include in &self.include.set {
             match to_include {
                 SubscribeDataType::Account => {
-                    request.accounts = HashMap::from([(
-                        "fumarole".to_owned(),
-                        SubscribeRequestFilterAccounts {
-                            account: self.account.iter().map(|p| p.to_string()).collect(),
-                            owner: self.owner.iter().map(|p| p.to_string()).collect(),
-                            ..Default::default()
-                        },
-                    )]);
+                    request.accounts = self.build_subscribe_account_filter();
                 }
                 SubscribeDataType::Transaction => {
-                    request.transactions = HashMap::from([(
-                        "fumarole".to_owned(),
-                        SubscribeRequestFilterTransactions {
-                            account_include: self
-                                .tx_account
-                                .iter()
-                                .map(|p| p.to_string())
-                                .collect(),
-                            ..Default::default()
-                        },
-                    )]);
+                    request.transactions = self.build_subscribe_tx_filter();
                 }
                 SubscribeDataType::Slot => {
                     request.slots = HashMap::from([(
-                        "fumarole".to_owned(),
+                        self.default_filter_name(),
                         SubscribeRequestFilterSlots {
                             interslot_updates: Some(true),
                             ..Default::default()
@@ -565,12 +634,13 @@ impl SubscribeArgs {
                 }
                 SubscribeDataType::BlockMeta => {
                     request.blocks_meta = HashMap::from([(
-                        "fumarole".to_owned(),
+                        self.default_filter_name(),
                         SubscribeRequestFilterBlocksMeta::default(),
                     )]);
                 }
                 SubscribeDataType::Entry => {
-                    request.entry = HashMap::from([("fumarole".to_owned(), Default::default())]);
+                    request.entry =
+                        HashMap::from([(self.default_filter_name(), Default::default())]);
                 }
             }
         }
@@ -609,6 +679,7 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
         concurrent_download_limit_per_tcp: NonZeroUsize::new(1).unwrap(),
         commit_interval: Duration::from_secs(1),
         num_data_plane_tcp_connections: args.para,
+        no_commit: args.no_commit,
         ..Default::default()
     };
     let dragonsmouth_session = client
@@ -690,6 +761,18 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
         Box::new(stdout())
     };
 
+    let mut tx_out = if let Some(tx_out) = &args.tx_out {
+        let f = File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(tx_out)
+            .expect("Failed to open transaction output file");
+        Some(Box::new(f) as Box<dyn Write>)
+    } else {
+        None
+    };
+
     let registry = prometheus::Registry::new();
     yellowstone_fumarole_client::metrics::register_metrics(&registry);
 
@@ -697,13 +780,21 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
         let socket_addr: SocketAddr = bind_addr.0;
         tokio::spawn(prometheus_server(socket_addr, registry));
     }
-    let request = args.as_subscribe_request();
+    let mut request = args.as_subscribe_request();
+    // For block stats, we need to track block meta and entry updates
+    request
+        .blocks_meta
+        .insert(args.default_filter_name(), Default::default());
+    request
+        .entry
+        .insert(args.default_filter_name(), Default::default());
     let cg_name = args.name.clone();
     println!("Subscribing to consumer group {}", cg_name);
     let subscribe_config = FumaroleSubscribeConfig {
         concurrent_download_limit_per_tcp: NonZeroUsize::new(1).unwrap(),
         commit_interval: Duration::from_secs(1),
         num_data_plane_tcp_connections: args.para,
+        no_commit: args.no_commit,
         ..Default::default()
     };
     let dragonsmouth_session = client
@@ -797,6 +888,11 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
                             block.block_meta = Some(block_meta);
                             let msg = summarized_block(&block);
                             writeln!(out, "{slot} -- {msg}").expect("Failed to write to output file");
+                            if let Some(tx_out) = &mut tx_out {
+                                for sig in block.success_tx.iter() {
+                                    writeln!(tx_out, "{slot} -- {sig}").expect("Failed to write to transaction output file");
+                                }
+                            }
                         }
                         UpdateOneof::Entry(entry) => {
                             let slot = entry.slot;

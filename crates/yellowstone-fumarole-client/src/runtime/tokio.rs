@@ -62,6 +62,7 @@ pub enum DownloadTaskResult {
 }
 
 pub enum BackgroundJobResult {
+    #[allow(dead_code)]
     UpdateTip(GetChainTipResponse),
 }
 
@@ -91,6 +92,7 @@ pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub last_history_poll: Option<Instant>,
     pub gc_interval: usize, // in ticks
     pub non_critical_background_jobs: JoinSet<BackgroundJobResult>,
+    pub no_commit: bool,
 }
 
 const DEFAULT_HISTORY_POLL_SIZE: i64 = 100;
@@ -251,6 +253,11 @@ impl TokioFumeDragonsmouthRuntime {
     }
 
     async unsafe fn force_commit_offset(&mut self) {
+        if self.no_commit {
+            tracing::debug!("no_commit is set, skipping offset commitment");
+            self.sm.update_committed_offset(self.sm.committable_offset);
+            return;
+        }
         self.control_plane_tx
             .send(build_commit_offset_cmd(self.sm.committable_offset))
             .await
@@ -828,6 +835,7 @@ impl GrpcDownloadTaskRunner {
         }
     }
 
+    #[allow(dead_code)]
     fn available_download_permit(&self) -> usize {
         self.data_plane_channel_vec
             .iter()
@@ -882,7 +890,7 @@ impl GrpcDownloadTaskRunner {
                         tracing::debug!("task runner closed");
                         break;
                     }
-                    let (task_id, result) = result.expect("should never panic");
+                    let (task_id, result) = result.expect("download task result");
                     self.handle_data_plane_task_result(task_id, result).await?;
                 }
             }

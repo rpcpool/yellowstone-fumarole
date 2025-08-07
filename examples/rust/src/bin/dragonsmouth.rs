@@ -1,21 +1,23 @@
 use {
     clap::Parser,
-    solana_pubkey::Pubkey,
+    solana_pubkey::{ParsePubkeyError, Pubkey},
     solana_signature::Signature,
     std::{
         collections::{HashMap, HashSet},
-        fmt,
+        fmt, fs,
+        io::Write,
         path::PathBuf,
         str::FromStr,
     },
-    tokio_stream::StreamExt,
+    tokio_stream::{Stream, StreamExt},
+    tonic::Status,
     yellowstone_fumarole_client::config::FumaroleConfig,
     yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcBuilder, GeyserGrpcClient, Interceptor},
     yellowstone_grpc_proto::geyser::{
         CommitmentLevel, SlotStatus, SubscribeRequest, SubscribeRequestFilterAccounts,
         SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterSlots,
-        SubscribeRequestFilterTransactions, SubscribeUpdateAccount, SubscribeUpdateBlockMeta,
-        SubscribeUpdateTransaction, subscribe_update::UpdateOneof,
+        SubscribeRequestFilterTransactions, SubscribeUpdate, SubscribeUpdateAccount,
+        SubscribeUpdateBlockMeta, SubscribeUpdateTransaction, subscribe_update::UpdateOneof,
     },
 };
 
@@ -129,6 +131,54 @@ impl FromStr for SubscribeInclude {
     }
 }
 
+///
+/// Represents a subscription to a specific pubkey with an optional filterset name.
+///
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SubscribePubkeyValue {
+    pub filter: Option<String>,
+    pub pubkey: Pubkey,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FromStrSubscribePubkeyValueErr {
+    #[error(transparent)]
+    ParsePubkeyError(#[from] ParsePubkeyError),
+    #[error("{0}")]
+    InvalidValue(String),
+}
+
+impl FromStr for SubscribePubkeyValue {
+    type Err = FromStrSubscribePubkeyValueErr;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split(':').collect();
+        match parts.len() {
+            0 => Err(FromStrSubscribePubkeyValueErr::InvalidValue(
+                "invalid pubkey filter, empty value".to_string(),
+            )),
+            1 => {
+                let pubkey = Pubkey::from_str(parts[0])?;
+                Ok(SubscribePubkeyValue {
+                    filter: None,
+                    pubkey,
+                })
+            }
+            2 => {
+                let filter = parts[0].to_string();
+                let pubkey = Pubkey::from_str(parts[1])?;
+                Ok(SubscribePubkeyValue {
+                    filter: Some(filter),
+                    pubkey,
+                })
+            }
+            _ => Err(FromStrSubscribePubkeyValueErr::InvalidValue(
+                "invalid pubkey filter, too many parts".to_string(),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Parser)]
 struct SubscribeArgs {
     ///
@@ -144,15 +194,23 @@ struct SubscribeArgs {
 
     /// List of account public keys to subscribe to
     #[clap(short, long)]
-    account: Vec<Pubkey>,
+    account: Vec<SubscribePubkeyValue>,
 
     /// List of account owners to subscribe to
     #[clap(short, long)]
-    owner: Vec<Pubkey>,
+    owner: Vec<SubscribePubkeyValue>,
 
-    /// List of account public keys that must be included in the transaction
+    /// List of account public keys, any of which must be included in the transaction
     #[clap(long, short)]
-    tx_account: Vec<Pubkey>,
+    tx_account: Vec<SubscribePubkeyValue>,
+
+    /// List of account public keys that must be required in the transaction
+    #[clap(long)]
+    tx_account_required: Vec<SubscribePubkeyValue>,
+
+    #[clap(long)]
+    /// Path to the output transaction collected during the subscription
+    tx_out: Option<PathBuf>,
 }
 
 fn summarize_account(account: SubscribeUpdateAccount) -> Option<String> {
@@ -170,24 +228,25 @@ fn summarize_tx(tx: SubscribeUpdateTransaction) -> Option<String> {
     Some(format!("tx,{slot},{sig}"))
 }
 
-/// This code serves as a reference to compare fumarole against dragonsmouth original client
-async fn block_stats_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, args: SubscribeArgs) {
-    let request = args.as_subscribe_request();
+struct TxInfo {
+    account_keys: Vec<Pubkey>,
+    matched_filters: Vec<String>,
+}
 
-    let (_sink, mut rx) = client
-        .subscribe_with_request(Some(request))
-        .await
-        .expect("Failed to subscribe");
+#[derive(Default)]
+struct BlockInfo {
+    success_tx: HashMap<Signature, TxInfo>,
+    failed_tx: HashSet<Signature>,
+    account_updates: HashSet<(Pubkey, Signature)>,
+    entry_count: usize,
+    block_meta: Option<SubscribeUpdateBlockMeta>,
+}
 
-    #[derive(Default)]
-    struct BlockInfo {
-        success_tx: HashSet<Signature>,
-        failed_tx: HashSet<Signature>,
-        account_updates: HashSet<(Pubkey, Signature)>,
-        entry_count: usize,
-        block_meta: Option<SubscribeUpdateBlockMeta>,
-    }
-
+async fn block_stats<S, F>(rx: S, mut on_block: Option<F>)
+where
+    S: Stream<Item = Result<SubscribeUpdate, Status>>,
+    F: FnMut(u64, BlockInfo) + Send + 'static,
+{
     let mut block_map: HashMap<u64, BlockInfo> = HashMap::new();
 
     let summarized_block = |block_info: &BlockInfo| {
@@ -206,9 +265,10 @@ async fn block_stats_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, ar
             "good tx: {success_count}, failed tx: {failed_count}, total tx: {total_tx_cnt}/{expected_tx_count}, entries: {entry_count}/{expected_entry_count}, account updates: {account_updates}"
         )
     };
-
+    tokio::pin!(rx);
     while let Some(result) = rx.next().await {
         let event = result.expect("Failed to receive event");
+        let matched_filters = event.filters.clone();
         let Some(oneof) = event.update_oneof else {
             continue;
         };
@@ -245,7 +305,29 @@ async fn block_stats_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, ar
                 if transaction.meta.as_ref().unwrap().err.is_some() {
                     block.failed_tx.insert(tx_sig);
                 } else {
-                    block.success_tx.insert(tx_sig);
+                    let mut pubkeys = vec![];
+                    for pubkey in transaction
+                        .transaction
+                        .as_ref()
+                        .unwrap()
+                        .message
+                        .as_ref()
+                        .unwrap()
+                        .account_keys
+                        .iter()
+                    {
+                        pubkeys.push(
+                            Pubkey::try_from(pubkey.as_slice())
+                                .expect("Failed to parse account key"),
+                        );
+                    }
+                    block.success_tx.insert(
+                        tx_sig,
+                        TxInfo {
+                            account_keys: pubkeys,
+                            matched_filters,
+                        },
+                    );
                 }
             }
             UpdateOneof::Entry(entry) => {
@@ -262,6 +344,9 @@ async fn block_stats_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, ar
                 };
                 block.block_meta = Some(block_meta);
                 println!("{slot} -- {}", summarized_block(&block));
+                if let Some(on_block) = &mut on_block {
+                    on_block(slot, block);
+                }
             }
             UpdateOneof::Slot(slot) => {
                 if matches!(
@@ -277,7 +362,115 @@ async fn block_stats_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, ar
     }
 }
 
+/// This code serves as a reference to compare fumarole against dragonsmouth original client
+async fn block_stats_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, args: SubscribeArgs) {
+    let mut request = args.as_subscribe_request();
+    // For block stats, we need to track block meta and entry updates and slot intra update
+    request
+        .blocks_meta
+        .insert(args.default_filter_name(), Default::default());
+
+    request
+        .entry
+        .insert(args.default_filter_name(), Default::default());
+
+    request.slots.insert(
+        args.default_filter_name(),
+        SubscribeRequestFilterSlots {
+            interslot_updates: Some(true),
+            ..Default::default()
+        },
+    );
+
+    println!("Subscribing with request: {request:?}");
+    let (_sink, rx) = client
+        .subscribe_with_request(Some(request))
+        .await
+        .expect("Failed to subscribe");
+
+    let on_block_cb = if let Some(path) = args.tx_out {
+        let mut file = fs::File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .expect("Failed to open output file");
+        Some(move |slot: u64, block_info: BlockInfo| {
+            for (tx, info) in block_info.success_tx {
+                let account_keys_str = info
+                    .account_keys
+                    .into_iter()
+                    .map(|pk| pk.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let filters = info.matched_filters.join(",");
+                writeln!(file, "{slot} -- {tx}, {filters} {account_keys_str}")
+                    .expect("Failed to write to output file");
+            }
+        })
+    } else {
+        None
+    };
+
+    block_stats(rx, on_block_cb).await;
+}
+
 impl SubscribeArgs {
+    fn default_filter_name(&self) -> String {
+        "fumarole".to_string()
+    }
+
+    fn build_subscribe_account_filter(&self) -> HashMap<String, SubscribeRequestFilterAccounts> {
+        if self.account.is_empty() && self.owner.is_empty() {
+            // If no accounts or owners are specified, we return an empty filter
+            return HashMap::from([(self.default_filter_name(), Default::default())]);
+        }
+
+        let mut filter = HashMap::new();
+        for account in self.account.iter().cloned() {
+            let account_filter: &mut SubscribeRequestFilterAccounts = filter
+                .entry(account.filter.unwrap_or(self.default_filter_name()))
+                .or_default();
+            account_filter.account.push(account.pubkey.to_string());
+        }
+
+        for owner in self.owner.iter().cloned() {
+            let account_filter: &mut SubscribeRequestFilterAccounts = filter
+                .entry(owner.filter.unwrap_or(self.default_filter_name()))
+                .or_default();
+            account_filter.owner.push(owner.pubkey.to_string());
+        }
+
+        filter
+    }
+
+    fn build_subscribe_tx_filter(&self) -> HashMap<String, SubscribeRequestFilterTransactions> {
+        if self.tx_account.is_empty() && self.tx_account_required.is_empty() {
+            // If no tx accounts are specified, we return an empty filter
+            return HashMap::from([(self.default_filter_name(), Default::default())]);
+        }
+
+        let mut filter = HashMap::new();
+        for tx_account in self.tx_account.iter().cloned() {
+            let tx_filter: &mut SubscribeRequestFilterTransactions = filter
+                .entry(tx_account.filter.unwrap_or(self.default_filter_name()))
+                .or_default();
+            tx_filter
+                .account_include
+                .push(tx_account.pubkey.to_string());
+        }
+
+        for tx_account in self.tx_account_required.iter().cloned() {
+            let tx_filter: &mut SubscribeRequestFilterTransactions = filter
+                .entry(tx_account.filter.unwrap_or(self.default_filter_name()))
+                .or_default();
+            tx_filter
+                .account_required
+                .push(tx_account.pubkey.to_string());
+        }
+        filter
+    }
+
     fn as_subscribe_request(&self) -> SubscribeRequest {
         let commitment_level: CommitmentLevel = self.commitment.into();
         // This request listen for all account updates and transaction updates
@@ -289,31 +482,14 @@ impl SubscribeArgs {
         for to_include in &self.include.set {
             match to_include {
                 SubscribeDataType::Account => {
-                    request.accounts = HashMap::from([(
-                        "fumarole".to_owned(),
-                        SubscribeRequestFilterAccounts {
-                            account: self.account.iter().map(|p| p.to_string()).collect(),
-                            owner: self.owner.iter().map(|p| p.to_string()).collect(),
-                            ..Default::default()
-                        },
-                    )]);
+                    request.accounts = self.build_subscribe_account_filter();
                 }
                 SubscribeDataType::Transaction => {
-                    request.transactions = HashMap::from([(
-                        "fumarole".to_owned(),
-                        SubscribeRequestFilterTransactions {
-                            account_include: self
-                                .tx_account
-                                .iter()
-                                .map(|p| p.to_string())
-                                .collect(),
-                            ..Default::default()
-                        },
-                    )]);
+                    request.transactions = self.build_subscribe_tx_filter();
                 }
                 SubscribeDataType::Slot => {
                     request.slots = HashMap::from([(
-                        "fumarole".to_owned(),
+                        self.default_filter_name(),
                         SubscribeRequestFilterSlots {
                             interslot_updates: Some(true),
                             ..Default::default()
@@ -322,12 +498,13 @@ impl SubscribeArgs {
                 }
                 SubscribeDataType::BlockMeta => {
                     request.blocks_meta = HashMap::from([(
-                        "fumarole".to_owned(),
+                        self.default_filter_name(),
                         SubscribeRequestFilterBlocksMeta::default(),
                     )]);
                 }
                 SubscribeDataType::Entry => {
-                    request.entry = HashMap::from([("fumarole".to_owned(), Default::default())]);
+                    request.entry =
+                        HashMap::from([(self.default_filter_name(), Default::default())]);
                 }
             }
         }
