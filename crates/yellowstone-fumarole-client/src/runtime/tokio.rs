@@ -890,7 +890,7 @@ impl GrpcDownloadTaskRunner {
                         tracing::debug!("task runner closed");
                         break;
                     }
-                    let (task_id, result) = result.expect("should never panic");
+                    let (task_id, result) = result.expect("download task result");
                     self.handle_data_plane_task_result(task_id, result).await?;
                 }
             }

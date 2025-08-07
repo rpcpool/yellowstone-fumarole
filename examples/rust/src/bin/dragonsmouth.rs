@@ -404,6 +404,11 @@ impl SubscribeArgs {
     }
 
     fn build_subscribe_account_filter(&self) -> HashMap<String, SubscribeRequestFilterAccounts> {
+        if self.account.is_empty() && self.owner.is_empty() {
+            // If no accounts or owners are specified, we return an empty filter
+            return HashMap::from([(self.default_filter_name(), Default::default())]);
+        }
+
         let mut filter = HashMap::new();
         for account in self.account.iter().cloned() {
             let account_filter: &mut SubscribeRequestFilterAccounts = filter
@@ -423,6 +428,11 @@ impl SubscribeArgs {
     }
 
     fn build_subscribe_tx_filter(&self) -> HashMap<String, SubscribeRequestFilterTransactions> {
+        if self.tx_account.is_empty() && self.tx_account_required.is_empty() {
+            // If no tx accounts are specified, we return an empty filter
+            return HashMap::from([(self.default_filter_name(), Default::default())]);
+        }
+
         let mut filter = HashMap::new();
         for tx_account in self.tx_account.iter().cloned() {
             let tx_filter: &mut SubscribeRequestFilterTransactions = filter
