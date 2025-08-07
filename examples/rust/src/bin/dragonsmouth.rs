@@ -4,7 +4,8 @@ use {
     solana_signature::Signature,
     std::{
         collections::{HashMap, HashSet},
-        fmt,
+        fmt, fs,
+        io::Write,
         path::PathBuf,
         str::FromStr,
     },
@@ -154,9 +155,9 @@ impl FromStr for SubscribePubkeyValue {
         let parts: Vec<&str> = s.split(':').collect();
         match parts.len() {
             0 => {
-                return Err(FromStrSubscribePubkeyValueErr::InvalidValue(
+                Err(FromStrSubscribePubkeyValueErr::InvalidValue(
                     "invalid pubkey filter, empty value".to_string(),
-                ));
+                ))
             }
             1 => {
                 let pubkey = Pubkey::from_str(parts[0])?;
@@ -174,9 +175,9 @@ impl FromStr for SubscribePubkeyValue {
                 })
             }
             _ => {
-                return Err(FromStrSubscribePubkeyValueErr::InvalidValue(
+                Err(FromStrSubscribePubkeyValueErr::InvalidValue(
                     "invalid pubkey filter, too many parts".to_string(),
-                ));
+                ))
             }
         }
     }
@@ -210,6 +211,10 @@ struct SubscribeArgs {
     /// List of account public keys that must be required in the transaction
     #[clap(long)]
     tx_account_required: Vec<SubscribePubkeyValue>,
+
+    #[clap(long)]
+    /// Path to the output transaction collected during the subscription
+    tx_out: Option<PathBuf>,
 }
 
 fn summarize_account(account: SubscribeUpdateAccount) -> Option<String> {
@@ -227,18 +232,25 @@ fn summarize_tx(tx: SubscribeUpdateTransaction) -> Option<String> {
     Some(format!("tx,{slot},{sig}"))
 }
 
-async fn block_stats<S>(rx: S)
+struct TxInfo {
+    account_keys: Vec<Pubkey>,
+    matched_filters: Vec<String>,
+}
+
+#[derive(Default)]
+struct BlockInfo {
+    success_tx: HashMap<Signature, TxInfo>,
+    failed_tx: HashSet<Signature>,
+    account_updates: HashSet<(Pubkey, Signature)>,
+    entry_count: usize,
+    block_meta: Option<SubscribeUpdateBlockMeta>,
+}
+
+async fn block_stats<S, F>(rx: S, mut on_block: Option<F>)
 where
     S: Stream<Item = Result<SubscribeUpdate, Status>>,
+    F: FnMut(u64, BlockInfo) + Send + 'static,
 {
-    #[derive(Default)]
-    struct BlockInfo {
-        success_tx: HashSet<Signature>,
-        failed_tx: HashSet<Signature>,
-        account_updates: HashSet<(Pubkey, Signature)>,
-        entry_count: usize,
-        block_meta: Option<SubscribeUpdateBlockMeta>,
-    }
     let mut block_map: HashMap<u64, BlockInfo> = HashMap::new();
 
     let summarized_block = |block_info: &BlockInfo| {
@@ -260,6 +272,7 @@ where
     tokio::pin!(rx);
     while let Some(result) = rx.next().await {
         let event = result.expect("Failed to receive event");
+        let matched_filters = event.filters.clone();
         let Some(oneof) = event.update_oneof else {
             continue;
         };
@@ -296,7 +309,29 @@ where
                 if transaction.meta.as_ref().unwrap().err.is_some() {
                     block.failed_tx.insert(tx_sig);
                 } else {
-                    block.success_tx.insert(tx_sig);
+                    let mut pubkeys = vec![];
+                    for pubkey in transaction
+                        .transaction
+                        .as_ref()
+                        .unwrap()
+                        .message
+                        .as_ref()
+                        .unwrap()
+                        .account_keys
+                        .iter()
+                    {
+                        pubkeys.push(
+                            Pubkey::try_from(pubkey.as_slice())
+                                .expect("Failed to parse account key"),
+                        );
+                    }
+                    block.success_tx.insert(
+                        tx_sig,
+                        TxInfo {
+                            account_keys: pubkeys,
+                            matched_filters,
+                        },
+                    );
                 }
             }
             UpdateOneof::Entry(entry) => {
@@ -313,6 +348,9 @@ where
                 };
                 block.block_meta = Some(block_meta);
                 println!("{slot} -- {}", summarized_block(&block));
+                if let Some(on_block) = &mut on_block {
+                    on_block(slot, block);
+                }
             }
             UpdateOneof::Slot(slot) => {
                 if matches!(
@@ -331,12 +369,37 @@ where
 /// This code serves as a reference to compare fumarole against dragonsmouth original client
 async fn block_stats_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, args: SubscribeArgs) {
     let request = args.as_subscribe_request();
-
+    println!("Subscribing with request: {request:?}");
     let (_sink, rx) = client
         .subscribe_with_request(Some(request))
         .await
         .expect("Failed to subscribe");
-    block_stats(rx).await;
+
+    let on_block_cb = if let Some(path) = args.tx_out {
+        let mut file = fs::File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .expect("Failed to open output file");
+        Some(move |slot: u64, block_info: BlockInfo| {
+            for (tx, info) in block_info.success_tx {
+                let account_keys_str = info
+                    .account_keys
+                    .into_iter()
+                    .map(|pk| pk.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let filters = info.matched_filters.join(",");
+                writeln!(file, "{slot} -- {tx}, {filters} {account_keys_str}")
+                    .expect("Failed to write to output file");
+            }
+        })
+    } else {
+        None
+    };
+
+    block_stats(rx, on_block_cb).await;
 }
 
 impl SubscribeArgs {
@@ -453,52 +516,6 @@ async fn stream_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, args: S
         }
     }
 }
-
-// async fn raydium_example<I: Interceptor>(mut client: GeyserGrpcClient<I>) {
-//     let request = SubscribeRequest {
-//         commitment: Some(CommitmentLevel::Confirmed.into()),
-//         transactions: HashMap::from([
-//             (
-//                 "raydium_concentrated_liquidity".to_owned(),
-//                 SubscribeRequestFilterTransactions {
-//                     account_required: vec![
-//                         Pubkey::from_str("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK").unwrap().to_string(),
-//                     ],
-//                     ..Default::default()
-//                 },
-//             ),
-//             (
-//                 "raydium_liquidity_poolv4".to_owned(),
-//                 SubscribeRequestFilterTransactions {
-//                     account_required: vec![
-//                         Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").unwrap().to_string(),
-//                     ],
-//                     ..Default::default()
-//                 },
-//             )
-//         ]),
-//         slots: HashMap::from([(
-//             "raydium".to_owned(),
-//             SubscribeRequestFilterSlots {
-//                 interslot_updates: Some(true),
-//                 ..Default::default()
-//             },
-//         )]),
-//         blocks_meta: HashMap::from([(
-//             "raydium".to_owned(),
-//             SubscribeRequestFilterBlocksMeta::default(),
-//         )]),
-//         entry: HashMap::from([("raydium".to_owned(), Default::default())]),
-//         ..Default::default()
-//     };
-
-//     let (_sink, rx) = client
-//         .subscribe_with_request(Some(request))
-//         .await
-//         .expect("Failed to subscribe");
-
-//     block_stats(rx).await;
-// }
 
 #[tokio::main]
 async fn main() {
