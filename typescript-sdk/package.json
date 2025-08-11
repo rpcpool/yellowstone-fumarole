@@ -30,9 +30,12 @@
   ],
   "homepage": "https://triton.one",
   "devDependencies": {
-    "ts-proto": "^2.7.7"
+    "ts-proto": "^2.7.7",
+    "typescript": "^5.2.2",
+    "@types/node": "^22.17.1"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "^2.6.3",
     "@grpc/grpc-js": "^1.13.4",
     "@types/js-yaml": "^4.0.9",
     "js-yaml": "^4.1.0"

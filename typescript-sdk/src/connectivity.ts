@@ -50,40 +50,92 @@ export class FumaroleGrpcConnector {
     };
 
     let channelCredentials: ChannelCredentials;
-    const metadataProvider = new MetadataProvider(this.config.xMetadata);
-    const callCredentials = credentials.createFromMetadataGenerator(
-      metadataProvider.getMetadata.bind(metadataProvider)
-    );
+    let insecureXToken: string | undefined;
 
-    if (this.config.xToken) {
-      // SSL credentials for HTTPS endpoint
-      const sslCreds = credentials.createSsl();
+    // Parse endpoint properly
+    const endpointURL = new URL(this.endpoint);
+    let port = endpointURL.port;
+    if (port === "") {
+      port = endpointURL.protocol === "https:" ? "443" : "80";
+    }
+    const address = `${endpointURL.hostname}:${port}`;
 
-      // Create call credentials with token
-      const authGenerator = new TritonAuthMetadataGenerator(this.config.xToken);
-      const callCreds = credentials.createFromMetadataGenerator(
-        authGenerator.generateMetadata.bind(authGenerator)
-      );
-
-      // Combine credentials
+    // Handle credentials based on protocol
+    if (endpointURL.protocol === "https:") {
       channelCredentials = credentials.combineChannelCredentials(
-        sslCreds,
-        callCreds
-      );
-      FumaroleGrpcConnector.logger.debug(
-        "Using secure channel with x-token authentication"
+        credentials.createSsl(),
+        credentials.createFromMetadataGenerator((_params, callback) => {
+          const metadata = new Metadata();
+          if (this.config.xToken) {
+            metadata.add("x-token", this.config.xToken);
+          }
+          if (this.config.xMetadata) {
+            Object.entries(this.config.xMetadata).forEach(([key, value]) => {
+              metadata.add(key, value);
+            });
+          }
+          callback(null, metadata);
+        })
       );
     } else {
       channelCredentials = credentials.createInsecure();
-      FumaroleGrpcConnector.logger.debug(
-        "Using insecure channel without authentication"
-      );
+      if (this.config.xToken) {
+        insecureXToken = this.config.xToken;
+      }
     }
 
-    // Create the client with credentials and options
-    const client = new FumaroleClient(this.endpoint, channelCredentials, {
+    // Create the client options with simpler settings
+    const clientOptions = {
       ...options,
-    });
+      "grpc.enable_http_proxy": 0,
+      // Basic keepalive settings
+      "grpc.keepalive_time_ms": 20000,
+      "grpc.keepalive_timeout_ms": 10000,
+      "grpc.http2.min_time_between_pings_ms": 10000,
+      // Connection settings
+      "grpc.initial_reconnect_backoff_ms": 100,
+      "grpc.max_reconnect_backoff_ms": 3000,
+      "grpc.min_reconnect_backoff_ms": 100,
+      // Enable retries
+      "grpc.enable_retries": 1,
+      "grpc.service_config": JSON.stringify({
+        methodConfig: [
+          {
+            name: [{}], // Apply to all methods
+            retryPolicy: {
+              maxAttempts: 5,
+              initialBackoff: "0.1s",
+              maxBackoff: "3s",
+              backoffMultiplier: 2,
+              retryableStatusCodes: ["UNAVAILABLE", "DEADLINE_EXCEEDED"],
+            },
+          },
+        ],
+      }),
+    };
+
+    // Create the client with credentials and options
+    const client = new FumaroleClient(
+      address,
+      channelCredentials,
+      clientOptions
+    );
+
+    // Do a simple connection check
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const deadline = Date.now() + 5000; // 5 second timeout
+        client.waitForReady(deadline, (err) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
+    } catch (error) {
+      throw error;
+    }
 
     return client;
   }

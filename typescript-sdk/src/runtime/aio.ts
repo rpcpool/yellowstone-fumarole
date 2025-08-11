@@ -6,6 +6,7 @@ import {
   FumeDownloadRequest,
   FumeOffset,
   FumeShardIdx,
+  CommitmentLevel,
 } from "./state-machine";
 import {
   SubscribeRequest,
@@ -129,7 +130,18 @@ export class AsyncioFumeDragonsmouthRuntime {
       case "pollHist": {
         const pollHist = controlResponse.pollHist!;
         LOGGER.debug(`Received poll history ${pollHist.events?.length} events`);
-        this.sm.queueBlockchainEvent(pollHist.events);
+        // Convert string slots to numbers and map commitment levels
+        const convertedEvents = (pollHist.events || []).map((event) => ({
+          offset: event.offset,
+          slot: Number(event.slot),
+          parentSlot: event.parentSlot ? Number(event.parentSlot) : undefined,
+          commitmentLevel: event.commitmentLevel as unknown as CommitmentLevel,
+          deadError: event.deadError,
+          blockchainId: event.blockchainId,
+          blockUid: event.blockUid,
+          numShards: Number(event.numShards),
+        }));
+        this.sm.queueBlockchainEvent(convertedEvents);
         break;
       }
       case "commitOffset": {
@@ -157,7 +169,7 @@ export class AsyncioFumeDragonsmouthRuntime {
     return this.subscribeRequest.commitment || 0;
   }
 
-  private scheduleDownloadTaskIfAny(): void {
+  private async scheduleDownloadTaskIfAny(): Promise<void> {
     while (true) {
       LOGGER.debug("Checking for download tasks to schedule");
       if (this.downloadTasks.size >= this.maxConcurrentDownload) {
@@ -165,7 +177,9 @@ export class AsyncioFumeDragonsmouthRuntime {
       }
 
       LOGGER.debug("Popping slot to download");
-      const downloadRequest = this.sm.popSlotToDownload(this.commitmentLevel());
+      const downloadRequest = await this.sm.popSlotToDownload(
+        this.commitmentLevel()
+      );
       if (!downloadRequest) {
         LOGGER.debug("No download request available");
         break;
@@ -328,9 +342,11 @@ export class AsyncioFumeDragonsmouthRuntime {
       await this.pollHistoryIfNeeded();
 
       LOGGER.debug("Scheduling download tasks if any");
-      this.scheduleDownloadTaskIfAny();
+      await this.scheduleDownloadTaskIfAny();
 
-      for (const [task] of this.downloadTasks) {
+      // Convert iterator to array to avoid --downlevelIteration requirement
+      const downloadTasks = Array.from(this.downloadTasks.keys());
+      for (const task of downloadTasks) {
         taskMap.set(task, "download_task");
       }
 
