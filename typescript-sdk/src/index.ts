@@ -144,7 +144,7 @@ export class FumaroleClient {
         for await (const update of controlPlaneStream) {
           await fumeControlPlaneRxQ.put(update);
         }
-      } catch (error) {
+      } catch (error: any) {
         if (error.code !== "CANCELLED") {
           throw error;
         }

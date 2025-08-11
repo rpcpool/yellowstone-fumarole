@@ -58,7 +58,7 @@ export class Queue<T> {
         try {
           const value = await this.get();
           return { done: false, value };
-        } catch (error) {
+        } catch (error: any) {
           if (error.message === "Queue shutdown") {
             return { done: true, value: undefined };
           }

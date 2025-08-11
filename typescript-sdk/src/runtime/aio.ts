@@ -119,7 +119,12 @@ export class AsyncioFumeDragonsmouthRuntime {
   private handleControlResponse(controlResponse: ControlResponse): void {
     // Get first defined property from controlResponse
     const responseField = Object.keys(controlResponse).find(
-      (key) => controlResponse[key] !== undefined && key !== "response"
+      (key): key is keyof ControlResponse => {
+        return (
+          controlResponse[key as keyof ControlResponse] !== undefined &&
+          key !== "response"
+        );
+      }
     );
 
     if (!responseField) {
@@ -276,7 +281,7 @@ export class AsyncioFumeDragonsmouthRuntime {
 
         try {
           await this.dragonsmouthOutlet.put(update);
-        } catch (error) {
+        } catch (error: any) {
           if (error.message === "Queue full") return;
           throw error;
         }
@@ -535,7 +540,7 @@ export class GrpcDownloadBlockTaskRun {
               totalEventDownloaded++;
               try {
                 await this.dragonsmouthOutlet.put(update);
-              } catch (error) {
+              } catch (error: any) {
                 if (error.message === "Queue shutdown") {
                   LOGGER.error("Dragonsmouth outlet is disconnected");
                   resolve({
