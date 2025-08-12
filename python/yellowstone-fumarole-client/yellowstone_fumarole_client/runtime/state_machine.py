@@ -235,7 +235,7 @@ class FumaroleSM:
             blockchain_event: BlockchainEvent = blockchain_event
             event_cl = blockchain_event.commitment_level
 
-            if event_cl < min_commitment:
+            if event_cl != min_commitment:
                 self.slot_status_update_queue.append(
                     FumeSlotStatus(
                         session_sequence=session_sequence,
