@@ -9,12 +9,7 @@ use {
         collections::{BTreeMap, HashMap, HashSet}, default, f64::consts::E, marker::PhantomData, ops::Sub, path::PathBuf, time::Duration
     }, tokio::time::Instant, tokio_stream::StreamExt, yellowstone_fumarole_client::config::FumaroleConfig, yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcBuilder}, yellowstone_grpc_proto::{
         geyser::{
-            subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
-            SubscribeRequestFilterAccounts, SubscribeRequestFilterBlocksMeta,
-            SubscribeRequestFilterSlots, SubscribeRequestFilterTransactions,
-            SubscribeUpdateAccount, SubscribeUpdateAccountInfo, SubscribeUpdateBlockMeta,
-            SubscribeUpdateEntry, SubscribeUpdateSlot, SubscribeUpdateTransaction,
-            SubscribeUpdateTransactionInfo,
+            subscribe_update::UpdateOneof, CommitmentLevel, SlotStatus, SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterSlots, SubscribeRequestFilterTransactions, SubscribeUpdateAccount, SubscribeUpdateAccountInfo, SubscribeUpdateBlockMeta, SubscribeUpdateEntry, SubscribeUpdateSlot, SubscribeUpdateTransaction, SubscribeUpdateTransactionInfo
         },
         prelude::{Message, TransactionStatusMeta},
     }
@@ -442,9 +437,8 @@ impl BlockConstruction {
     fn get_latest_slot_status(&self) -> Option<CommitmentLevel> {
         self.project_slots()
             .into_iter()
-            .map(|slot| slot.status)
+            .flat_map(|slot| CommitmentLevel::try_from(slot.status).ok())
             .max()
-            .map(|status_code| CommitmentLevel::try_from(status_code).expect("invalid commitment level"))
     }
 
     fn try_seal(&mut self) {
@@ -509,20 +503,22 @@ impl BlockConstruction {
         }
     }
 
-
-    fn chunk_on_account_write_conflict(&self) -> Vec<Vec<Signature>> {
+    fn chunk_on_account_write_conflict(&self) -> Vec<Vec<(u64, Signature)>> {
         let sigs = self.project_txs()
             .into_iter()
             .flat_map(|tx| tx.transaction.as_ref())
+            .filter(|tx| tx.meta.as_ref().unwrap().err.is_none())
             .map(|tx_info| {
                 let sig = tx_info.signature.as_slice();
-                Signature::try_from(sig).expect("Failed to parse signature")
+                let index = tx_info.index;
+                let sig = Signature::try_from(sig).expect("Failed to parse signature");
+                (index, sig)
             });
 
         let mut blocked_account = HashSet::new();
         let mut nonconflicting_batches = Vec::new();
         let mut curr_batch = Vec::new();
-        for sig in sigs {
+        for (tx_index, sig) in sigs {
             let pubkeys = self.tx_account_writes_index
                 .get(&sig)
                 .cloned()
@@ -530,18 +526,25 @@ impl BlockConstruction {
 
             for pubkey in pubkeys {
                 if blocked_account.insert(pubkey) {
-                    curr_batch.push(sig);
+                    curr_batch.push((tx_index, sig));
                 } else {
                     // If the pubkey is already in the blocked account set, it means
                     // that this transaction conflicts with a previous one.
                     // So we need to start a new batch.
                     nonconflicting_batches.push(curr_batch);
-                    curr_batch = vec![sig];
+                    curr_batch = vec![(tx_index, sig)];
                     blocked_account.clear();
                     blocked_account.insert(pubkey);
                 }
             }
         }
+
+        for batch in nonconflicting_batches.iter() {
+            let min = batch.iter().map(|(index, _)| *index).min().unwrap_or(0);
+            let max = batch.iter().map(|(index, _)| *index).max().unwrap_or(0);
+            println!("Batch min index: {}, max index: {}", min, max);
+        }
+
         nonconflicting_batches
     }
 
@@ -712,6 +715,8 @@ impl BlockConstruction {
                 //         assert!(previous_index < tx_index, "tx index not in order {} < {}", previous_index, tx_index);
                 //     }
                 // }
+                let tx_index = tx.transaction.as_ref().unwrap().index;
+                println!("tx_index: {}", tx_index);
                 self.tx_vec.push(i);
                 rollback_plan_from(|this, _| { this.tx_vec.pop(); })
             }
@@ -727,6 +732,10 @@ impl BlockConstruction {
                 // println!("{}", entry.index);
                 let entry_index = entry.index;
                 let starting_idx = entry.starting_transaction_index as usize;
+                let total_transaction_count = self.tx_vec.len();
+                let total_entries_tx_count = self.project_entries().into_iter().map(|entry| entry.executed_transaction_count).sum::<u64>();
+                println!("entry_index: {entry_index}, starting_idx: {starting_idx}, executed_transaction_count: {}, total tx recv: {total_transaction_count}, total cumu entry tx count: {total_entries_tx_count}", entry.executed_transaction_count);
+
                 // entry.
                 if let Some(last) = self.entries_vec.last() {
                     let event = &self.events[*last];
@@ -743,6 +752,10 @@ impl BlockConstruction {
                     let previous_index = entry2.index;
                     assert!(previous_index < entry_index, "entry index not in order {} < {}", previous_index, entry_index);
                     assert!(last_starting_idx <= starting_idx, "entry starting index not in order {} < {}", last_starting_idx, starting_idx);
+                } else {
+                    let expected_cnt = entry.executed_transaction_count as usize;
+                    let total_tx = self.tx_vec.len();
+                    assert!(entry.starting_transaction_index == 0, "entry {entry:?}, expected_cnt = {expected_cnt}, total_tx = {total_tx}");
                 }
                 if entry.executed_transaction_count <= 1 {
                     // println!("entry tx count <= 1, {}", entry.executed_transaction_count);
@@ -955,7 +968,10 @@ async fn main() {
                 ..Default::default()
             },
         )]),
-        slots: HashMap::from([("f1".to_owned(), Default::default())]),
+        slots: HashMap::from([("f1".to_owned(), SubscribeRequestFilterSlots {
+            interslot_updates: Some(true),
+            ..Default::default()
+        })]),
         blocks_meta: HashMap::from([("f1".to_owned(), Default::default())]),
         entry: HashMap::from([("f1".to_owned(), Default::default())]),
         commitment: Some(CommitmentLevel::Processed as i32),
@@ -983,7 +999,20 @@ async fn main() {
                 UpdateOneof::Account(subscribe_update_account) => {
                     Some(subscribe_update_account.slot)
                 }
-                UpdateOneof::Slot(subscribe_update_slot) => Some(subscribe_update_slot.slot),
+                UpdateOneof::Slot(subscribe_update_slot) => {
+                    if subscribe_update_slot.status() == SlotStatus::SlotFirstShredReceived {
+                        if block_construction_map.len() == 1 {
+                            continue;
+                        }
+                        block_construction_map.entry(subscribe_update_slot.slot)
+                            .or_insert_with(|| BlockConstruction::init(subscribe_update_slot.slot));
+                    }
+                    if CommitmentLevel::try_from(subscribe_update_slot.status).is_err()
+                    {
+                        continue;
+                    }
+                    Some(subscribe_update_slot.slot)
+                }
                 UpdateOneof::Transaction(subscribe_update_transaction) => {
                     Some(subscribe_update_transaction.slot)
                 }
@@ -1005,15 +1034,9 @@ async fn main() {
                 }
             };
 
-            // if !block_construction_map.contains_key(&slot) {
-            //     if block_construction_map.len() > 10 {
-            //         continue;
-            //     }
-            // }
-
-            let block = block_construction_map
-                .entry(slot)
-                .or_insert_with(|| BlockConstruction::init(slot));
+            let Some(block) = block_construction_map.get_mut(&slot) else {
+                continue;
+            };
 
             match block.try_add_event(oneof) {
                 Ok(_) => {
@@ -1021,6 +1044,7 @@ async fn main() {
                         // let block = block_construction_map.remove(&slot).expect("block not found");
                         let summary = block.summarize_timeline();
                         println!("Block {slot} sealed");
+                        return;
                     }
                 }
                 Err(e) => match e {
