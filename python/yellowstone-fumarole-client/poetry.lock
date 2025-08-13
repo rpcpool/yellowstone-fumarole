@@ -46,18 +46,6 @@ jupyter = ["ipython (>=7.8.0)", "tokenize-rt (>=3.2.0)"]
 uvloop = ["uvloop (>=0.15.2)"]
 
 [[package]]
-name = "boltons"
-version = "25.0.0"
-description = "When they're not builtins, they're boltons."
-optional = false
-python-versions = ">=3.7"
-groups = ["main"]
-files = [
-    {file = "boltons-25.0.0-py3-none-any.whl", hash = "sha256:dc9fb38bf28985715497d1b54d00b62ea866eca3938938ea9043e254a3a6ca62"},
-    {file = "boltons-25.0.0.tar.gz", hash = "sha256:e110fbdc30b7b9868cb604e3f71d4722dd8f4dcb4a5ddd06028ba8f1ab0b5ace"},
-]
-
-[[package]]
 name = "click"
 version = "8.2.1"
 description = "Composable command line interface toolkit"
@@ -507,4 +495,4 @@ type = ["importlib_metadata (>=7.0.2) ; python_version < \"3.10\"", "jaraco.deve
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.13"
-content-hash = "7f9e1feb2ff3ba916c025e492300b72581605806b6025268dcdf60aba8beb1e5"
+content-hash = "5e2379d55aa4cc6e3331da0164992c88bbd69d230f96cd564e4bc82b3a239310"
