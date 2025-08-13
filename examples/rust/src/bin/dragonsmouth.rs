@@ -504,7 +504,7 @@ impl BlockConstruction {
     }
 
     fn chunk_on_account_write_conflict(&self) -> Vec<Vec<(u64, Signature)>> {
-        let sigs = self.project_txs()
+        let mut sigs = self.project_txs()
             .into_iter()
             .flat_map(|tx| tx.transaction.as_ref())
             .filter(|tx| tx.meta.as_ref().unwrap().err.is_none())
@@ -513,7 +513,11 @@ impl BlockConstruction {
                 let index = tx_info.index;
                 let sig = Signature::try_from(sig).expect("Failed to parse signature");
                 (index, sig)
-            });
+            })
+            .collect::<Vec<_>>();
+
+        sigs.sort_by_key(|(index, _)| *index);
+
 
         let mut blocked_account = HashSet::new();
         let mut nonconflicting_batches = Vec::new();
