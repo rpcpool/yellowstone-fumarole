@@ -22,7 +22,6 @@ class Interval:
 
         Args:
             interval: The interval in seconds.
-            factory: A factory that returns a coroutine to be run at the interval.
         """
         self.interval = interval
 
