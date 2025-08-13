@@ -4,6 +4,7 @@ from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
     CommitmentLevel,
     BlockchainEvent,
 )
+from yellowstone_fumarole_client.utils.collections import OrderedSet
 import heapq
 import uuid
 from enum import Enum
@@ -107,7 +108,7 @@ class FumaroleSM:
     def __init__(self, last_committed_offset: FumeOffset, slot_memory_retention: int):
         self.last_committed_offset = last_committed_offset
         self.slot_commitment_progression = dict()  # Slot -> SlotCommitmentProgression
-        self.downloaded_slot = set()  # Set of downloaded slots
+        self.downloaded_slot = OrderedSet()  # Set of downloaded slots
         self.inflight_slot_shard_download = {}  # Slot -> SlotDownloadProgress
         self.blocked_slot_status_update = defaultdict(
             deque
@@ -138,7 +139,7 @@ class FumaroleSM:
     def gc(self) -> None:
         """Garbage collect old slots to respect memory retention limit."""
         while len(self.downloaded_slot) > self.slot_memory_retention:
-            slot = self.downloaded_slot.pop(0) if self.downloaded_slot else None
+            slot = self.downloaded_slot.popfirst() if self.downloaded_slot else None
             if slot is None:
                 break
             self.slot_commitment_progression.pop(slot, None)
