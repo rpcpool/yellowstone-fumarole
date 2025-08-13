@@ -1,7 +1,7 @@
 [package]
 name = "yellowstone-fumarole-cli"
 description = "Yellowstone Fumarole CLI"
-version = "0.1.0-rc9+solana.2"
+version = "0.1.0+solana.2"
 authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
