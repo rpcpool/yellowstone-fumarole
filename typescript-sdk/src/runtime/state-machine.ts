@@ -1,9 +1,26 @@
 import { BlockchainEvent } from "../grpc/fumarole";
 import { CommitmentLevel } from "../grpc/geyser";
-import { Queue as Deque } from "./queue";
+import { BinaryHeap } from "./binary-heap";
+
+class Queue<T> {
+  private items: T[] = [];
+  
+  push(item: T): void {
+    this.items.push(item);
+  }
+
+  shift(): T | undefined {
+    return this.items.shift();
+  }
+
+  get length(): number {
+    return this.items.length;
+  }
+}
 
 // Constants
 export const DEFAULT_SLOT_MEMORY_RETENTION = 10000;
+export const MINIMUM_UNPROCESSED_BLOCKCHAIN_EVENT = 10;
 
 // Type aliases
 export type FumeBlockchainId = Uint8Array; // Equivalent to [u8; 16]
@@ -69,309 +86,297 @@ export enum SlotDownloadState {
 }
 
 export class FumaroleSM {
-  private slotCommitmentProgression = new Map<
+  private slot_commitment_progression = new Map<
     Slot,
     SlotCommitmentProgression
   >();
-  private downloadedSlot = new Set<Slot>();
-  private inflightSlotShardDownload = new Map<Slot, SlotDownloadProgress>();
-  private blockedSlotStatusUpdate = new Map<Slot, Deque<FumeSlotStatus>>();
-  private slotStatusUpdateQueue = new Deque<FumeSlotStatus>();
-  private processedOffset: [bigint, bigint][] = []; // Min-heap for (sequence, offset)
-  private maxSlotDetected = 0n;
-  private unprocessedBlockchainEvent = new Deque<
+  private downloaded_slot = new Set<Slot>();
+  private inflight_slot_shard_download = new Map<Slot, SlotDownloadProgress>();
+  private blocked_slot_status_update = new Map<Slot, Queue<FumeSlotStatus>>();
+  private slot_status_update_queue = new Queue<FumeSlotStatus>();
+  private processed_offset = new BinaryHeap<[FumeSessionSequence, FumeOffset]>(
+    (
+      a: [FumeSessionSequence, FumeOffset],
+      b: [FumeSessionSequence, FumeOffset]
+    ) => {
+      // Implementing Reverse ordering as in Rust
+      if (a[0] === b[0]) return 0;
+      return a[0] > b[0] ? 1 : -1;
+    }
+  );
+  private unprocessed_blockchain_event = new Queue<
     [FumeSessionSequence, BlockchainEvent]
   >();
   private sequence = 1n;
-  private lastProcessedFumeSequence = 0n;
-  private sequenceToOffset = new Map<FumeSessionSequence, FumeOffset>();
-  private _committableOffset: FumeOffset;
-  private _lastCommittedOffset: FumeOffset;
+  private sequence_to_offset = new Map<FumeSessionSequence, FumeOffset>();
+  public max_slot_detected: Slot = 0n;
+  private last_processed_fume_sequence = 0n;
+  public committable_offset: FumeOffset;
 
   constructor(
-    lastCommittedOffset: FumeOffset,
-    private readonly slotMemoryRetention: number
+    public last_committed_offset: FumeOffset,
+    private slot_memory_retention: number = DEFAULT_SLOT_MEMORY_RETENTION
   ) {
-    this._lastCommittedOffset = lastCommittedOffset;
-    this._committableOffset = lastCommittedOffset;
-  }
-
-  get lastCommittedOffset(): FumeOffset {
-    return this._lastCommittedOffset;
-  }
-
-  get committableOffset(): FumeOffset {
-    return this._committableOffset;
+    this.committable_offset = last_committed_offset;
   }
 
   public updateCommittedOffset(offset: FumeOffset): void {
-    if (BigInt(offset) < BigInt(this._lastCommittedOffset)) {
-      throw new Error("Offset must be >= last committed offset");
+    if (offset < this.last_committed_offset) {
+      throw new Error(
+        "offset must be greater than or equal to last committed offset"
+      );
     }
-    this._lastCommittedOffset = offset;
+    this.last_committed_offset = offset;
   }
 
-  private nextSequence(): bigint {
+  private nextSequence(): FumeSessionSequence {
     const ret = this.sequence;
-    this.sequence += 1n;
+    this.sequence = this.sequence + 1n;
     return ret;
   }
 
   public gc(): void {
-    while (this.downloadedSlot.size > this.slotMemoryRetention) {
-      // Get the first slot (oldest) from the set
-      const slot = this.downloadedSlot.values().next().value;
-      if (!slot) break;
+    while (this.downloaded_slot.size > this.slot_memory_retention) {
+      const firstSlot = Array.from(this.downloaded_slot)[0];
+      if (!firstSlot) break;
 
-      this.downloadedSlot.delete(slot);
-      this.slotCommitmentProgression.delete(slot);
-      this.inflightSlotShardDownload.delete(slot);
-      this.blockedSlotStatusUpdate.delete(slot);
+      this.downloaded_slot.delete(firstSlot);
+      this.slot_commitment_progression.delete(firstSlot);
+      this.inflight_slot_shard_download.delete(firstSlot);
+      this.blocked_slot_status_update.delete(firstSlot);
     }
   }
 
-  public async queueBlockchainEvent(events: BlockchainEvent[]): Promise<void> {
+  public queueBlockchainEvent(events: BlockchainEvent[]): void {
     for (const event of events) {
-      if (BigInt(event.offset) < BigInt(this._lastCommittedOffset)) {
+      if (event.offset < this.last_committed_offset) {
         continue;
       }
 
-      if (event.slot > this.maxSlotDetected) {
-        this.maxSlotDetected = event.slot;
+      if (event.slot > this.max_slot_detected) {
+        this.max_slot_detected = event.slot;
       }
 
       const sequence = this.nextSequence();
-      this.sequenceToOffset.set(sequence, event.offset);
+      this.sequence_to_offset.set(sequence, event.offset);
 
-      if (this.downloadedSlot.has(event.slot)) {
+      if (this.downloaded_slot.has(event.slot)) {
         const fumeStatus = new FumeSlotStatus(
           sequence,
           event.offset,
           event.slot,
           event.parentSlot,
-          event.commitmentLevel,
+          event.commitmentLevel as CommitmentLevel,
           event.deadError
         );
 
-        if (this.inflightSlotShardDownload.has(event.slot)) {
-          let blockedQueue = this.blockedSlotStatusUpdate.get(event.slot);
-          if (!blockedQueue) {
-            blockedQueue = new Deque<FumeSlotStatus>();
-            this.blockedSlotStatusUpdate.set(event.slot, blockedQueue);
+        if (this.inflight_slot_shard_download.has(event.slot)) {
+          // This event is blocked by a slot download currently in progress
+          let queue = this.blocked_slot_status_update.get(event.slot);
+          if (!queue) {
+            queue = new Queue<FumeSlotStatus>();
+            this.blocked_slot_status_update.set(event.slot, queue);
           }
-          await blockedQueue.put(fumeStatus);
+          queue.push(fumeStatus);
         } else {
-          await this.slotStatusUpdateQueue.put(fumeStatus);
+          // Fast track this event
+          this.slot_status_update_queue.push(fumeStatus);
         }
       } else {
-        await this.unprocessedBlockchainEvent.put([sequence, event]);
+        this.unprocessed_blockchain_event.push([sequence, event]);
       }
     }
   }
 
-  public async makeSlotDownloadProgress(
+  public makeSlotDownloadProgress(
     slot: Slot,
     shardIdx: FumeShardIdx
-  ): Promise<SlotDownloadState> {
-    const downloadProgress = this.inflightSlotShardDownload.get(slot);
+  ): SlotDownloadState {
+    const downloadProgress = this.inflight_slot_shard_download.get(slot);
     if (!downloadProgress) {
-      throw new Error("Slot not in download");
+      throw new Error("slot not in download");
     }
 
     const downloadState = downloadProgress.doProgress(shardIdx);
 
     if (downloadState === SlotDownloadState.Done) {
-      this.inflightSlotShardDownload.delete(slot);
-      this.downloadedSlot.add(slot);
-
-      if (!this.slotCommitmentProgression.has(slot)) {
-        this.slotCommitmentProgression.set(
+      this.inflight_slot_shard_download.delete(slot);
+      this.downloaded_slot.add(slot);
+      if (!this.slot_commitment_progression.has(slot)) {
+        this.slot_commitment_progression.set(
           slot,
           new SlotCommitmentProgression()
         );
       }
 
-      const blockedStatuses = this.blockedSlotStatusUpdate.get(slot);
-      if (blockedStatuses) {
-        // Move all blocked statuses to the main queue
-        while (!blockedStatuses.isEmpty()) {
-          const status = await blockedStatuses.get();
-          if (status) await this.slotStatusUpdateQueue.put(status);
-        }
-        this.blockedSlotStatusUpdate.delete(slot);
+      const blockedSlotStatus =
+        this.blocked_slot_status_update.get(slot) ??
+        new Queue<FumeSlotStatus>();
+      this.blocked_slot_status_update.delete(slot);
+      while (blockedSlotStatus.length > 0) {
+        const status = blockedSlotStatus.shift();
+        if (status) this.slot_status_update_queue.push(status);
       }
     }
-
     return downloadState;
   }
 
-  public async popNextSlotStatus(): Promise<FumeSlotStatus | null> {
-    while (!this.slotStatusUpdateQueue.isEmpty()) {
-      const slotStatus = await this.slotStatusUpdateQueue.get();
-      if (!slotStatus) continue;
+  public popNextSlotStatus(): FumeSlotStatus | undefined {
+    while (this.slot_status_update_queue.length > 0) {
+      const slotStatus = this.slot_status_update_queue.shift();
+      if (!slotStatus) return undefined;
 
-      const commitmentHistory = this.slotCommitmentProgression.get(
+      const commitmentHistory = this.slot_commitment_progression.get(
         slotStatus.slot
       );
-      if (
-        commitmentHistory &&
-        !commitmentHistory.hasProcessedCommitment(slotStatus.commitmentLevel)
-      ) {
-        commitmentHistory.addProcessedCommitment(slotStatus.commitmentLevel);
-        return slotStatus;
-      } else if (!commitmentHistory) {
-        throw new Error("Slot status should not be available here");
+      if (commitmentHistory) {
+        if (
+          !commitmentHistory.hasProcessedCommitment(slotStatus.commitmentLevel)
+        ) {
+          commitmentHistory.addProcessedCommitment(slotStatus.commitmentLevel);
+          return slotStatus;
+        }
+        // We already processed this commitment level
+        continue;
+      } else {
+        // This should be unreachable as per Rust implementation
+        throw new Error("slot status should not be available here");
       }
     }
-    return null;
+    return undefined;
   }
 
-  private makeSureSlotCommitmentProgressionExists(
+  private makeSlotCommitmentProgressionExists(
     slot: Slot
   ): SlotCommitmentProgression {
-    let progression = this.slotCommitmentProgression.get(slot);
+    let progression = this.slot_commitment_progression.get(slot);
     if (!progression) {
       progression = new SlotCommitmentProgression();
-      this.slotCommitmentProgression.set(slot, progression);
+      this.slot_commitment_progression.set(slot, progression);
     }
     return progression;
   }
 
-  public async popSlotToDownload(
-    commitment = CommitmentLevel.PROCESSED
-  ): Promise<FumeDownloadRequest | null> {
-    while (!this.unprocessedBlockchainEvent.isEmpty()) {
-      const eventPair = await this.unprocessedBlockchainEvent.get();
-      if (!eventPair) continue;
+  public popSlotToDownload(
+    commitment?: CommitmentLevel
+  ): FumeDownloadRequest | undefined {
+    while (this.unprocessed_blockchain_event.length > 0) {
+      const minCommitment = commitment ?? CommitmentLevel.PROCESSED;
+      const next = this.unprocessed_blockchain_event.shift();
+      if (!next) return undefined;
+      const [sessionSequence, event] = next;
+      if (!event) return undefined;
 
-      const [sessionSequence, blockchainEvent] = eventPair;
-      const eventCl = blockchainEvent.commitmentLevel;
+      const eventCommitmentLevel = event.commitmentLevel as CommitmentLevel;
 
-      if (eventCl < commitment) {
-        await this.slotStatusUpdateQueue.put(
+      if (eventCommitmentLevel !== minCommitment) {
+        this.slot_status_update_queue.push(
           new FumeSlotStatus(
             sessionSequence,
-            blockchainEvent.offset,
-            blockchainEvent.slot,
-            blockchainEvent.parentSlot,
-            eventCl,
-            blockchainEvent.deadError
+            event.offset,
+            event.slot,
+            event.parentSlot,
+            eventCommitmentLevel,
+            event.deadError
           )
         );
-        this.makeSureSlotCommitmentProgressionExists(blockchainEvent.slot);
+        this.makeSlotCommitmentProgressionExists(event.slot);
         continue;
       }
 
-      if (this.downloadedSlot.has(blockchainEvent.slot)) {
-        this.makeSureSlotCommitmentProgressionExists(blockchainEvent.slot);
-        const progression = this.slotCommitmentProgression.get(
-          blockchainEvent.slot
-        );
-        if (progression && progression.hasProcessedCommitment(eventCl)) {
+      if (this.downloaded_slot.has(event.slot)) {
+        this.makeSlotCommitmentProgressionExists(event.slot);
+        const progression = this.slot_commitment_progression.get(event.slot);
+        if (!progression) {
+          throw new Error("slot status should not be available here");
+        }
+
+        if (progression.hasProcessedCommitment(eventCommitmentLevel)) {
           this.markEventAsProcessed(sessionSequence);
           continue;
         }
 
-        await this.slotStatusUpdateQueue.put(
+        this.slot_status_update_queue.push(
           new FumeSlotStatus(
             sessionSequence,
-            blockchainEvent.offset,
-            blockchainEvent.slot,
-            blockchainEvent.parentSlot,
-            eventCl,
-            blockchainEvent.deadError
+            event.offset,
+            event.slot,
+            event.parentSlot,
+            eventCommitmentLevel,
+            event.deadError
           )
         );
       } else {
-        const blockchainId = new Uint8Array(blockchainEvent.blockchainId);
-        const blockUid = new Uint8Array(blockchainEvent.blockUid);
-        if (!this.inflightSlotShardDownload.has(blockchainEvent.slot)) {
+        let queue = this.blocked_slot_status_update.get(event.slot);
+        if (!queue) {
+          queue = new Queue<FumeSlotStatus>();
+          this.blocked_slot_status_update.set(event.slot, queue);
+        }
+        queue.push(
+          new FumeSlotStatus(
+            sessionSequence,
+            event.offset,
+            event.slot,
+            event.parentSlot,
+            eventCommitmentLevel,
+            event.deadError
+          )
+        );
+
+        if (!this.inflight_slot_shard_download.has(event.slot)) {
           const downloadRequest = new FumeDownloadRequest(
-            blockchainEvent.slot,
-            blockchainId,
-            blockUid,
-            blockchainEvent.numShards,
-            eventCl
+            event.slot,
+            event.blockchainId,
+            event.blockUid,
+            event.numShards,
+            eventCommitmentLevel
           );
-
-          const downloadProgress = new SlotDownloadProgress(
-            blockchainEvent.numShards
-          );
-          this.inflightSlotShardDownload.set(
-            blockchainEvent.slot,
-            downloadProgress
-          );
-
-          let blockedQueue = this.blockedSlotStatusUpdate.get(
-            blockchainEvent.slot
-          );
-          if (!blockedQueue) {
-            blockedQueue = new Deque<FumeSlotStatus>();
-            this.blockedSlotStatusUpdate.set(
-              blockchainEvent.slot,
-              blockedQueue
-            );
-          }
-
-          await blockedQueue.put(
-            new FumeSlotStatus(
-              sessionSequence,
-              blockchainEvent.offset,
-              blockchainEvent.slot,
-              blockchainEvent.parentSlot,
-              eventCl,
-              blockchainEvent.deadError
-            )
-          );
-
+          const downloadProgress = new SlotDownloadProgress(event.numShards);
+          this.inflight_slot_shard_download.set(event.slot, downloadProgress);
           return downloadRequest;
         }
       }
     }
-    return null;
-  }
-
-  public markEventAsProcessed(eventSeqNumber: FumeSessionSequence): void {
-    const fumeOffset = this.sequenceToOffset.get(eventSeqNumber);
-    if (!fumeOffset) {
-      throw new Error("Event sequence number not found");
-    }
-    this.sequenceToOffset.delete(eventSeqNumber);
-
-    // Use negative values for the min-heap (to simulate max-heap behavior)
-    this.processedOffset.push([-eventSeqNumber, fumeOffset]);
-    this.processedOffset.sort((a, b) => {
-      if (a[0] < b[0]) return -1;
-      if (a[0] > b[0]) return 1;
-      return 0;
-    });// Keep sorted as a min-heap
-
-    while (this.processedOffset.length > 0) {
-      const [seq, offset] = this.processedOffset[0];
-      const positiveSeq = -seq; // Convert back to positive
-
-      if (positiveSeq !== this.lastProcessedFumeSequence + 1n) {
-        break;
-      }
-
-      this.processedOffset.shift();
-      this._committableOffset = offset;
-      this.lastProcessedFumeSequence = positiveSeq;
-    }
+    return undefined;
   }
 
   public slotStatusUpdateQueueLen(): number {
-    return this.slotStatusUpdateQueue.size();
+    return this.slot_status_update_queue.length;
+  }
+
+  public markEventAsProcessed(eventSeqNumber: FumeSessionSequence): void {
+    const fumeOffset = this.sequence_to_offset.get(eventSeqNumber);
+    if (!fumeOffset) {
+      throw new Error("event sequence number not found");
+    }
+    this.sequence_to_offset.delete(eventSeqNumber);
+    this.processed_offset.push([eventSeqNumber, fumeOffset]);
+
+    while (true) {
+      const tuple = this.processed_offset.peek();
+      if (!tuple) break;
+
+      const [blockedEventSeqNumber2, fumeOffset2] = tuple;
+      if (blockedEventSeqNumber2 !== this.last_processed_fume_sequence + 1n) {
+        break;
+      }
+
+      this.processed_offset.pop();
+      this.committable_offset = fumeOffset2;
+      this.last_processed_fume_sequence = blockedEventSeqNumber2;
+    }
   }
 
   public processedOffsetQueueLen(): number {
-    return this.processedOffset.length;
+    return this.processed_offset.length;
   }
 
   public needNewBlockchainEvents(): boolean {
     return (
-      this.slotStatusUpdateQueue.isEmpty() &&
-      this.blockedSlotStatusUpdate.size === 0
+      this.unprocessed_blockchain_event.length <
+        MINIMUM_UNPROCESSED_BLOCKCHAIN_EVENT ||
+      (this.slot_status_update_queue.length === 0 &&
+        this.blocked_slot_status_update.size === 0)
     );
   }
 }
