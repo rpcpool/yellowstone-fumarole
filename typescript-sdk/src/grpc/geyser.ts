@@ -145,7 +145,7 @@ export interface SubscribeRequest {
   commitment?: CommitmentLevel | undefined;
   accountsDataSlice: SubscribeRequestAccountsDataSlice[];
   ping?: SubscribeRequestPing | undefined;
-  fromSlot?: string | undefined;
+  fromSlot?: bigint | undefined;
 }
 
 export interface SubscribeRequest_AccountsEntry {
@@ -192,23 +192,23 @@ export interface SubscribeRequestFilterAccounts {
 
 export interface SubscribeRequestFilterAccountsFilter {
   memcmp?: SubscribeRequestFilterAccountsFilterMemcmp | undefined;
-  datasize?: string | undefined;
+  datasize?: bigint | undefined;
   tokenAccountState?: boolean | undefined;
   lamports?: SubscribeRequestFilterAccountsFilterLamports | undefined;
 }
 
 export interface SubscribeRequestFilterAccountsFilterMemcmp {
-  offset: string;
+  offset: bigint;
   bytes?: Uint8Array | undefined;
   base58?: string | undefined;
   base64?: string | undefined;
 }
 
 export interface SubscribeRequestFilterAccountsFilterLamports {
-  eq?: string | undefined;
-  ne?: string | undefined;
-  lt?: string | undefined;
-  gt?: string | undefined;
+  eq?: bigint | undefined;
+  ne?: bigint | undefined;
+  lt?: bigint | undefined;
+  gt?: bigint | undefined;
 }
 
 export interface SubscribeRequestFilterSlots {
@@ -239,8 +239,8 @@ export interface SubscribeRequestFilterEntry {
 }
 
 export interface SubscribeRequestAccountsDataSlice {
-  offset: string;
-  length: string;
+  offset: bigint;
+  length: bigint;
 }
 
 export interface SubscribeRequestPing {
@@ -263,31 +263,31 @@ export interface SubscribeUpdate {
 
 export interface SubscribeUpdateAccount {
   account: SubscribeUpdateAccountInfo | undefined;
-  slot: string;
+  slot: bigint;
   isStartup: boolean;
 }
 
 export interface SubscribeUpdateAccountInfo {
   pubkey: Uint8Array;
-  lamports: string;
+  lamports: bigint;
   owner: Uint8Array;
   executable: boolean;
-  rentEpoch: string;
+  rentEpoch: bigint;
   data: Uint8Array;
-  writeVersion: string;
+  writeVersion: bigint;
   txnSignature?: Uint8Array | undefined;
 }
 
 export interface SubscribeUpdateSlot {
-  slot: string;
-  parent?: string | undefined;
+  slot: bigint;
+  parent?: bigint | undefined;
   status: SlotStatus;
   deadError?: string | undefined;
 }
 
 export interface SubscribeUpdateTransaction {
   transaction: SubscribeUpdateTransactionInfo | undefined;
-  slot: string;
+  slot: bigint;
 }
 
 export interface SubscribeUpdateTransactionInfo {
@@ -295,53 +295,53 @@ export interface SubscribeUpdateTransactionInfo {
   isVote: boolean;
   transaction: Transaction | undefined;
   meta: TransactionStatusMeta | undefined;
-  index: string;
+  index: bigint;
 }
 
 export interface SubscribeUpdateTransactionStatus {
-  slot: string;
+  slot: bigint;
   signature: Uint8Array;
   isVote: boolean;
-  index: string;
+  index: bigint;
   err: TransactionError | undefined;
 }
 
 export interface SubscribeUpdateBlock {
-  slot: string;
+  slot: bigint;
   blockhash: string;
   rewards: Rewards | undefined;
   blockTime: UnixTimestamp | undefined;
   blockHeight: BlockHeight | undefined;
-  parentSlot: string;
+  parentSlot: bigint;
   parentBlockhash: string;
-  executedTransactionCount: string;
+  executedTransactionCount: bigint;
   transactions: SubscribeUpdateTransactionInfo[];
-  updatedAccountCount: string;
+  updatedAccountCount: bigint;
   accounts: SubscribeUpdateAccountInfo[];
-  entriesCount: string;
+  entriesCount: bigint;
   entries: SubscribeUpdateEntry[];
 }
 
 export interface SubscribeUpdateBlockMeta {
-  slot: string;
+  slot: bigint;
   blockhash: string;
   rewards: Rewards | undefined;
   blockTime: UnixTimestamp | undefined;
   blockHeight: BlockHeight | undefined;
-  parentSlot: string;
+  parentSlot: bigint;
   parentBlockhash: string;
-  executedTransactionCount: string;
-  entriesCount: string;
+  executedTransactionCount: bigint;
+  entriesCount: bigint;
 }
 
 export interface SubscribeUpdateEntry {
-  slot: string;
-  index: string;
-  numHashes: string;
+  slot: bigint;
+  index: bigint;
+  numHashes: bigint;
   hash: Uint8Array;
-  executedTransactionCount: string;
+  executedTransactionCount: bigint;
   /** added in v1.18, for solana 1.17 value is always 0 */
-  startingTransactionIndex: string;
+  startingTransactionIndex: bigint;
 }
 
 export interface SubscribeUpdatePing {
@@ -355,7 +355,7 @@ export interface SubscribeReplayInfoRequest {
 }
 
 export interface SubscribeReplayInfoResponse {
-  firstAvailable?: string | undefined;
+  firstAvailable?: bigint | undefined;
 }
 
 export interface PingRequest {
@@ -371,9 +371,9 @@ export interface GetLatestBlockhashRequest {
 }
 
 export interface GetLatestBlockhashResponse {
-  slot: string;
+  slot: bigint;
   blockhash: string;
-  lastValidBlockHeight: string;
+  lastValidBlockHeight: bigint;
 }
 
 export interface GetBlockHeightRequest {
@@ -381,7 +381,7 @@ export interface GetBlockHeightRequest {
 }
 
 export interface GetBlockHeightResponse {
-  blockHeight: string;
+  blockHeight: bigint;
 }
 
 export interface GetSlotRequest {
@@ -389,7 +389,7 @@ export interface GetSlotRequest {
 }
 
 export interface GetSlotResponse {
-  slot: string;
+  slot: bigint;
 }
 
 export interface GetVersionRequest {
@@ -405,7 +405,7 @@ export interface IsBlockhashValidRequest {
 }
 
 export interface IsBlockhashValidResponse {
-  slot: string;
+  slot: bigint;
   valid: boolean;
 }
 
@@ -458,6 +458,9 @@ export const SubscribeRequest: MessageFns<SubscribeRequest> = {
       SubscribeRequestPing.encode(message.ping, writer.uint32(74).fork()).join();
     }
     if (message.fromSlot !== undefined) {
+      if (BigInt.asUintN(64, message.fromSlot) !== message.fromSlot) {
+        throw new globalThis.Error("value provided for field message.fromSlot of type uint64 too large");
+      }
       writer.uint32(88).uint64(message.fromSlot);
     }
     return writer;
@@ -576,7 +579,7 @@ export const SubscribeRequest: MessageFns<SubscribeRequest> = {
             break;
           }
 
-          message.fromSlot = reader.uint64().toString();
+          message.fromSlot = reader.uint64() as bigint;
           continue;
         }
       }
@@ -649,7 +652,7 @@ export const SubscribeRequest: MessageFns<SubscribeRequest> = {
         ? object.accountsDataSlice.map((e: any) => SubscribeRequestAccountsDataSlice.fromJSON(e))
         : [],
       ping: isSet(object.ping) ? SubscribeRequestPing.fromJSON(object.ping) : undefined,
-      fromSlot: isSet(object.fromSlot) ? globalThis.String(object.fromSlot) : undefined,
+      fromSlot: isSet(object.fromSlot) ? BigInt(object.fromSlot) : undefined,
     };
   },
 
@@ -728,7 +731,7 @@ export const SubscribeRequest: MessageFns<SubscribeRequest> = {
       obj.ping = SubscribeRequestPing.toJSON(message.ping);
     }
     if (message.fromSlot !== undefined) {
-      obj.fromSlot = message.fromSlot;
+      obj.fromSlot = message.fromSlot.toString();
     }
     return obj;
   },
@@ -1493,6 +1496,9 @@ export const SubscribeRequestFilterAccountsFilter: MessageFns<SubscribeRequestFi
       SubscribeRequestFilterAccountsFilterMemcmp.encode(message.memcmp, writer.uint32(10).fork()).join();
     }
     if (message.datasize !== undefined) {
+      if (BigInt.asUintN(64, message.datasize) !== message.datasize) {
+        throw new globalThis.Error("value provided for field message.datasize of type uint64 too large");
+      }
       writer.uint32(16).uint64(message.datasize);
     }
     if (message.tokenAccountState !== undefined) {
@@ -1524,7 +1530,7 @@ export const SubscribeRequestFilterAccountsFilter: MessageFns<SubscribeRequestFi
             break;
           }
 
-          message.datasize = reader.uint64().toString();
+          message.datasize = reader.uint64() as bigint;
           continue;
         }
         case 3: {
@@ -1555,7 +1561,7 @@ export const SubscribeRequestFilterAccountsFilter: MessageFns<SubscribeRequestFi
   fromJSON(object: any): SubscribeRequestFilterAccountsFilter {
     return {
       memcmp: isSet(object.memcmp) ? SubscribeRequestFilterAccountsFilterMemcmp.fromJSON(object.memcmp) : undefined,
-      datasize: isSet(object.datasize) ? globalThis.String(object.datasize) : undefined,
+      datasize: isSet(object.datasize) ? BigInt(object.datasize) : undefined,
       tokenAccountState: isSet(object.tokenAccountState) ? globalThis.Boolean(object.tokenAccountState) : undefined,
       lamports: isSet(object.lamports)
         ? SubscribeRequestFilterAccountsFilterLamports.fromJSON(object.lamports)
@@ -1569,7 +1575,7 @@ export const SubscribeRequestFilterAccountsFilter: MessageFns<SubscribeRequestFi
       obj.memcmp = SubscribeRequestFilterAccountsFilterMemcmp.toJSON(message.memcmp);
     }
     if (message.datasize !== undefined) {
-      obj.datasize = message.datasize;
+      obj.datasize = message.datasize.toString();
     }
     if (message.tokenAccountState !== undefined) {
       obj.tokenAccountState = message.tokenAccountState;
@@ -1602,12 +1608,15 @@ export const SubscribeRequestFilterAccountsFilter: MessageFns<SubscribeRequestFi
 };
 
 function createBaseSubscribeRequestFilterAccountsFilterMemcmp(): SubscribeRequestFilterAccountsFilterMemcmp {
-  return { offset: "0", bytes: undefined, base58: undefined, base64: undefined };
+  return { offset: 0n, bytes: undefined, base58: undefined, base64: undefined };
 }
 
 export const SubscribeRequestFilterAccountsFilterMemcmp: MessageFns<SubscribeRequestFilterAccountsFilterMemcmp> = {
   encode(message: SubscribeRequestFilterAccountsFilterMemcmp, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.offset !== "0") {
+    if (message.offset !== 0n) {
+      if (BigInt.asUintN(64, message.offset) !== message.offset) {
+        throw new globalThis.Error("value provided for field message.offset of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.offset);
     }
     if (message.bytes !== undefined) {
@@ -1634,7 +1643,7 @@ export const SubscribeRequestFilterAccountsFilterMemcmp: MessageFns<SubscribeReq
             break;
           }
 
-          message.offset = reader.uint64().toString();
+          message.offset = reader.uint64() as bigint;
           continue;
         }
         case 2: {
@@ -1672,7 +1681,7 @@ export const SubscribeRequestFilterAccountsFilterMemcmp: MessageFns<SubscribeReq
 
   fromJSON(object: any): SubscribeRequestFilterAccountsFilterMemcmp {
     return {
-      offset: isSet(object.offset) ? globalThis.String(object.offset) : "0",
+      offset: isSet(object.offset) ? BigInt(object.offset) : 0n,
       bytes: isSet(object.bytes) ? bytesFromBase64(object.bytes) : undefined,
       base58: isSet(object.base58) ? globalThis.String(object.base58) : undefined,
       base64: isSet(object.base64) ? globalThis.String(object.base64) : undefined,
@@ -1681,8 +1690,8 @@ export const SubscribeRequestFilterAccountsFilterMemcmp: MessageFns<SubscribeReq
 
   toJSON(message: SubscribeRequestFilterAccountsFilterMemcmp): unknown {
     const obj: any = {};
-    if (message.offset !== "0") {
-      obj.offset = message.offset;
+    if (message.offset !== 0n) {
+      obj.offset = message.offset.toString();
     }
     if (message.bytes !== undefined) {
       obj.bytes = base64FromBytes(message.bytes);
@@ -1705,7 +1714,7 @@ export const SubscribeRequestFilterAccountsFilterMemcmp: MessageFns<SubscribeReq
     object: I,
   ): SubscribeRequestFilterAccountsFilterMemcmp {
     const message = createBaseSubscribeRequestFilterAccountsFilterMemcmp();
-    message.offset = object.offset ?? "0";
+    message.offset = object.offset ?? 0n;
     message.bytes = object.bytes ?? undefined;
     message.base58 = object.base58 ?? undefined;
     message.base64 = object.base64 ?? undefined;
@@ -1723,15 +1732,27 @@ export const SubscribeRequestFilterAccountsFilterLamports: MessageFns<SubscribeR
     writer: BinaryWriter = new BinaryWriter(),
   ): BinaryWriter {
     if (message.eq !== undefined) {
+      if (BigInt.asUintN(64, message.eq) !== message.eq) {
+        throw new globalThis.Error("value provided for field message.eq of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.eq);
     }
     if (message.ne !== undefined) {
+      if (BigInt.asUintN(64, message.ne) !== message.ne) {
+        throw new globalThis.Error("value provided for field message.ne of type uint64 too large");
+      }
       writer.uint32(16).uint64(message.ne);
     }
     if (message.lt !== undefined) {
+      if (BigInt.asUintN(64, message.lt) !== message.lt) {
+        throw new globalThis.Error("value provided for field message.lt of type uint64 too large");
+      }
       writer.uint32(24).uint64(message.lt);
     }
     if (message.gt !== undefined) {
+      if (BigInt.asUintN(64, message.gt) !== message.gt) {
+        throw new globalThis.Error("value provided for field message.gt of type uint64 too large");
+      }
       writer.uint32(32).uint64(message.gt);
     }
     return writer;
@@ -1749,7 +1770,7 @@ export const SubscribeRequestFilterAccountsFilterLamports: MessageFns<SubscribeR
             break;
           }
 
-          message.eq = reader.uint64().toString();
+          message.eq = reader.uint64() as bigint;
           continue;
         }
         case 2: {
@@ -1757,7 +1778,7 @@ export const SubscribeRequestFilterAccountsFilterLamports: MessageFns<SubscribeR
             break;
           }
 
-          message.ne = reader.uint64().toString();
+          message.ne = reader.uint64() as bigint;
           continue;
         }
         case 3: {
@@ -1765,7 +1786,7 @@ export const SubscribeRequestFilterAccountsFilterLamports: MessageFns<SubscribeR
             break;
           }
 
-          message.lt = reader.uint64().toString();
+          message.lt = reader.uint64() as bigint;
           continue;
         }
         case 4: {
@@ -1773,7 +1794,7 @@ export const SubscribeRequestFilterAccountsFilterLamports: MessageFns<SubscribeR
             break;
           }
 
-          message.gt = reader.uint64().toString();
+          message.gt = reader.uint64() as bigint;
           continue;
         }
       }
@@ -1787,26 +1808,26 @@ export const SubscribeRequestFilterAccountsFilterLamports: MessageFns<SubscribeR
 
   fromJSON(object: any): SubscribeRequestFilterAccountsFilterLamports {
     return {
-      eq: isSet(object.eq) ? globalThis.String(object.eq) : undefined,
-      ne: isSet(object.ne) ? globalThis.String(object.ne) : undefined,
-      lt: isSet(object.lt) ? globalThis.String(object.lt) : undefined,
-      gt: isSet(object.gt) ? globalThis.String(object.gt) : undefined,
+      eq: isSet(object.eq) ? BigInt(object.eq) : undefined,
+      ne: isSet(object.ne) ? BigInt(object.ne) : undefined,
+      lt: isSet(object.lt) ? BigInt(object.lt) : undefined,
+      gt: isSet(object.gt) ? BigInt(object.gt) : undefined,
     };
   },
 
   toJSON(message: SubscribeRequestFilterAccountsFilterLamports): unknown {
     const obj: any = {};
     if (message.eq !== undefined) {
-      obj.eq = message.eq;
+      obj.eq = message.eq.toString();
     }
     if (message.ne !== undefined) {
-      obj.ne = message.ne;
+      obj.ne = message.ne.toString();
     }
     if (message.lt !== undefined) {
-      obj.lt = message.lt;
+      obj.lt = message.lt.toString();
     }
     if (message.gt !== undefined) {
-      obj.gt = message.gt;
+      obj.gt = message.gt.toString();
     }
     return obj;
   },
@@ -2264,15 +2285,21 @@ export const SubscribeRequestFilterEntry: MessageFns<SubscribeRequestFilterEntry
 };
 
 function createBaseSubscribeRequestAccountsDataSlice(): SubscribeRequestAccountsDataSlice {
-  return { offset: "0", length: "0" };
+  return { offset: 0n, length: 0n };
 }
 
 export const SubscribeRequestAccountsDataSlice: MessageFns<SubscribeRequestAccountsDataSlice> = {
   encode(message: SubscribeRequestAccountsDataSlice, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.offset !== "0") {
+    if (message.offset !== 0n) {
+      if (BigInt.asUintN(64, message.offset) !== message.offset) {
+        throw new globalThis.Error("value provided for field message.offset of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.offset);
     }
-    if (message.length !== "0") {
+    if (message.length !== 0n) {
+      if (BigInt.asUintN(64, message.length) !== message.length) {
+        throw new globalThis.Error("value provided for field message.length of type uint64 too large");
+      }
       writer.uint32(16).uint64(message.length);
     }
     return writer;
@@ -2290,7 +2317,7 @@ export const SubscribeRequestAccountsDataSlice: MessageFns<SubscribeRequestAccou
             break;
           }
 
-          message.offset = reader.uint64().toString();
+          message.offset = reader.uint64() as bigint;
           continue;
         }
         case 2: {
@@ -2298,7 +2325,7 @@ export const SubscribeRequestAccountsDataSlice: MessageFns<SubscribeRequestAccou
             break;
           }
 
-          message.length = reader.uint64().toString();
+          message.length = reader.uint64() as bigint;
           continue;
         }
       }
@@ -2312,18 +2339,18 @@ export const SubscribeRequestAccountsDataSlice: MessageFns<SubscribeRequestAccou
 
   fromJSON(object: any): SubscribeRequestAccountsDataSlice {
     return {
-      offset: isSet(object.offset) ? globalThis.String(object.offset) : "0",
-      length: isSet(object.length) ? globalThis.String(object.length) : "0",
+      offset: isSet(object.offset) ? BigInt(object.offset) : 0n,
+      length: isSet(object.length) ? BigInt(object.length) : 0n,
     };
   },
 
   toJSON(message: SubscribeRequestAccountsDataSlice): unknown {
     const obj: any = {};
-    if (message.offset !== "0") {
-      obj.offset = message.offset;
+    if (message.offset !== 0n) {
+      obj.offset = message.offset.toString();
     }
-    if (message.length !== "0") {
-      obj.length = message.length;
+    if (message.length !== 0n) {
+      obj.length = message.length.toString();
     }
     return obj;
   },
@@ -2337,8 +2364,8 @@ export const SubscribeRequestAccountsDataSlice: MessageFns<SubscribeRequestAccou
     object: I,
   ): SubscribeRequestAccountsDataSlice {
     const message = createBaseSubscribeRequestAccountsDataSlice();
-    message.offset = object.offset ?? "0";
-    message.length = object.length ?? "0";
+    message.offset = object.offset ?? 0n;
+    message.length = object.length ?? 0n;
     return message;
   },
 };
@@ -2654,7 +2681,7 @@ export const SubscribeUpdate: MessageFns<SubscribeUpdate> = {
 };
 
 function createBaseSubscribeUpdateAccount(): SubscribeUpdateAccount {
-  return { account: undefined, slot: "0", isStartup: false };
+  return { account: undefined, slot: 0n, isStartup: false };
 }
 
 export const SubscribeUpdateAccount: MessageFns<SubscribeUpdateAccount> = {
@@ -2662,7 +2689,10 @@ export const SubscribeUpdateAccount: MessageFns<SubscribeUpdateAccount> = {
     if (message.account !== undefined) {
       SubscribeUpdateAccountInfo.encode(message.account, writer.uint32(10).fork()).join();
     }
-    if (message.slot !== "0") {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
       writer.uint32(16).uint64(message.slot);
     }
     if (message.isStartup !== false) {
@@ -2691,7 +2721,7 @@ export const SubscribeUpdateAccount: MessageFns<SubscribeUpdateAccount> = {
             break;
           }
 
-          message.slot = reader.uint64().toString();
+          message.slot = reader.uint64() as bigint;
           continue;
         }
         case 3: {
@@ -2714,7 +2744,7 @@ export const SubscribeUpdateAccount: MessageFns<SubscribeUpdateAccount> = {
   fromJSON(object: any): SubscribeUpdateAccount {
     return {
       account: isSet(object.account) ? SubscribeUpdateAccountInfo.fromJSON(object.account) : undefined,
-      slot: isSet(object.slot) ? globalThis.String(object.slot) : "0",
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
       isStartup: isSet(object.isStartup) ? globalThis.Boolean(object.isStartup) : false,
     };
   },
@@ -2724,8 +2754,8 @@ export const SubscribeUpdateAccount: MessageFns<SubscribeUpdateAccount> = {
     if (message.account !== undefined) {
       obj.account = SubscribeUpdateAccountInfo.toJSON(message.account);
     }
-    if (message.slot !== "0") {
-      obj.slot = message.slot;
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
     }
     if (message.isStartup !== false) {
       obj.isStartup = message.isStartup;
@@ -2741,7 +2771,7 @@ export const SubscribeUpdateAccount: MessageFns<SubscribeUpdateAccount> = {
     message.account = (object.account !== undefined && object.account !== null)
       ? SubscribeUpdateAccountInfo.fromPartial(object.account)
       : undefined;
-    message.slot = object.slot ?? "0";
+    message.slot = object.slot ?? 0n;
     message.isStartup = object.isStartup ?? false;
     return message;
   },
@@ -2750,12 +2780,12 @@ export const SubscribeUpdateAccount: MessageFns<SubscribeUpdateAccount> = {
 function createBaseSubscribeUpdateAccountInfo(): SubscribeUpdateAccountInfo {
   return {
     pubkey: new Uint8Array(0),
-    lamports: "0",
+    lamports: 0n,
     owner: new Uint8Array(0),
     executable: false,
-    rentEpoch: "0",
+    rentEpoch: 0n,
     data: new Uint8Array(0),
-    writeVersion: "0",
+    writeVersion: 0n,
     txnSignature: undefined,
   };
 }
@@ -2765,7 +2795,10 @@ export const SubscribeUpdateAccountInfo: MessageFns<SubscribeUpdateAccountInfo> 
     if (message.pubkey.length !== 0) {
       writer.uint32(10).bytes(message.pubkey);
     }
-    if (message.lamports !== "0") {
+    if (message.lamports !== 0n) {
+      if (BigInt.asUintN(64, message.lamports) !== message.lamports) {
+        throw new globalThis.Error("value provided for field message.lamports of type uint64 too large");
+      }
       writer.uint32(16).uint64(message.lamports);
     }
     if (message.owner.length !== 0) {
@@ -2774,13 +2807,19 @@ export const SubscribeUpdateAccountInfo: MessageFns<SubscribeUpdateAccountInfo> 
     if (message.executable !== false) {
       writer.uint32(32).bool(message.executable);
     }
-    if (message.rentEpoch !== "0") {
+    if (message.rentEpoch !== 0n) {
+      if (BigInt.asUintN(64, message.rentEpoch) !== message.rentEpoch) {
+        throw new globalThis.Error("value provided for field message.rentEpoch of type uint64 too large");
+      }
       writer.uint32(40).uint64(message.rentEpoch);
     }
     if (message.data.length !== 0) {
       writer.uint32(50).bytes(message.data);
     }
-    if (message.writeVersion !== "0") {
+    if (message.writeVersion !== 0n) {
+      if (BigInt.asUintN(64, message.writeVersion) !== message.writeVersion) {
+        throw new globalThis.Error("value provided for field message.writeVersion of type uint64 too large");
+      }
       writer.uint32(56).uint64(message.writeVersion);
     }
     if (message.txnSignature !== undefined) {
@@ -2809,7 +2848,7 @@ export const SubscribeUpdateAccountInfo: MessageFns<SubscribeUpdateAccountInfo> 
             break;
           }
 
-          message.lamports = reader.uint64().toString();
+          message.lamports = reader.uint64() as bigint;
           continue;
         }
         case 3: {
@@ -2833,7 +2872,7 @@ export const SubscribeUpdateAccountInfo: MessageFns<SubscribeUpdateAccountInfo> 
             break;
           }
 
-          message.rentEpoch = reader.uint64().toString();
+          message.rentEpoch = reader.uint64() as bigint;
           continue;
         }
         case 6: {
@@ -2849,7 +2888,7 @@ export const SubscribeUpdateAccountInfo: MessageFns<SubscribeUpdateAccountInfo> 
             break;
           }
 
-          message.writeVersion = reader.uint64().toString();
+          message.writeVersion = reader.uint64() as bigint;
           continue;
         }
         case 8: {
@@ -2872,12 +2911,12 @@ export const SubscribeUpdateAccountInfo: MessageFns<SubscribeUpdateAccountInfo> 
   fromJSON(object: any): SubscribeUpdateAccountInfo {
     return {
       pubkey: isSet(object.pubkey) ? bytesFromBase64(object.pubkey) : new Uint8Array(0),
-      lamports: isSet(object.lamports) ? globalThis.String(object.lamports) : "0",
+      lamports: isSet(object.lamports) ? BigInt(object.lamports) : 0n,
       owner: isSet(object.owner) ? bytesFromBase64(object.owner) : new Uint8Array(0),
       executable: isSet(object.executable) ? globalThis.Boolean(object.executable) : false,
-      rentEpoch: isSet(object.rentEpoch) ? globalThis.String(object.rentEpoch) : "0",
+      rentEpoch: isSet(object.rentEpoch) ? BigInt(object.rentEpoch) : 0n,
       data: isSet(object.data) ? bytesFromBase64(object.data) : new Uint8Array(0),
-      writeVersion: isSet(object.writeVersion) ? globalThis.String(object.writeVersion) : "0",
+      writeVersion: isSet(object.writeVersion) ? BigInt(object.writeVersion) : 0n,
       txnSignature: isSet(object.txnSignature) ? bytesFromBase64(object.txnSignature) : undefined,
     };
   },
@@ -2887,8 +2926,8 @@ export const SubscribeUpdateAccountInfo: MessageFns<SubscribeUpdateAccountInfo> 
     if (message.pubkey.length !== 0) {
       obj.pubkey = base64FromBytes(message.pubkey);
     }
-    if (message.lamports !== "0") {
-      obj.lamports = message.lamports;
+    if (message.lamports !== 0n) {
+      obj.lamports = message.lamports.toString();
     }
     if (message.owner.length !== 0) {
       obj.owner = base64FromBytes(message.owner);
@@ -2896,14 +2935,14 @@ export const SubscribeUpdateAccountInfo: MessageFns<SubscribeUpdateAccountInfo> 
     if (message.executable !== false) {
       obj.executable = message.executable;
     }
-    if (message.rentEpoch !== "0") {
-      obj.rentEpoch = message.rentEpoch;
+    if (message.rentEpoch !== 0n) {
+      obj.rentEpoch = message.rentEpoch.toString();
     }
     if (message.data.length !== 0) {
       obj.data = base64FromBytes(message.data);
     }
-    if (message.writeVersion !== "0") {
-      obj.writeVersion = message.writeVersion;
+    if (message.writeVersion !== 0n) {
+      obj.writeVersion = message.writeVersion.toString();
     }
     if (message.txnSignature !== undefined) {
       obj.txnSignature = base64FromBytes(message.txnSignature);
@@ -2917,27 +2956,33 @@ export const SubscribeUpdateAccountInfo: MessageFns<SubscribeUpdateAccountInfo> 
   fromPartial<I extends Exact<DeepPartial<SubscribeUpdateAccountInfo>, I>>(object: I): SubscribeUpdateAccountInfo {
     const message = createBaseSubscribeUpdateAccountInfo();
     message.pubkey = object.pubkey ?? new Uint8Array(0);
-    message.lamports = object.lamports ?? "0";
+    message.lamports = object.lamports ?? 0n;
     message.owner = object.owner ?? new Uint8Array(0);
     message.executable = object.executable ?? false;
-    message.rentEpoch = object.rentEpoch ?? "0";
+    message.rentEpoch = object.rentEpoch ?? 0n;
     message.data = object.data ?? new Uint8Array(0);
-    message.writeVersion = object.writeVersion ?? "0";
+    message.writeVersion = object.writeVersion ?? 0n;
     message.txnSignature = object.txnSignature ?? undefined;
     return message;
   },
 };
 
 function createBaseSubscribeUpdateSlot(): SubscribeUpdateSlot {
-  return { slot: "0", parent: undefined, status: 0, deadError: undefined };
+  return { slot: 0n, parent: undefined, status: 0, deadError: undefined };
 }
 
 export const SubscribeUpdateSlot: MessageFns<SubscribeUpdateSlot> = {
   encode(message: SubscribeUpdateSlot, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.slot !== "0") {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.slot);
     }
     if (message.parent !== undefined) {
+      if (BigInt.asUintN(64, message.parent) !== message.parent) {
+        throw new globalThis.Error("value provided for field message.parent of type uint64 too large");
+      }
       writer.uint32(16).uint64(message.parent);
     }
     if (message.status !== 0) {
@@ -2961,7 +3006,7 @@ export const SubscribeUpdateSlot: MessageFns<SubscribeUpdateSlot> = {
             break;
           }
 
-          message.slot = reader.uint64().toString();
+          message.slot = reader.uint64() as bigint;
           continue;
         }
         case 2: {
@@ -2969,7 +3014,7 @@ export const SubscribeUpdateSlot: MessageFns<SubscribeUpdateSlot> = {
             break;
           }
 
-          message.parent = reader.uint64().toString();
+          message.parent = reader.uint64() as bigint;
           continue;
         }
         case 3: {
@@ -2999,8 +3044,8 @@ export const SubscribeUpdateSlot: MessageFns<SubscribeUpdateSlot> = {
 
   fromJSON(object: any): SubscribeUpdateSlot {
     return {
-      slot: isSet(object.slot) ? globalThis.String(object.slot) : "0",
-      parent: isSet(object.parent) ? globalThis.String(object.parent) : undefined,
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
+      parent: isSet(object.parent) ? BigInt(object.parent) : undefined,
       status: isSet(object.status) ? slotStatusFromJSON(object.status) : 0,
       deadError: isSet(object.deadError) ? globalThis.String(object.deadError) : undefined,
     };
@@ -3008,11 +3053,11 @@ export const SubscribeUpdateSlot: MessageFns<SubscribeUpdateSlot> = {
 
   toJSON(message: SubscribeUpdateSlot): unknown {
     const obj: any = {};
-    if (message.slot !== "0") {
-      obj.slot = message.slot;
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
     }
     if (message.parent !== undefined) {
-      obj.parent = message.parent;
+      obj.parent = message.parent.toString();
     }
     if (message.status !== 0) {
       obj.status = slotStatusToJSON(message.status);
@@ -3028,7 +3073,7 @@ export const SubscribeUpdateSlot: MessageFns<SubscribeUpdateSlot> = {
   },
   fromPartial<I extends Exact<DeepPartial<SubscribeUpdateSlot>, I>>(object: I): SubscribeUpdateSlot {
     const message = createBaseSubscribeUpdateSlot();
-    message.slot = object.slot ?? "0";
+    message.slot = object.slot ?? 0n;
     message.parent = object.parent ?? undefined;
     message.status = object.status ?? 0;
     message.deadError = object.deadError ?? undefined;
@@ -3037,7 +3082,7 @@ export const SubscribeUpdateSlot: MessageFns<SubscribeUpdateSlot> = {
 };
 
 function createBaseSubscribeUpdateTransaction(): SubscribeUpdateTransaction {
-  return { transaction: undefined, slot: "0" };
+  return { transaction: undefined, slot: 0n };
 }
 
 export const SubscribeUpdateTransaction: MessageFns<SubscribeUpdateTransaction> = {
@@ -3045,7 +3090,10 @@ export const SubscribeUpdateTransaction: MessageFns<SubscribeUpdateTransaction> 
     if (message.transaction !== undefined) {
       SubscribeUpdateTransactionInfo.encode(message.transaction, writer.uint32(10).fork()).join();
     }
-    if (message.slot !== "0") {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
       writer.uint32(16).uint64(message.slot);
     }
     return writer;
@@ -3071,7 +3119,7 @@ export const SubscribeUpdateTransaction: MessageFns<SubscribeUpdateTransaction> 
             break;
           }
 
-          message.slot = reader.uint64().toString();
+          message.slot = reader.uint64() as bigint;
           continue;
         }
       }
@@ -3086,7 +3134,7 @@ export const SubscribeUpdateTransaction: MessageFns<SubscribeUpdateTransaction> 
   fromJSON(object: any): SubscribeUpdateTransaction {
     return {
       transaction: isSet(object.transaction) ? SubscribeUpdateTransactionInfo.fromJSON(object.transaction) : undefined,
-      slot: isSet(object.slot) ? globalThis.String(object.slot) : "0",
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
     };
   },
 
@@ -3095,8 +3143,8 @@ export const SubscribeUpdateTransaction: MessageFns<SubscribeUpdateTransaction> 
     if (message.transaction !== undefined) {
       obj.transaction = SubscribeUpdateTransactionInfo.toJSON(message.transaction);
     }
-    if (message.slot !== "0") {
-      obj.slot = message.slot;
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
     }
     return obj;
   },
@@ -3109,13 +3157,13 @@ export const SubscribeUpdateTransaction: MessageFns<SubscribeUpdateTransaction> 
     message.transaction = (object.transaction !== undefined && object.transaction !== null)
       ? SubscribeUpdateTransactionInfo.fromPartial(object.transaction)
       : undefined;
-    message.slot = object.slot ?? "0";
+    message.slot = object.slot ?? 0n;
     return message;
   },
 };
 
 function createBaseSubscribeUpdateTransactionInfo(): SubscribeUpdateTransactionInfo {
-  return { signature: new Uint8Array(0), isVote: false, transaction: undefined, meta: undefined, index: "0" };
+  return { signature: new Uint8Array(0), isVote: false, transaction: undefined, meta: undefined, index: 0n };
 }
 
 export const SubscribeUpdateTransactionInfo: MessageFns<SubscribeUpdateTransactionInfo> = {
@@ -3132,7 +3180,10 @@ export const SubscribeUpdateTransactionInfo: MessageFns<SubscribeUpdateTransacti
     if (message.meta !== undefined) {
       TransactionStatusMeta.encode(message.meta, writer.uint32(34).fork()).join();
     }
-    if (message.index !== "0") {
+    if (message.index !== 0n) {
+      if (BigInt.asUintN(64, message.index) !== message.index) {
+        throw new globalThis.Error("value provided for field message.index of type uint64 too large");
+      }
       writer.uint32(40).uint64(message.index);
     }
     return writer;
@@ -3182,7 +3233,7 @@ export const SubscribeUpdateTransactionInfo: MessageFns<SubscribeUpdateTransacti
             break;
           }
 
-          message.index = reader.uint64().toString();
+          message.index = reader.uint64() as bigint;
           continue;
         }
       }
@@ -3200,7 +3251,7 @@ export const SubscribeUpdateTransactionInfo: MessageFns<SubscribeUpdateTransacti
       isVote: isSet(object.isVote) ? globalThis.Boolean(object.isVote) : false,
       transaction: isSet(object.transaction) ? Transaction.fromJSON(object.transaction) : undefined,
       meta: isSet(object.meta) ? TransactionStatusMeta.fromJSON(object.meta) : undefined,
-      index: isSet(object.index) ? globalThis.String(object.index) : "0",
+      index: isSet(object.index) ? BigInt(object.index) : 0n,
     };
   },
 
@@ -3218,8 +3269,8 @@ export const SubscribeUpdateTransactionInfo: MessageFns<SubscribeUpdateTransacti
     if (message.meta !== undefined) {
       obj.meta = TransactionStatusMeta.toJSON(message.meta);
     }
-    if (message.index !== "0") {
-      obj.index = message.index;
+    if (message.index !== 0n) {
+      obj.index = message.index.toString();
     }
     return obj;
   },
@@ -3239,18 +3290,21 @@ export const SubscribeUpdateTransactionInfo: MessageFns<SubscribeUpdateTransacti
     message.meta = (object.meta !== undefined && object.meta !== null)
       ? TransactionStatusMeta.fromPartial(object.meta)
       : undefined;
-    message.index = object.index ?? "0";
+    message.index = object.index ?? 0n;
     return message;
   },
 };
 
 function createBaseSubscribeUpdateTransactionStatus(): SubscribeUpdateTransactionStatus {
-  return { slot: "0", signature: new Uint8Array(0), isVote: false, index: "0", err: undefined };
+  return { slot: 0n, signature: new Uint8Array(0), isVote: false, index: 0n, err: undefined };
 }
 
 export const SubscribeUpdateTransactionStatus: MessageFns<SubscribeUpdateTransactionStatus> = {
   encode(message: SubscribeUpdateTransactionStatus, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.slot !== "0") {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.slot);
     }
     if (message.signature.length !== 0) {
@@ -3259,7 +3313,10 @@ export const SubscribeUpdateTransactionStatus: MessageFns<SubscribeUpdateTransac
     if (message.isVote !== false) {
       writer.uint32(24).bool(message.isVote);
     }
-    if (message.index !== "0") {
+    if (message.index !== 0n) {
+      if (BigInt.asUintN(64, message.index) !== message.index) {
+        throw new globalThis.Error("value provided for field message.index of type uint64 too large");
+      }
       writer.uint32(32).uint64(message.index);
     }
     if (message.err !== undefined) {
@@ -3280,7 +3337,7 @@ export const SubscribeUpdateTransactionStatus: MessageFns<SubscribeUpdateTransac
             break;
           }
 
-          message.slot = reader.uint64().toString();
+          message.slot = reader.uint64() as bigint;
           continue;
         }
         case 2: {
@@ -3304,7 +3361,7 @@ export const SubscribeUpdateTransactionStatus: MessageFns<SubscribeUpdateTransac
             break;
           }
 
-          message.index = reader.uint64().toString();
+          message.index = reader.uint64() as bigint;
           continue;
         }
         case 5: {
@@ -3326,18 +3383,18 @@ export const SubscribeUpdateTransactionStatus: MessageFns<SubscribeUpdateTransac
 
   fromJSON(object: any): SubscribeUpdateTransactionStatus {
     return {
-      slot: isSet(object.slot) ? globalThis.String(object.slot) : "0",
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
       signature: isSet(object.signature) ? bytesFromBase64(object.signature) : new Uint8Array(0),
       isVote: isSet(object.isVote) ? globalThis.Boolean(object.isVote) : false,
-      index: isSet(object.index) ? globalThis.String(object.index) : "0",
+      index: isSet(object.index) ? BigInt(object.index) : 0n,
       err: isSet(object.err) ? TransactionError.fromJSON(object.err) : undefined,
     };
   },
 
   toJSON(message: SubscribeUpdateTransactionStatus): unknown {
     const obj: any = {};
-    if (message.slot !== "0") {
-      obj.slot = message.slot;
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
     }
     if (message.signature.length !== 0) {
       obj.signature = base64FromBytes(message.signature);
@@ -3345,8 +3402,8 @@ export const SubscribeUpdateTransactionStatus: MessageFns<SubscribeUpdateTransac
     if (message.isVote !== false) {
       obj.isVote = message.isVote;
     }
-    if (message.index !== "0") {
-      obj.index = message.index;
+    if (message.index !== 0n) {
+      obj.index = message.index.toString();
     }
     if (message.err !== undefined) {
       obj.err = TransactionError.toJSON(message.err);
@@ -3363,10 +3420,10 @@ export const SubscribeUpdateTransactionStatus: MessageFns<SubscribeUpdateTransac
     object: I,
   ): SubscribeUpdateTransactionStatus {
     const message = createBaseSubscribeUpdateTransactionStatus();
-    message.slot = object.slot ?? "0";
+    message.slot = object.slot ?? 0n;
     message.signature = object.signature ?? new Uint8Array(0);
     message.isVote = object.isVote ?? false;
-    message.index = object.index ?? "0";
+    message.index = object.index ?? 0n;
     message.err = (object.err !== undefined && object.err !== null)
       ? TransactionError.fromPartial(object.err)
       : undefined;
@@ -3376,25 +3433,28 @@ export const SubscribeUpdateTransactionStatus: MessageFns<SubscribeUpdateTransac
 
 function createBaseSubscribeUpdateBlock(): SubscribeUpdateBlock {
   return {
-    slot: "0",
+    slot: 0n,
     blockhash: "",
     rewards: undefined,
     blockTime: undefined,
     blockHeight: undefined,
-    parentSlot: "0",
+    parentSlot: 0n,
     parentBlockhash: "",
-    executedTransactionCount: "0",
+    executedTransactionCount: 0n,
     transactions: [],
-    updatedAccountCount: "0",
+    updatedAccountCount: 0n,
     accounts: [],
-    entriesCount: "0",
+    entriesCount: 0n,
     entries: [],
   };
 }
 
 export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
   encode(message: SubscribeUpdateBlock, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.slot !== "0") {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.slot);
     }
     if (message.blockhash !== "") {
@@ -3409,25 +3469,39 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
     if (message.blockHeight !== undefined) {
       BlockHeight.encode(message.blockHeight, writer.uint32(42).fork()).join();
     }
-    if (message.parentSlot !== "0") {
+    if (message.parentSlot !== 0n) {
+      if (BigInt.asUintN(64, message.parentSlot) !== message.parentSlot) {
+        throw new globalThis.Error("value provided for field message.parentSlot of type uint64 too large");
+      }
       writer.uint32(56).uint64(message.parentSlot);
     }
     if (message.parentBlockhash !== "") {
       writer.uint32(66).string(message.parentBlockhash);
     }
-    if (message.executedTransactionCount !== "0") {
+    if (message.executedTransactionCount !== 0n) {
+      if (BigInt.asUintN(64, message.executedTransactionCount) !== message.executedTransactionCount) {
+        throw new globalThis.Error(
+          "value provided for field message.executedTransactionCount of type uint64 too large",
+        );
+      }
       writer.uint32(72).uint64(message.executedTransactionCount);
     }
     for (const v of message.transactions) {
       SubscribeUpdateTransactionInfo.encode(v!, writer.uint32(50).fork()).join();
     }
-    if (message.updatedAccountCount !== "0") {
+    if (message.updatedAccountCount !== 0n) {
+      if (BigInt.asUintN(64, message.updatedAccountCount) !== message.updatedAccountCount) {
+        throw new globalThis.Error("value provided for field message.updatedAccountCount of type uint64 too large");
+      }
       writer.uint32(80).uint64(message.updatedAccountCount);
     }
     for (const v of message.accounts) {
       SubscribeUpdateAccountInfo.encode(v!, writer.uint32(90).fork()).join();
     }
-    if (message.entriesCount !== "0") {
+    if (message.entriesCount !== 0n) {
+      if (BigInt.asUintN(64, message.entriesCount) !== message.entriesCount) {
+        throw new globalThis.Error("value provided for field message.entriesCount of type uint64 too large");
+      }
       writer.uint32(96).uint64(message.entriesCount);
     }
     for (const v of message.entries) {
@@ -3448,7 +3522,7 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
             break;
           }
 
-          message.slot = reader.uint64().toString();
+          message.slot = reader.uint64() as bigint;
           continue;
         }
         case 2: {
@@ -3488,7 +3562,7 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
             break;
           }
 
-          message.parentSlot = reader.uint64().toString();
+          message.parentSlot = reader.uint64() as bigint;
           continue;
         }
         case 8: {
@@ -3504,7 +3578,7 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
             break;
           }
 
-          message.executedTransactionCount = reader.uint64().toString();
+          message.executedTransactionCount = reader.uint64() as bigint;
           continue;
         }
         case 6: {
@@ -3520,7 +3594,7 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
             break;
           }
 
-          message.updatedAccountCount = reader.uint64().toString();
+          message.updatedAccountCount = reader.uint64() as bigint;
           continue;
         }
         case 11: {
@@ -3536,7 +3610,7 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
             break;
           }
 
-          message.entriesCount = reader.uint64().toString();
+          message.entriesCount = reader.uint64() as bigint;
           continue;
         }
         case 13: {
@@ -3558,24 +3632,22 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
 
   fromJSON(object: any): SubscribeUpdateBlock {
     return {
-      slot: isSet(object.slot) ? globalThis.String(object.slot) : "0",
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
       blockhash: isSet(object.blockhash) ? globalThis.String(object.blockhash) : "",
       rewards: isSet(object.rewards) ? Rewards.fromJSON(object.rewards) : undefined,
       blockTime: isSet(object.blockTime) ? UnixTimestamp.fromJSON(object.blockTime) : undefined,
       blockHeight: isSet(object.blockHeight) ? BlockHeight.fromJSON(object.blockHeight) : undefined,
-      parentSlot: isSet(object.parentSlot) ? globalThis.String(object.parentSlot) : "0",
+      parentSlot: isSet(object.parentSlot) ? BigInt(object.parentSlot) : 0n,
       parentBlockhash: isSet(object.parentBlockhash) ? globalThis.String(object.parentBlockhash) : "",
-      executedTransactionCount: isSet(object.executedTransactionCount)
-        ? globalThis.String(object.executedTransactionCount)
-        : "0",
+      executedTransactionCount: isSet(object.executedTransactionCount) ? BigInt(object.executedTransactionCount) : 0n,
       transactions: globalThis.Array.isArray(object?.transactions)
         ? object.transactions.map((e: any) => SubscribeUpdateTransactionInfo.fromJSON(e))
         : [],
-      updatedAccountCount: isSet(object.updatedAccountCount) ? globalThis.String(object.updatedAccountCount) : "0",
+      updatedAccountCount: isSet(object.updatedAccountCount) ? BigInt(object.updatedAccountCount) : 0n,
       accounts: globalThis.Array.isArray(object?.accounts)
         ? object.accounts.map((e: any) => SubscribeUpdateAccountInfo.fromJSON(e))
         : [],
-      entriesCount: isSet(object.entriesCount) ? globalThis.String(object.entriesCount) : "0",
+      entriesCount: isSet(object.entriesCount) ? BigInt(object.entriesCount) : 0n,
       entries: globalThis.Array.isArray(object?.entries)
         ? object.entries.map((e: any) => SubscribeUpdateEntry.fromJSON(e))
         : [],
@@ -3584,8 +3656,8 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
 
   toJSON(message: SubscribeUpdateBlock): unknown {
     const obj: any = {};
-    if (message.slot !== "0") {
-      obj.slot = message.slot;
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
     }
     if (message.blockhash !== "") {
       obj.blockhash = message.blockhash;
@@ -3599,26 +3671,26 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
     if (message.blockHeight !== undefined) {
       obj.blockHeight = BlockHeight.toJSON(message.blockHeight);
     }
-    if (message.parentSlot !== "0") {
-      obj.parentSlot = message.parentSlot;
+    if (message.parentSlot !== 0n) {
+      obj.parentSlot = message.parentSlot.toString();
     }
     if (message.parentBlockhash !== "") {
       obj.parentBlockhash = message.parentBlockhash;
     }
-    if (message.executedTransactionCount !== "0") {
-      obj.executedTransactionCount = message.executedTransactionCount;
+    if (message.executedTransactionCount !== 0n) {
+      obj.executedTransactionCount = message.executedTransactionCount.toString();
     }
     if (message.transactions?.length) {
       obj.transactions = message.transactions.map((e) => SubscribeUpdateTransactionInfo.toJSON(e));
     }
-    if (message.updatedAccountCount !== "0") {
-      obj.updatedAccountCount = message.updatedAccountCount;
+    if (message.updatedAccountCount !== 0n) {
+      obj.updatedAccountCount = message.updatedAccountCount.toString();
     }
     if (message.accounts?.length) {
       obj.accounts = message.accounts.map((e) => SubscribeUpdateAccountInfo.toJSON(e));
     }
-    if (message.entriesCount !== "0") {
-      obj.entriesCount = message.entriesCount;
+    if (message.entriesCount !== 0n) {
+      obj.entriesCount = message.entriesCount.toString();
     }
     if (message.entries?.length) {
       obj.entries = message.entries.map((e) => SubscribeUpdateEntry.toJSON(e));
@@ -3631,7 +3703,7 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
   },
   fromPartial<I extends Exact<DeepPartial<SubscribeUpdateBlock>, I>>(object: I): SubscribeUpdateBlock {
     const message = createBaseSubscribeUpdateBlock();
-    message.slot = object.slot ?? "0";
+    message.slot = object.slot ?? 0n;
     message.blockhash = object.blockhash ?? "";
     message.rewards = (object.rewards !== undefined && object.rewards !== null)
       ? Rewards.fromPartial(object.rewards)
@@ -3642,13 +3714,13 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
     message.blockHeight = (object.blockHeight !== undefined && object.blockHeight !== null)
       ? BlockHeight.fromPartial(object.blockHeight)
       : undefined;
-    message.parentSlot = object.parentSlot ?? "0";
+    message.parentSlot = object.parentSlot ?? 0n;
     message.parentBlockhash = object.parentBlockhash ?? "";
-    message.executedTransactionCount = object.executedTransactionCount ?? "0";
+    message.executedTransactionCount = object.executedTransactionCount ?? 0n;
     message.transactions = object.transactions?.map((e) => SubscribeUpdateTransactionInfo.fromPartial(e)) || [];
-    message.updatedAccountCount = object.updatedAccountCount ?? "0";
+    message.updatedAccountCount = object.updatedAccountCount ?? 0n;
     message.accounts = object.accounts?.map((e) => SubscribeUpdateAccountInfo.fromPartial(e)) || [];
-    message.entriesCount = object.entriesCount ?? "0";
+    message.entriesCount = object.entriesCount ?? 0n;
     message.entries = object.entries?.map((e) => SubscribeUpdateEntry.fromPartial(e)) || [];
     return message;
   },
@@ -3656,21 +3728,24 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
 
 function createBaseSubscribeUpdateBlockMeta(): SubscribeUpdateBlockMeta {
   return {
-    slot: "0",
+    slot: 0n,
     blockhash: "",
     rewards: undefined,
     blockTime: undefined,
     blockHeight: undefined,
-    parentSlot: "0",
+    parentSlot: 0n,
     parentBlockhash: "",
-    executedTransactionCount: "0",
-    entriesCount: "0",
+    executedTransactionCount: 0n,
+    entriesCount: 0n,
   };
 }
 
 export const SubscribeUpdateBlockMeta: MessageFns<SubscribeUpdateBlockMeta> = {
   encode(message: SubscribeUpdateBlockMeta, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.slot !== "0") {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.slot);
     }
     if (message.blockhash !== "") {
@@ -3685,16 +3760,27 @@ export const SubscribeUpdateBlockMeta: MessageFns<SubscribeUpdateBlockMeta> = {
     if (message.blockHeight !== undefined) {
       BlockHeight.encode(message.blockHeight, writer.uint32(42).fork()).join();
     }
-    if (message.parentSlot !== "0") {
+    if (message.parentSlot !== 0n) {
+      if (BigInt.asUintN(64, message.parentSlot) !== message.parentSlot) {
+        throw new globalThis.Error("value provided for field message.parentSlot of type uint64 too large");
+      }
       writer.uint32(48).uint64(message.parentSlot);
     }
     if (message.parentBlockhash !== "") {
       writer.uint32(58).string(message.parentBlockhash);
     }
-    if (message.executedTransactionCount !== "0") {
+    if (message.executedTransactionCount !== 0n) {
+      if (BigInt.asUintN(64, message.executedTransactionCount) !== message.executedTransactionCount) {
+        throw new globalThis.Error(
+          "value provided for field message.executedTransactionCount of type uint64 too large",
+        );
+      }
       writer.uint32(64).uint64(message.executedTransactionCount);
     }
-    if (message.entriesCount !== "0") {
+    if (message.entriesCount !== 0n) {
+      if (BigInt.asUintN(64, message.entriesCount) !== message.entriesCount) {
+        throw new globalThis.Error("value provided for field message.entriesCount of type uint64 too large");
+      }
       writer.uint32(72).uint64(message.entriesCount);
     }
     return writer;
@@ -3712,7 +3798,7 @@ export const SubscribeUpdateBlockMeta: MessageFns<SubscribeUpdateBlockMeta> = {
             break;
           }
 
-          message.slot = reader.uint64().toString();
+          message.slot = reader.uint64() as bigint;
           continue;
         }
         case 2: {
@@ -3752,7 +3838,7 @@ export const SubscribeUpdateBlockMeta: MessageFns<SubscribeUpdateBlockMeta> = {
             break;
           }
 
-          message.parentSlot = reader.uint64().toString();
+          message.parentSlot = reader.uint64() as bigint;
           continue;
         }
         case 7: {
@@ -3768,7 +3854,7 @@ export const SubscribeUpdateBlockMeta: MessageFns<SubscribeUpdateBlockMeta> = {
             break;
           }
 
-          message.executedTransactionCount = reader.uint64().toString();
+          message.executedTransactionCount = reader.uint64() as bigint;
           continue;
         }
         case 9: {
@@ -3776,7 +3862,7 @@ export const SubscribeUpdateBlockMeta: MessageFns<SubscribeUpdateBlockMeta> = {
             break;
           }
 
-          message.entriesCount = reader.uint64().toString();
+          message.entriesCount = reader.uint64() as bigint;
           continue;
         }
       }
@@ -3790,24 +3876,22 @@ export const SubscribeUpdateBlockMeta: MessageFns<SubscribeUpdateBlockMeta> = {
 
   fromJSON(object: any): SubscribeUpdateBlockMeta {
     return {
-      slot: isSet(object.slot) ? globalThis.String(object.slot) : "0",
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
       blockhash: isSet(object.blockhash) ? globalThis.String(object.blockhash) : "",
       rewards: isSet(object.rewards) ? Rewards.fromJSON(object.rewards) : undefined,
       blockTime: isSet(object.blockTime) ? UnixTimestamp.fromJSON(object.blockTime) : undefined,
       blockHeight: isSet(object.blockHeight) ? BlockHeight.fromJSON(object.blockHeight) : undefined,
-      parentSlot: isSet(object.parentSlot) ? globalThis.String(object.parentSlot) : "0",
+      parentSlot: isSet(object.parentSlot) ? BigInt(object.parentSlot) : 0n,
       parentBlockhash: isSet(object.parentBlockhash) ? globalThis.String(object.parentBlockhash) : "",
-      executedTransactionCount: isSet(object.executedTransactionCount)
-        ? globalThis.String(object.executedTransactionCount)
-        : "0",
-      entriesCount: isSet(object.entriesCount) ? globalThis.String(object.entriesCount) : "0",
+      executedTransactionCount: isSet(object.executedTransactionCount) ? BigInt(object.executedTransactionCount) : 0n,
+      entriesCount: isSet(object.entriesCount) ? BigInt(object.entriesCount) : 0n,
     };
   },
 
   toJSON(message: SubscribeUpdateBlockMeta): unknown {
     const obj: any = {};
-    if (message.slot !== "0") {
-      obj.slot = message.slot;
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
     }
     if (message.blockhash !== "") {
       obj.blockhash = message.blockhash;
@@ -3821,17 +3905,17 @@ export const SubscribeUpdateBlockMeta: MessageFns<SubscribeUpdateBlockMeta> = {
     if (message.blockHeight !== undefined) {
       obj.blockHeight = BlockHeight.toJSON(message.blockHeight);
     }
-    if (message.parentSlot !== "0") {
-      obj.parentSlot = message.parentSlot;
+    if (message.parentSlot !== 0n) {
+      obj.parentSlot = message.parentSlot.toString();
     }
     if (message.parentBlockhash !== "") {
       obj.parentBlockhash = message.parentBlockhash;
     }
-    if (message.executedTransactionCount !== "0") {
-      obj.executedTransactionCount = message.executedTransactionCount;
+    if (message.executedTransactionCount !== 0n) {
+      obj.executedTransactionCount = message.executedTransactionCount.toString();
     }
-    if (message.entriesCount !== "0") {
-      obj.entriesCount = message.entriesCount;
+    if (message.entriesCount !== 0n) {
+      obj.entriesCount = message.entriesCount.toString();
     }
     return obj;
   },
@@ -3841,7 +3925,7 @@ export const SubscribeUpdateBlockMeta: MessageFns<SubscribeUpdateBlockMeta> = {
   },
   fromPartial<I extends Exact<DeepPartial<SubscribeUpdateBlockMeta>, I>>(object: I): SubscribeUpdateBlockMeta {
     const message = createBaseSubscribeUpdateBlockMeta();
-    message.slot = object.slot ?? "0";
+    message.slot = object.slot ?? 0n;
     message.blockhash = object.blockhash ?? "";
     message.rewards = (object.rewards !== undefined && object.rewards !== null)
       ? Rewards.fromPartial(object.rewards)
@@ -3852,43 +3936,62 @@ export const SubscribeUpdateBlockMeta: MessageFns<SubscribeUpdateBlockMeta> = {
     message.blockHeight = (object.blockHeight !== undefined && object.blockHeight !== null)
       ? BlockHeight.fromPartial(object.blockHeight)
       : undefined;
-    message.parentSlot = object.parentSlot ?? "0";
+    message.parentSlot = object.parentSlot ?? 0n;
     message.parentBlockhash = object.parentBlockhash ?? "";
-    message.executedTransactionCount = object.executedTransactionCount ?? "0";
-    message.entriesCount = object.entriesCount ?? "0";
+    message.executedTransactionCount = object.executedTransactionCount ?? 0n;
+    message.entriesCount = object.entriesCount ?? 0n;
     return message;
   },
 };
 
 function createBaseSubscribeUpdateEntry(): SubscribeUpdateEntry {
   return {
-    slot: "0",
-    index: "0",
-    numHashes: "0",
+    slot: 0n,
+    index: 0n,
+    numHashes: 0n,
     hash: new Uint8Array(0),
-    executedTransactionCount: "0",
-    startingTransactionIndex: "0",
+    executedTransactionCount: 0n,
+    startingTransactionIndex: 0n,
   };
 }
 
 export const SubscribeUpdateEntry: MessageFns<SubscribeUpdateEntry> = {
   encode(message: SubscribeUpdateEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.slot !== "0") {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.slot);
     }
-    if (message.index !== "0") {
+    if (message.index !== 0n) {
+      if (BigInt.asUintN(64, message.index) !== message.index) {
+        throw new globalThis.Error("value provided for field message.index of type uint64 too large");
+      }
       writer.uint32(16).uint64(message.index);
     }
-    if (message.numHashes !== "0") {
+    if (message.numHashes !== 0n) {
+      if (BigInt.asUintN(64, message.numHashes) !== message.numHashes) {
+        throw new globalThis.Error("value provided for field message.numHashes of type uint64 too large");
+      }
       writer.uint32(24).uint64(message.numHashes);
     }
     if (message.hash.length !== 0) {
       writer.uint32(34).bytes(message.hash);
     }
-    if (message.executedTransactionCount !== "0") {
+    if (message.executedTransactionCount !== 0n) {
+      if (BigInt.asUintN(64, message.executedTransactionCount) !== message.executedTransactionCount) {
+        throw new globalThis.Error(
+          "value provided for field message.executedTransactionCount of type uint64 too large",
+        );
+      }
       writer.uint32(40).uint64(message.executedTransactionCount);
     }
-    if (message.startingTransactionIndex !== "0") {
+    if (message.startingTransactionIndex !== 0n) {
+      if (BigInt.asUintN(64, message.startingTransactionIndex) !== message.startingTransactionIndex) {
+        throw new globalThis.Error(
+          "value provided for field message.startingTransactionIndex of type uint64 too large",
+        );
+      }
       writer.uint32(48).uint64(message.startingTransactionIndex);
     }
     return writer;
@@ -3906,7 +4009,7 @@ export const SubscribeUpdateEntry: MessageFns<SubscribeUpdateEntry> = {
             break;
           }
 
-          message.slot = reader.uint64().toString();
+          message.slot = reader.uint64() as bigint;
           continue;
         }
         case 2: {
@@ -3914,7 +4017,7 @@ export const SubscribeUpdateEntry: MessageFns<SubscribeUpdateEntry> = {
             break;
           }
 
-          message.index = reader.uint64().toString();
+          message.index = reader.uint64() as bigint;
           continue;
         }
         case 3: {
@@ -3922,7 +4025,7 @@ export const SubscribeUpdateEntry: MessageFns<SubscribeUpdateEntry> = {
             break;
           }
 
-          message.numHashes = reader.uint64().toString();
+          message.numHashes = reader.uint64() as bigint;
           continue;
         }
         case 4: {
@@ -3938,7 +4041,7 @@ export const SubscribeUpdateEntry: MessageFns<SubscribeUpdateEntry> = {
             break;
           }
 
-          message.executedTransactionCount = reader.uint64().toString();
+          message.executedTransactionCount = reader.uint64() as bigint;
           continue;
         }
         case 6: {
@@ -3946,7 +4049,7 @@ export const SubscribeUpdateEntry: MessageFns<SubscribeUpdateEntry> = {
             break;
           }
 
-          message.startingTransactionIndex = reader.uint64().toString();
+          message.startingTransactionIndex = reader.uint64() as bigint;
           continue;
         }
       }
@@ -3960,38 +4063,34 @@ export const SubscribeUpdateEntry: MessageFns<SubscribeUpdateEntry> = {
 
   fromJSON(object: any): SubscribeUpdateEntry {
     return {
-      slot: isSet(object.slot) ? globalThis.String(object.slot) : "0",
-      index: isSet(object.index) ? globalThis.String(object.index) : "0",
-      numHashes: isSet(object.numHashes) ? globalThis.String(object.numHashes) : "0",
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
+      index: isSet(object.index) ? BigInt(object.index) : 0n,
+      numHashes: isSet(object.numHashes) ? BigInt(object.numHashes) : 0n,
       hash: isSet(object.hash) ? bytesFromBase64(object.hash) : new Uint8Array(0),
-      executedTransactionCount: isSet(object.executedTransactionCount)
-        ? globalThis.String(object.executedTransactionCount)
-        : "0",
-      startingTransactionIndex: isSet(object.startingTransactionIndex)
-        ? globalThis.String(object.startingTransactionIndex)
-        : "0",
+      executedTransactionCount: isSet(object.executedTransactionCount) ? BigInt(object.executedTransactionCount) : 0n,
+      startingTransactionIndex: isSet(object.startingTransactionIndex) ? BigInt(object.startingTransactionIndex) : 0n,
     };
   },
 
   toJSON(message: SubscribeUpdateEntry): unknown {
     const obj: any = {};
-    if (message.slot !== "0") {
-      obj.slot = message.slot;
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
     }
-    if (message.index !== "0") {
-      obj.index = message.index;
+    if (message.index !== 0n) {
+      obj.index = message.index.toString();
     }
-    if (message.numHashes !== "0") {
-      obj.numHashes = message.numHashes;
+    if (message.numHashes !== 0n) {
+      obj.numHashes = message.numHashes.toString();
     }
     if (message.hash.length !== 0) {
       obj.hash = base64FromBytes(message.hash);
     }
-    if (message.executedTransactionCount !== "0") {
-      obj.executedTransactionCount = message.executedTransactionCount;
+    if (message.executedTransactionCount !== 0n) {
+      obj.executedTransactionCount = message.executedTransactionCount.toString();
     }
-    if (message.startingTransactionIndex !== "0") {
-      obj.startingTransactionIndex = message.startingTransactionIndex;
+    if (message.startingTransactionIndex !== 0n) {
+      obj.startingTransactionIndex = message.startingTransactionIndex.toString();
     }
     return obj;
   },
@@ -4001,12 +4100,12 @@ export const SubscribeUpdateEntry: MessageFns<SubscribeUpdateEntry> = {
   },
   fromPartial<I extends Exact<DeepPartial<SubscribeUpdateEntry>, I>>(object: I): SubscribeUpdateEntry {
     const message = createBaseSubscribeUpdateEntry();
-    message.slot = object.slot ?? "0";
-    message.index = object.index ?? "0";
-    message.numHashes = object.numHashes ?? "0";
+    message.slot = object.slot ?? 0n;
+    message.index = object.index ?? 0n;
+    message.numHashes = object.numHashes ?? 0n;
     message.hash = object.hash ?? new Uint8Array(0);
-    message.executedTransactionCount = object.executedTransactionCount ?? "0";
-    message.startingTransactionIndex = object.startingTransactionIndex ?? "0";
+    message.executedTransactionCount = object.executedTransactionCount ?? 0n;
+    message.startingTransactionIndex = object.startingTransactionIndex ?? 0n;
     return message;
   },
 };
@@ -4162,6 +4261,9 @@ function createBaseSubscribeReplayInfoResponse(): SubscribeReplayInfoResponse {
 export const SubscribeReplayInfoResponse: MessageFns<SubscribeReplayInfoResponse> = {
   encode(message: SubscribeReplayInfoResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     if (message.firstAvailable !== undefined) {
+      if (BigInt.asUintN(64, message.firstAvailable) !== message.firstAvailable) {
+        throw new globalThis.Error("value provided for field message.firstAvailable of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.firstAvailable);
     }
     return writer;
@@ -4179,7 +4281,7 @@ export const SubscribeReplayInfoResponse: MessageFns<SubscribeReplayInfoResponse
             break;
           }
 
-          message.firstAvailable = reader.uint64().toString();
+          message.firstAvailable = reader.uint64() as bigint;
           continue;
         }
       }
@@ -4192,13 +4294,13 @@ export const SubscribeReplayInfoResponse: MessageFns<SubscribeReplayInfoResponse
   },
 
   fromJSON(object: any): SubscribeReplayInfoResponse {
-    return { firstAvailable: isSet(object.firstAvailable) ? globalThis.String(object.firstAvailable) : undefined };
+    return { firstAvailable: isSet(object.firstAvailable) ? BigInt(object.firstAvailable) : undefined };
   },
 
   toJSON(message: SubscribeReplayInfoResponse): unknown {
     const obj: any = {};
     if (message.firstAvailable !== undefined) {
-      obj.firstAvailable = message.firstAvailable;
+      obj.firstAvailable = message.firstAvailable.toString();
     }
     return obj;
   },
@@ -4388,18 +4490,24 @@ export const GetLatestBlockhashRequest: MessageFns<GetLatestBlockhashRequest> = 
 };
 
 function createBaseGetLatestBlockhashResponse(): GetLatestBlockhashResponse {
-  return { slot: "0", blockhash: "", lastValidBlockHeight: "0" };
+  return { slot: 0n, blockhash: "", lastValidBlockHeight: 0n };
 }
 
 export const GetLatestBlockhashResponse: MessageFns<GetLatestBlockhashResponse> = {
   encode(message: GetLatestBlockhashResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.slot !== "0") {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.slot);
     }
     if (message.blockhash !== "") {
       writer.uint32(18).string(message.blockhash);
     }
-    if (message.lastValidBlockHeight !== "0") {
+    if (message.lastValidBlockHeight !== 0n) {
+      if (BigInt.asUintN(64, message.lastValidBlockHeight) !== message.lastValidBlockHeight) {
+        throw new globalThis.Error("value provided for field message.lastValidBlockHeight of type uint64 too large");
+      }
       writer.uint32(24).uint64(message.lastValidBlockHeight);
     }
     return writer;
@@ -4417,7 +4525,7 @@ export const GetLatestBlockhashResponse: MessageFns<GetLatestBlockhashResponse> 
             break;
           }
 
-          message.slot = reader.uint64().toString();
+          message.slot = reader.uint64() as bigint;
           continue;
         }
         case 2: {
@@ -4433,7 +4541,7 @@ export const GetLatestBlockhashResponse: MessageFns<GetLatestBlockhashResponse> 
             break;
           }
 
-          message.lastValidBlockHeight = reader.uint64().toString();
+          message.lastValidBlockHeight = reader.uint64() as bigint;
           continue;
         }
       }
@@ -4447,22 +4555,22 @@ export const GetLatestBlockhashResponse: MessageFns<GetLatestBlockhashResponse> 
 
   fromJSON(object: any): GetLatestBlockhashResponse {
     return {
-      slot: isSet(object.slot) ? globalThis.String(object.slot) : "0",
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
       blockhash: isSet(object.blockhash) ? globalThis.String(object.blockhash) : "",
-      lastValidBlockHeight: isSet(object.lastValidBlockHeight) ? globalThis.String(object.lastValidBlockHeight) : "0",
+      lastValidBlockHeight: isSet(object.lastValidBlockHeight) ? BigInt(object.lastValidBlockHeight) : 0n,
     };
   },
 
   toJSON(message: GetLatestBlockhashResponse): unknown {
     const obj: any = {};
-    if (message.slot !== "0") {
-      obj.slot = message.slot;
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
     }
     if (message.blockhash !== "") {
       obj.blockhash = message.blockhash;
     }
-    if (message.lastValidBlockHeight !== "0") {
-      obj.lastValidBlockHeight = message.lastValidBlockHeight;
+    if (message.lastValidBlockHeight !== 0n) {
+      obj.lastValidBlockHeight = message.lastValidBlockHeight.toString();
     }
     return obj;
   },
@@ -4472,9 +4580,9 @@ export const GetLatestBlockhashResponse: MessageFns<GetLatestBlockhashResponse> 
   },
   fromPartial<I extends Exact<DeepPartial<GetLatestBlockhashResponse>, I>>(object: I): GetLatestBlockhashResponse {
     const message = createBaseGetLatestBlockhashResponse();
-    message.slot = object.slot ?? "0";
+    message.slot = object.slot ?? 0n;
     message.blockhash = object.blockhash ?? "";
-    message.lastValidBlockHeight = object.lastValidBlockHeight ?? "0";
+    message.lastValidBlockHeight = object.lastValidBlockHeight ?? 0n;
     return message;
   },
 };
@@ -4538,12 +4646,15 @@ export const GetBlockHeightRequest: MessageFns<GetBlockHeightRequest> = {
 };
 
 function createBaseGetBlockHeightResponse(): GetBlockHeightResponse {
-  return { blockHeight: "0" };
+  return { blockHeight: 0n };
 }
 
 export const GetBlockHeightResponse: MessageFns<GetBlockHeightResponse> = {
   encode(message: GetBlockHeightResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.blockHeight !== "0") {
+    if (message.blockHeight !== 0n) {
+      if (BigInt.asUintN(64, message.blockHeight) !== message.blockHeight) {
+        throw new globalThis.Error("value provided for field message.blockHeight of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.blockHeight);
     }
     return writer;
@@ -4561,7 +4672,7 @@ export const GetBlockHeightResponse: MessageFns<GetBlockHeightResponse> = {
             break;
           }
 
-          message.blockHeight = reader.uint64().toString();
+          message.blockHeight = reader.uint64() as bigint;
           continue;
         }
       }
@@ -4574,13 +4685,13 @@ export const GetBlockHeightResponse: MessageFns<GetBlockHeightResponse> = {
   },
 
   fromJSON(object: any): GetBlockHeightResponse {
-    return { blockHeight: isSet(object.blockHeight) ? globalThis.String(object.blockHeight) : "0" };
+    return { blockHeight: isSet(object.blockHeight) ? BigInt(object.blockHeight) : 0n };
   },
 
   toJSON(message: GetBlockHeightResponse): unknown {
     const obj: any = {};
-    if (message.blockHeight !== "0") {
-      obj.blockHeight = message.blockHeight;
+    if (message.blockHeight !== 0n) {
+      obj.blockHeight = message.blockHeight.toString();
     }
     return obj;
   },
@@ -4590,7 +4701,7 @@ export const GetBlockHeightResponse: MessageFns<GetBlockHeightResponse> = {
   },
   fromPartial<I extends Exact<DeepPartial<GetBlockHeightResponse>, I>>(object: I): GetBlockHeightResponse {
     const message = createBaseGetBlockHeightResponse();
-    message.blockHeight = object.blockHeight ?? "0";
+    message.blockHeight = object.blockHeight ?? 0n;
     return message;
   },
 };
@@ -4654,12 +4765,15 @@ export const GetSlotRequest: MessageFns<GetSlotRequest> = {
 };
 
 function createBaseGetSlotResponse(): GetSlotResponse {
-  return { slot: "0" };
+  return { slot: 0n };
 }
 
 export const GetSlotResponse: MessageFns<GetSlotResponse> = {
   encode(message: GetSlotResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.slot !== "0") {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.slot);
     }
     return writer;
@@ -4677,7 +4791,7 @@ export const GetSlotResponse: MessageFns<GetSlotResponse> = {
             break;
           }
 
-          message.slot = reader.uint64().toString();
+          message.slot = reader.uint64() as bigint;
           continue;
         }
       }
@@ -4690,13 +4804,13 @@ export const GetSlotResponse: MessageFns<GetSlotResponse> = {
   },
 
   fromJSON(object: any): GetSlotResponse {
-    return { slot: isSet(object.slot) ? globalThis.String(object.slot) : "0" };
+    return { slot: isSet(object.slot) ? BigInt(object.slot) : 0n };
   },
 
   toJSON(message: GetSlotResponse): unknown {
     const obj: any = {};
-    if (message.slot !== "0") {
-      obj.slot = message.slot;
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
     }
     return obj;
   },
@@ -4706,7 +4820,7 @@ export const GetSlotResponse: MessageFns<GetSlotResponse> = {
   },
   fromPartial<I extends Exact<DeepPartial<GetSlotResponse>, I>>(object: I): GetSlotResponse {
     const message = createBaseGetSlotResponse();
-    message.slot = object.slot ?? "0";
+    message.slot = object.slot ?? 0n;
     return message;
   },
 };
@@ -4889,12 +5003,15 @@ export const IsBlockhashValidRequest: MessageFns<IsBlockhashValidRequest> = {
 };
 
 function createBaseIsBlockhashValidResponse(): IsBlockhashValidResponse {
-  return { slot: "0", valid: false };
+  return { slot: 0n, valid: false };
 }
 
 export const IsBlockhashValidResponse: MessageFns<IsBlockhashValidResponse> = {
   encode(message: IsBlockhashValidResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.slot !== "0") {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.slot);
     }
     if (message.valid !== false) {
@@ -4915,7 +5032,7 @@ export const IsBlockhashValidResponse: MessageFns<IsBlockhashValidResponse> = {
             break;
           }
 
-          message.slot = reader.uint64().toString();
+          message.slot = reader.uint64() as bigint;
           continue;
         }
         case 2: {
@@ -4937,15 +5054,15 @@ export const IsBlockhashValidResponse: MessageFns<IsBlockhashValidResponse> = {
 
   fromJSON(object: any): IsBlockhashValidResponse {
     return {
-      slot: isSet(object.slot) ? globalThis.String(object.slot) : "0",
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
       valid: isSet(object.valid) ? globalThis.Boolean(object.valid) : false,
     };
   },
 
   toJSON(message: IsBlockhashValidResponse): unknown {
     const obj: any = {};
-    if (message.slot !== "0") {
-      obj.slot = message.slot;
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
     }
     if (message.valid !== false) {
       obj.valid = message.valid;
@@ -4958,7 +5075,7 @@ export const IsBlockhashValidResponse: MessageFns<IsBlockhashValidResponse> = {
   },
   fromPartial<I extends Exact<DeepPartial<IsBlockhashValidResponse>, I>>(object: I): IsBlockhashValidResponse {
     const message = createBaseIsBlockhashValidResponse();
-    message.slot = object.slot ?? "0";
+    message.slot = object.slot ?? 0n;
     message.valid = object.valid ?? false;
     return message;
   },
@@ -5198,7 +5315,7 @@ function base64FromBytes(arr: Uint8Array): string {
   }
 }
 
-type Builtin = Date | Function | Uint8Array | string | number | boolean | undefined;
+type Builtin = Date | Function | Uint8Array | string | number | boolean | bigint | undefined;
 
 export type DeepPartial<T> = T extends Builtin ? T
   : T extends globalThis.Array<infer U> ? globalThis.Array<DeepPartial<U>>
@@ -5211,13 +5328,13 @@ export type Exact<P, I extends P> = P extends Builtin ? P
   : P & { [K in keyof P]: Exact<P[K], I[K]> } & { [K in Exclude<keyof I, KeysOfUnion<P>>]: never };
 
 function toTimestamp(date: Date): Timestamp {
-  const seconds = Math.trunc(date.getTime() / 1_000).toString();
+  const seconds = BigInt(Math.trunc(date.getTime() / 1_000));
   const nanos = (date.getTime() % 1_000) * 1_000_000;
   return { seconds, nanos };
 }
 
 function fromTimestamp(t: Timestamp): Date {
-  let millis = (globalThis.Number(t.seconds) || 0) * 1_000;
+  let millis = (globalThis.Number(t.seconds.toString()) || 0) * 1_000;
   millis += (t.nanos || 0) / 1_000_000;
   return new globalThis.Date(millis);
 }

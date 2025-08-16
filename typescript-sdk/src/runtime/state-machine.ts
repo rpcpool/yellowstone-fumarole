@@ -1,35 +1,18 @@
+import { BlockchainEvent } from "../grpc/fumarole";
+import { CommitmentLevel } from "../grpc/geyser";
 import { Queue as Deque } from "./queue";
 
 // Constants
 export const DEFAULT_SLOT_MEMORY_RETENTION = 10000;
-
-// Solana commitment levels
-export enum CommitmentLevel {
-  PROCESSED = 0,
-  CONFIRMED = 1,
-  FINALIZED = 2,
-}
-
-// Interface matching the gRPC BlockchainEvent type
-export interface BlockchainEvent {
-  offset: string;
-  slot: number;
-  parentSlot?: number;
-  commitmentLevel: CommitmentLevel;
-  deadError?: string;
-  blockchainId: Uint8Array;
-  blockUid: Uint8Array;
-  numShards: number;
-}
 
 // Type aliases
 export type FumeBlockchainId = Uint8Array; // Equivalent to [u8; 16]
 export type FumeBlockUID = Uint8Array; // Equivalent to [u8; 16]
 export type FumeNumShards = number; // Equivalent to u32
 export type FumeShardIdx = number; // Equivalent to u32
-export type FumeOffset = string; // Equivalent to i64 as string for large numbers
-export type FumeSessionSequence = number; // Equivalent to u64
-export type Slot = number; // From solana_sdk::clock::Slot
+export type FumeOffset = bigint; // Equivalent to i64 as string for large numbers
+export type FumeSessionSequence = bigint; // Equivalent to u64
+export type Slot = bigint; // From solana_sdk::clock::Slot
 
 // Data structures
 export class FumeDownloadRequest {
@@ -94,13 +77,13 @@ export class FumaroleSM {
   private inflightSlotShardDownload = new Map<Slot, SlotDownloadProgress>();
   private blockedSlotStatusUpdate = new Map<Slot, Deque<FumeSlotStatus>>();
   private slotStatusUpdateQueue = new Deque<FumeSlotStatus>();
-  private processedOffset: [number, string][] = []; // Min-heap for (sequence, offset)
-  private maxSlotDetected = 0;
+  private processedOffset: [bigint, bigint][] = []; // Min-heap for (sequence, offset)
+  private maxSlotDetected = 0n;
   private unprocessedBlockchainEvent = new Deque<
     [FumeSessionSequence, BlockchainEvent]
   >();
-  private sequence = 1;
-  private lastProcessedFumeSequence = 0;
+  private sequence = 1n;
+  private lastProcessedFumeSequence = 0n;
   private sequenceToOffset = new Map<FumeSessionSequence, FumeOffset>();
   private _committableOffset: FumeOffset;
   private _lastCommittedOffset: FumeOffset;
@@ -128,9 +111,9 @@ export class FumaroleSM {
     this._lastCommittedOffset = offset;
   }
 
-  private nextSequence(): number {
+  private nextSequence(): bigint {
     const ret = this.sequence;
-    this.sequence += 1;
+    this.sequence += 1n;
     return ret;
   }
 
@@ -357,13 +340,17 @@ export class FumaroleSM {
 
     // Use negative values for the min-heap (to simulate max-heap behavior)
     this.processedOffset.push([-eventSeqNumber, fumeOffset]);
-    this.processedOffset.sort((a, b) => a[0] - b[0]); // Keep sorted as a min-heap
+    this.processedOffset.sort((a, b) => {
+      if (a[0] < b[0]) return -1;
+      if (a[0] > b[0]) return 1;
+      return 0;
+    });// Keep sorted as a min-heap
 
     while (this.processedOffset.length > 0) {
       const [seq, offset] = this.processedOffset[0];
       const positiveSeq = -seq; // Convert back to positive
 
-      if (positiveSeq !== this.lastProcessedFumeSequence + 1) {
+      if (positiveSeq !== this.lastProcessedFumeSequence + 1n) {
         break;
       }
 

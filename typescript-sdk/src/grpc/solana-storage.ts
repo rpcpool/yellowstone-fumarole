@@ -63,7 +63,7 @@ export function rewardTypeToJSON(object: RewardType): string {
 export interface ConfirmedBlock {
   previousBlockhash: string;
   blockhash: string;
-  parentSlot: string;
+  parentSlot: bigint;
   transactions: ConfirmedTransaction[];
   rewards: Reward[];
   blockTime: UnixTimestamp | undefined;
@@ -104,9 +104,9 @@ export interface MessageAddressTableLookup {
 
 export interface TransactionStatusMeta {
   err: TransactionError | undefined;
-  fee: string;
-  preBalances: string[];
-  postBalances: string[];
+  fee: bigint;
+  preBalances: bigint[];
+  postBalances: bigint[];
   innerInstructions: InnerInstructions[];
   innerInstructionsNone: boolean;
   logMessages: string[];
@@ -124,10 +124,10 @@ export interface TransactionStatusMeta {
    * Set to `None` for txs executed on earlier versions.
    */
   computeUnitsConsumed?:
-    | string
+    | bigint
     | undefined;
   /** Total transaction cost */
-  costUnits?: string | undefined;
+  costUnits?: bigint | undefined;
 }
 
 export interface TransactionError {
@@ -179,8 +179,8 @@ export interface ReturnData {
 
 export interface Reward {
   pubkey: string;
-  lamports: string;
-  postBalance: string;
+  lamports: bigint;
+  postBalance: bigint;
   rewardType: RewardType;
   commission: string;
 }
@@ -191,22 +191,22 @@ export interface Rewards {
 }
 
 export interface UnixTimestamp {
-  timestamp: string;
+  timestamp: bigint;
 }
 
 export interface BlockHeight {
-  blockHeight: string;
+  blockHeight: bigint;
 }
 
 export interface NumPartitions {
-  numPartitions: string;
+  numPartitions: bigint;
 }
 
 function createBaseConfirmedBlock(): ConfirmedBlock {
   return {
     previousBlockhash: "",
     blockhash: "",
-    parentSlot: "0",
+    parentSlot: 0n,
     transactions: [],
     rewards: [],
     blockTime: undefined,
@@ -223,7 +223,10 @@ export const ConfirmedBlock: MessageFns<ConfirmedBlock> = {
     if (message.blockhash !== "") {
       writer.uint32(18).string(message.blockhash);
     }
-    if (message.parentSlot !== "0") {
+    if (message.parentSlot !== 0n) {
+      if (BigInt.asUintN(64, message.parentSlot) !== message.parentSlot) {
+        throw new globalThis.Error("value provided for field message.parentSlot of type uint64 too large");
+      }
       writer.uint32(24).uint64(message.parentSlot);
     }
     for (const v of message.transactions) {
@@ -272,7 +275,7 @@ export const ConfirmedBlock: MessageFns<ConfirmedBlock> = {
             break;
           }
 
-          message.parentSlot = reader.uint64().toString();
+          message.parentSlot = reader.uint64() as bigint;
           continue;
         }
         case 4: {
@@ -328,7 +331,7 @@ export const ConfirmedBlock: MessageFns<ConfirmedBlock> = {
     return {
       previousBlockhash: isSet(object.previousBlockhash) ? globalThis.String(object.previousBlockhash) : "",
       blockhash: isSet(object.blockhash) ? globalThis.String(object.blockhash) : "",
-      parentSlot: isSet(object.parentSlot) ? globalThis.String(object.parentSlot) : "0",
+      parentSlot: isSet(object.parentSlot) ? BigInt(object.parentSlot) : 0n,
       transactions: globalThis.Array.isArray(object?.transactions)
         ? object.transactions.map((e: any) => ConfirmedTransaction.fromJSON(e))
         : [],
@@ -347,8 +350,8 @@ export const ConfirmedBlock: MessageFns<ConfirmedBlock> = {
     if (message.blockhash !== "") {
       obj.blockhash = message.blockhash;
     }
-    if (message.parentSlot !== "0") {
-      obj.parentSlot = message.parentSlot;
+    if (message.parentSlot !== 0n) {
+      obj.parentSlot = message.parentSlot.toString();
     }
     if (message.transactions?.length) {
       obj.transactions = message.transactions.map((e) => ConfirmedTransaction.toJSON(e));
@@ -375,7 +378,7 @@ export const ConfirmedBlock: MessageFns<ConfirmedBlock> = {
     const message = createBaseConfirmedBlock();
     message.previousBlockhash = object.previousBlockhash ?? "";
     message.blockhash = object.blockhash ?? "";
-    message.parentSlot = object.parentSlot ?? "0";
+    message.parentSlot = object.parentSlot ?? 0n;
     message.transactions = object.transactions?.map((e) => ConfirmedTransaction.fromPartial(e)) || [];
     message.rewards = object.rewards?.map((e) => Reward.fromPartial(e)) || [];
     message.blockTime = (object.blockTime !== undefined && object.blockTime !== null)
@@ -898,7 +901,7 @@ export const MessageAddressTableLookup: MessageFns<MessageAddressTableLookup> = 
 function createBaseTransactionStatusMeta(): TransactionStatusMeta {
   return {
     err: undefined,
-    fee: "0",
+    fee: 0n,
     preBalances: [],
     postBalances: [],
     innerInstructions: [],
@@ -922,16 +925,25 @@ export const TransactionStatusMeta: MessageFns<TransactionStatusMeta> = {
     if (message.err !== undefined) {
       TransactionError.encode(message.err, writer.uint32(10).fork()).join();
     }
-    if (message.fee !== "0") {
+    if (message.fee !== 0n) {
+      if (BigInt.asUintN(64, message.fee) !== message.fee) {
+        throw new globalThis.Error("value provided for field message.fee of type uint64 too large");
+      }
       writer.uint32(16).uint64(message.fee);
     }
     writer.uint32(26).fork();
     for (const v of message.preBalances) {
+      if (BigInt.asUintN(64, v) !== v) {
+        throw new globalThis.Error("a value provided in array field preBalances of type uint64 is too large");
+      }
       writer.uint64(v);
     }
     writer.join();
     writer.uint32(34).fork();
     for (const v of message.postBalances) {
+      if (BigInt.asUintN(64, v) !== v) {
+        throw new globalThis.Error("a value provided in array field postBalances of type uint64 is too large");
+      }
       writer.uint64(v);
     }
     writer.join();
@@ -969,9 +981,15 @@ export const TransactionStatusMeta: MessageFns<TransactionStatusMeta> = {
       writer.uint32(120).bool(message.returnDataNone);
     }
     if (message.computeUnitsConsumed !== undefined) {
+      if (BigInt.asUintN(64, message.computeUnitsConsumed) !== message.computeUnitsConsumed) {
+        throw new globalThis.Error("value provided for field message.computeUnitsConsumed of type uint64 too large");
+      }
       writer.uint32(128).uint64(message.computeUnitsConsumed);
     }
     if (message.costUnits !== undefined) {
+      if (BigInt.asUintN(64, message.costUnits) !== message.costUnits) {
+        throw new globalThis.Error("value provided for field message.costUnits of type uint64 too large");
+      }
       writer.uint32(136).uint64(message.costUnits);
     }
     return writer;
@@ -997,12 +1015,12 @@ export const TransactionStatusMeta: MessageFns<TransactionStatusMeta> = {
             break;
           }
 
-          message.fee = reader.uint64().toString();
+          message.fee = reader.uint64() as bigint;
           continue;
         }
         case 3: {
           if (tag === 24) {
-            message.preBalances.push(reader.uint64().toString());
+            message.preBalances.push(reader.uint64() as bigint);
 
             continue;
           }
@@ -1010,7 +1028,7 @@ export const TransactionStatusMeta: MessageFns<TransactionStatusMeta> = {
           if (tag === 26) {
             const end2 = reader.uint32() + reader.pos;
             while (reader.pos < end2) {
-              message.preBalances.push(reader.uint64().toString());
+              message.preBalances.push(reader.uint64() as bigint);
             }
 
             continue;
@@ -1020,7 +1038,7 @@ export const TransactionStatusMeta: MessageFns<TransactionStatusMeta> = {
         }
         case 4: {
           if (tag === 32) {
-            message.postBalances.push(reader.uint64().toString());
+            message.postBalances.push(reader.uint64() as bigint);
 
             continue;
           }
@@ -1028,7 +1046,7 @@ export const TransactionStatusMeta: MessageFns<TransactionStatusMeta> = {
           if (tag === 34) {
             const end2 = reader.uint32() + reader.pos;
             while (reader.pos < end2) {
-              message.postBalances.push(reader.uint64().toString());
+              message.postBalances.push(reader.uint64() as bigint);
             }
 
             continue;
@@ -1129,7 +1147,7 @@ export const TransactionStatusMeta: MessageFns<TransactionStatusMeta> = {
             break;
           }
 
-          message.computeUnitsConsumed = reader.uint64().toString();
+          message.computeUnitsConsumed = reader.uint64() as bigint;
           continue;
         }
         case 17: {
@@ -1137,7 +1155,7 @@ export const TransactionStatusMeta: MessageFns<TransactionStatusMeta> = {
             break;
           }
 
-          message.costUnits = reader.uint64().toString();
+          message.costUnits = reader.uint64() as bigint;
           continue;
         }
       }
@@ -1152,12 +1170,10 @@ export const TransactionStatusMeta: MessageFns<TransactionStatusMeta> = {
   fromJSON(object: any): TransactionStatusMeta {
     return {
       err: isSet(object.err) ? TransactionError.fromJSON(object.err) : undefined,
-      fee: isSet(object.fee) ? globalThis.String(object.fee) : "0",
-      preBalances: globalThis.Array.isArray(object?.preBalances)
-        ? object.preBalances.map((e: any) => globalThis.String(e))
-        : [],
+      fee: isSet(object.fee) ? BigInt(object.fee) : 0n,
+      preBalances: globalThis.Array.isArray(object?.preBalances) ? object.preBalances.map((e: any) => BigInt(e)) : [],
       postBalances: globalThis.Array.isArray(object?.postBalances)
-        ? object.postBalances.map((e: any) => globalThis.String(e))
+        ? object.postBalances.map((e: any) => BigInt(e))
         : [],
       innerInstructions: globalThis.Array.isArray(object?.innerInstructions)
         ? object.innerInstructions.map((e: any) => InnerInstructions.fromJSON(e))
@@ -1175,7 +1191,9 @@ export const TransactionStatusMeta: MessageFns<TransactionStatusMeta> = {
       postTokenBalances: globalThis.Array.isArray(object?.postTokenBalances)
         ? object.postTokenBalances.map((e: any) => TokenBalance.fromJSON(e))
         : [],
-      rewards: globalThis.Array.isArray(object?.rewards) ? object.rewards.map((e: any) => Reward.fromJSON(e)) : [],
+      rewards: globalThis.Array.isArray(object?.rewards)
+        ? object.rewards.map((e: any) => Reward.fromJSON(e))
+        : [],
       loadedWritableAddresses: globalThis.Array.isArray(object?.loadedWritableAddresses)
         ? object.loadedWritableAddresses.map((e: any) => bytesFromBase64(e))
         : [],
@@ -1184,10 +1202,8 @@ export const TransactionStatusMeta: MessageFns<TransactionStatusMeta> = {
         : [],
       returnData: isSet(object.returnData) ? ReturnData.fromJSON(object.returnData) : undefined,
       returnDataNone: isSet(object.returnDataNone) ? globalThis.Boolean(object.returnDataNone) : false,
-      computeUnitsConsumed: isSet(object.computeUnitsConsumed)
-        ? globalThis.String(object.computeUnitsConsumed)
-        : undefined,
-      costUnits: isSet(object.costUnits) ? globalThis.String(object.costUnits) : undefined,
+      computeUnitsConsumed: isSet(object.computeUnitsConsumed) ? BigInt(object.computeUnitsConsumed) : undefined,
+      costUnits: isSet(object.costUnits) ? BigInt(object.costUnits) : undefined,
     };
   },
 
@@ -1196,14 +1212,14 @@ export const TransactionStatusMeta: MessageFns<TransactionStatusMeta> = {
     if (message.err !== undefined) {
       obj.err = TransactionError.toJSON(message.err);
     }
-    if (message.fee !== "0") {
-      obj.fee = message.fee;
+    if (message.fee !== 0n) {
+      obj.fee = message.fee.toString();
     }
     if (message.preBalances?.length) {
-      obj.preBalances = message.preBalances;
+      obj.preBalances = message.preBalances.map((e) => e.toString());
     }
     if (message.postBalances?.length) {
-      obj.postBalances = message.postBalances;
+      obj.postBalances = message.postBalances.map((e) => e.toString());
     }
     if (message.innerInstructions?.length) {
       obj.innerInstructions = message.innerInstructions.map((e) => InnerInstructions.toJSON(e));
@@ -1239,10 +1255,10 @@ export const TransactionStatusMeta: MessageFns<TransactionStatusMeta> = {
       obj.returnDataNone = message.returnDataNone;
     }
     if (message.computeUnitsConsumed !== undefined) {
-      obj.computeUnitsConsumed = message.computeUnitsConsumed;
+      obj.computeUnitsConsumed = message.computeUnitsConsumed.toString();
     }
     if (message.costUnits !== undefined) {
-      obj.costUnits = message.costUnits;
+      obj.costUnits = message.costUnits.toString();
     }
     return obj;
   },
@@ -1255,7 +1271,7 @@ export const TransactionStatusMeta: MessageFns<TransactionStatusMeta> = {
     message.err = (object.err !== undefined && object.err !== null)
       ? TransactionError.fromPartial(object.err)
       : undefined;
-    message.fee = object.fee ?? "0";
+    message.fee = object.fee ?? 0n;
     message.preBalances = object.preBalances?.map((e) => e) || [];
     message.postBalances = object.postBalances?.map((e) => e) || [];
     message.innerInstructions = object.innerInstructions?.map((e) => InnerInstructions.fromPartial(e)) || [];
@@ -1924,7 +1940,7 @@ export const ReturnData: MessageFns<ReturnData> = {
 };
 
 function createBaseReward(): Reward {
-  return { pubkey: "", lamports: "0", postBalance: "0", rewardType: 0, commission: "" };
+  return { pubkey: "", lamports: 0n, postBalance: 0n, rewardType: 0, commission: "" };
 }
 
 export const Reward: MessageFns<Reward> = {
@@ -1932,10 +1948,16 @@ export const Reward: MessageFns<Reward> = {
     if (message.pubkey !== "") {
       writer.uint32(10).string(message.pubkey);
     }
-    if (message.lamports !== "0") {
+    if (message.lamports !== 0n) {
+      if (BigInt.asIntN(64, message.lamports) !== message.lamports) {
+        throw new globalThis.Error("value provided for field message.lamports of type int64 too large");
+      }
       writer.uint32(16).int64(message.lamports);
     }
-    if (message.postBalance !== "0") {
+    if (message.postBalance !== 0n) {
+      if (BigInt.asUintN(64, message.postBalance) !== message.postBalance) {
+        throw new globalThis.Error("value provided for field message.postBalance of type uint64 too large");
+      }
       writer.uint32(24).uint64(message.postBalance);
     }
     if (message.rewardType !== 0) {
@@ -1967,7 +1989,7 @@ export const Reward: MessageFns<Reward> = {
             break;
           }
 
-          message.lamports = reader.int64().toString();
+          message.lamports = reader.int64() as bigint;
           continue;
         }
         case 3: {
@@ -1975,7 +1997,7 @@ export const Reward: MessageFns<Reward> = {
             break;
           }
 
-          message.postBalance = reader.uint64().toString();
+          message.postBalance = reader.uint64() as bigint;
           continue;
         }
         case 4: {
@@ -2006,8 +2028,8 @@ export const Reward: MessageFns<Reward> = {
   fromJSON(object: any): Reward {
     return {
       pubkey: isSet(object.pubkey) ? globalThis.String(object.pubkey) : "",
-      lamports: isSet(object.lamports) ? globalThis.String(object.lamports) : "0",
-      postBalance: isSet(object.postBalance) ? globalThis.String(object.postBalance) : "0",
+      lamports: isSet(object.lamports) ? BigInt(object.lamports) : 0n,
+      postBalance: isSet(object.postBalance) ? BigInt(object.postBalance) : 0n,
       rewardType: isSet(object.rewardType) ? rewardTypeFromJSON(object.rewardType) : 0,
       commission: isSet(object.commission) ? globalThis.String(object.commission) : "",
     };
@@ -2018,11 +2040,11 @@ export const Reward: MessageFns<Reward> = {
     if (message.pubkey !== "") {
       obj.pubkey = message.pubkey;
     }
-    if (message.lamports !== "0") {
-      obj.lamports = message.lamports;
+    if (message.lamports !== 0n) {
+      obj.lamports = message.lamports.toString();
     }
-    if (message.postBalance !== "0") {
-      obj.postBalance = message.postBalance;
+    if (message.postBalance !== 0n) {
+      obj.postBalance = message.postBalance.toString();
     }
     if (message.rewardType !== 0) {
       obj.rewardType = rewardTypeToJSON(message.rewardType);
@@ -2039,8 +2061,8 @@ export const Reward: MessageFns<Reward> = {
   fromPartial<I extends Exact<DeepPartial<Reward>, I>>(object: I): Reward {
     const message = createBaseReward();
     message.pubkey = object.pubkey ?? "";
-    message.lamports = object.lamports ?? "0";
-    message.postBalance = object.postBalance ?? "0";
+    message.lamports = object.lamports ?? 0n;
+    message.postBalance = object.postBalance ?? 0n;
     message.rewardType = object.rewardType ?? 0;
     message.commission = object.commission ?? "";
     return message;
@@ -2126,12 +2148,15 @@ export const Rewards: MessageFns<Rewards> = {
 };
 
 function createBaseUnixTimestamp(): UnixTimestamp {
-  return { timestamp: "0" };
+  return { timestamp: 0n };
 }
 
 export const UnixTimestamp: MessageFns<UnixTimestamp> = {
   encode(message: UnixTimestamp, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.timestamp !== "0") {
+    if (message.timestamp !== 0n) {
+      if (BigInt.asIntN(64, message.timestamp) !== message.timestamp) {
+        throw new globalThis.Error("value provided for field message.timestamp of type int64 too large");
+      }
       writer.uint32(8).int64(message.timestamp);
     }
     return writer;
@@ -2149,7 +2174,7 @@ export const UnixTimestamp: MessageFns<UnixTimestamp> = {
             break;
           }
 
-          message.timestamp = reader.int64().toString();
+          message.timestamp = reader.int64() as bigint;
           continue;
         }
       }
@@ -2162,13 +2187,13 @@ export const UnixTimestamp: MessageFns<UnixTimestamp> = {
   },
 
   fromJSON(object: any): UnixTimestamp {
-    return { timestamp: isSet(object.timestamp) ? globalThis.String(object.timestamp) : "0" };
+    return { timestamp: isSet(object.timestamp) ? BigInt(object.timestamp) : 0n };
   },
 
   toJSON(message: UnixTimestamp): unknown {
     const obj: any = {};
-    if (message.timestamp !== "0") {
-      obj.timestamp = message.timestamp;
+    if (message.timestamp !== 0n) {
+      obj.timestamp = message.timestamp.toString();
     }
     return obj;
   },
@@ -2178,18 +2203,21 @@ export const UnixTimestamp: MessageFns<UnixTimestamp> = {
   },
   fromPartial<I extends Exact<DeepPartial<UnixTimestamp>, I>>(object: I): UnixTimestamp {
     const message = createBaseUnixTimestamp();
-    message.timestamp = object.timestamp ?? "0";
+    message.timestamp = object.timestamp ?? 0n;
     return message;
   },
 };
 
 function createBaseBlockHeight(): BlockHeight {
-  return { blockHeight: "0" };
+  return { blockHeight: 0n };
 }
 
 export const BlockHeight: MessageFns<BlockHeight> = {
   encode(message: BlockHeight, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.blockHeight !== "0") {
+    if (message.blockHeight !== 0n) {
+      if (BigInt.asUintN(64, message.blockHeight) !== message.blockHeight) {
+        throw new globalThis.Error("value provided for field message.blockHeight of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.blockHeight);
     }
     return writer;
@@ -2207,7 +2235,7 @@ export const BlockHeight: MessageFns<BlockHeight> = {
             break;
           }
 
-          message.blockHeight = reader.uint64().toString();
+          message.blockHeight = reader.uint64() as bigint;
           continue;
         }
       }
@@ -2220,13 +2248,13 @@ export const BlockHeight: MessageFns<BlockHeight> = {
   },
 
   fromJSON(object: any): BlockHeight {
-    return { blockHeight: isSet(object.blockHeight) ? globalThis.String(object.blockHeight) : "0" };
+    return { blockHeight: isSet(object.blockHeight) ? BigInt(object.blockHeight) : 0n };
   },
 
   toJSON(message: BlockHeight): unknown {
     const obj: any = {};
-    if (message.blockHeight !== "0") {
-      obj.blockHeight = message.blockHeight;
+    if (message.blockHeight !== 0n) {
+      obj.blockHeight = message.blockHeight.toString();
     }
     return obj;
   },
@@ -2236,18 +2264,21 @@ export const BlockHeight: MessageFns<BlockHeight> = {
   },
   fromPartial<I extends Exact<DeepPartial<BlockHeight>, I>>(object: I): BlockHeight {
     const message = createBaseBlockHeight();
-    message.blockHeight = object.blockHeight ?? "0";
+    message.blockHeight = object.blockHeight ?? 0n;
     return message;
   },
 };
 
 function createBaseNumPartitions(): NumPartitions {
-  return { numPartitions: "0" };
+  return { numPartitions: 0n };
 }
 
 export const NumPartitions: MessageFns<NumPartitions> = {
   encode(message: NumPartitions, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.numPartitions !== "0") {
+    if (message.numPartitions !== 0n) {
+      if (BigInt.asUintN(64, message.numPartitions) !== message.numPartitions) {
+        throw new globalThis.Error("value provided for field message.numPartitions of type uint64 too large");
+      }
       writer.uint32(8).uint64(message.numPartitions);
     }
     return writer;
@@ -2265,7 +2296,7 @@ export const NumPartitions: MessageFns<NumPartitions> = {
             break;
           }
 
-          message.numPartitions = reader.uint64().toString();
+          message.numPartitions = reader.uint64() as bigint;
           continue;
         }
       }
@@ -2278,13 +2309,13 @@ export const NumPartitions: MessageFns<NumPartitions> = {
   },
 
   fromJSON(object: any): NumPartitions {
-    return { numPartitions: isSet(object.numPartitions) ? globalThis.String(object.numPartitions) : "0" };
+    return { numPartitions: isSet(object.numPartitions) ? BigInt(object.numPartitions) : 0n };
   },
 
   toJSON(message: NumPartitions): unknown {
     const obj: any = {};
-    if (message.numPartitions !== "0") {
-      obj.numPartitions = message.numPartitions;
+    if (message.numPartitions !== 0n) {
+      obj.numPartitions = message.numPartitions.toString();
     }
     return obj;
   },
@@ -2294,7 +2325,7 @@ export const NumPartitions: MessageFns<NumPartitions> = {
   },
   fromPartial<I extends Exact<DeepPartial<NumPartitions>, I>>(object: I): NumPartitions {
     const message = createBaseNumPartitions();
-    message.numPartitions = object.numPartitions ?? "0";
+    message.numPartitions = object.numPartitions ?? 0n;
     return message;
   },
 };
@@ -2324,7 +2355,7 @@ function base64FromBytes(arr: Uint8Array): string {
   }
 }
 
-type Builtin = Date | Function | Uint8Array | string | number | boolean | undefined;
+type Builtin = Date | Function | Uint8Array | string | number | boolean | bigint | undefined;
 
 export type DeepPartial<T> = T extends Builtin ? T
   : T extends globalThis.Array<infer U> ? globalThis.Array<DeepPartial<U>>

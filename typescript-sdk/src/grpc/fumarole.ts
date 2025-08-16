@@ -69,12 +69,12 @@ export interface GetChainTipRequest {
 
 export interface GetChainTipResponse {
   blockchainId: Uint8Array;
-  shardToMaxOffsetMap: { [key: number]: string };
+  shardToMaxOffsetMap: { [key: number]: bigint };
 }
 
 export interface GetChainTipResponse_ShardToMaxOffsetMapEntry {
   key: number;
-  value: string;
+  value: bigint;
 }
 
 export interface VersionRequest {
@@ -180,23 +180,23 @@ export interface DataResponse {
 }
 
 export interface CommitOffset {
-  offset: string;
+  offset: bigint;
   shardId: number;
 }
 
 export interface PollBlockchainHistory {
   shardId: number;
-  from?: string | undefined;
-  limit?: string | undefined;
+  from?: bigint | undefined;
+  limit?: bigint | undefined;
 }
 
 export interface BlockchainEvent {
-  offset: string;
+  offset: bigint;
   blockchainId: Uint8Array;
   blockUid: Uint8Array;
   numShards: number;
-  slot: string;
-  parentSlot?: string | undefined;
+  slot: bigint;
+  parentSlot?: bigint | undefined;
   commitmentLevel: CommitmentLevel;
   blockchainShardId: number;
   deadError?: string | undefined;
@@ -225,18 +225,18 @@ export interface ControlResponse {
 }
 
 export interface CommitOffsetResult {
-  offset: string;
+  offset: bigint;
   shardId: number;
 }
 
 export interface InitialConsumerGroupState {
   blockchainId: Uint8Array;
-  lastCommittedOffsets: { [key: number]: string };
+  lastCommittedOffsets: { [key: number]: bigint };
 }
 
 export interface InitialConsumerGroupState_LastCommittedOffsetsEntry {
   key: number;
-  value: string;
+  value: bigint;
 }
 
 export interface CreateConsumerGroupResponse {
@@ -361,8 +361,8 @@ export const GetChainTipResponse: MessageFns<GetChainTipResponse> = {
     return {
       blockchainId: isSet(object.blockchainId) ? bytesFromBase64(object.blockchainId) : new Uint8Array(0),
       shardToMaxOffsetMap: isObject(object.shardToMaxOffsetMap)
-        ? Object.entries(object.shardToMaxOffsetMap).reduce<{ [key: number]: string }>((acc, [key, value]) => {
-          acc[globalThis.Number(key)] = String(value);
+        ? Object.entries(object.shardToMaxOffsetMap).reduce<{ [key: number]: bigint }>((acc, [key, value]) => {
+          acc[globalThis.Number(key)] = BigInt(value as string | number | bigint | boolean);
           return acc;
         }, {})
         : {},
@@ -379,7 +379,7 @@ export const GetChainTipResponse: MessageFns<GetChainTipResponse> = {
       if (entries.length > 0) {
         obj.shardToMaxOffsetMap = {};
         entries.forEach(([k, v]) => {
-          obj.shardToMaxOffsetMap[k] = v;
+          obj.shardToMaxOffsetMap[k] = v.toString();
         });
       }
     }
@@ -392,10 +392,10 @@ export const GetChainTipResponse: MessageFns<GetChainTipResponse> = {
   fromPartial<I extends Exact<DeepPartial<GetChainTipResponse>, I>>(object: I): GetChainTipResponse {
     const message = createBaseGetChainTipResponse();
     message.blockchainId = object.blockchainId ?? new Uint8Array(0);
-    message.shardToMaxOffsetMap = Object.entries(object.shardToMaxOffsetMap ?? {}).reduce<{ [key: number]: string }>(
+    message.shardToMaxOffsetMap = Object.entries(object.shardToMaxOffsetMap ?? {}).reduce<{ [key: number]: bigint }>(
       (acc, [key, value]) => {
         if (value !== undefined) {
-          acc[globalThis.Number(key)] = globalThis.String(value);
+          acc[globalThis.Number(key)] = BigInt(value as string | number | bigint | boolean);
         }
         return acc;
       },
@@ -406,7 +406,7 @@ export const GetChainTipResponse: MessageFns<GetChainTipResponse> = {
 };
 
 function createBaseGetChainTipResponse_ShardToMaxOffsetMapEntry(): GetChainTipResponse_ShardToMaxOffsetMapEntry {
-  return { key: 0, value: "0" };
+  return { key: 0, value: 0n };
 }
 
 export const GetChainTipResponse_ShardToMaxOffsetMapEntry: MessageFns<GetChainTipResponse_ShardToMaxOffsetMapEntry> = {
@@ -417,7 +417,10 @@ export const GetChainTipResponse_ShardToMaxOffsetMapEntry: MessageFns<GetChainTi
     if (message.key !== 0) {
       writer.uint32(8).int32(message.key);
     }
-    if (message.value !== "0") {
+    if (message.value !== 0n) {
+      if (BigInt.asIntN(64, message.value) !== message.value) {
+        throw new globalThis.Error("value provided for field message.value of type int64 too large");
+      }
       writer.uint32(16).int64(message.value);
     }
     return writer;
@@ -443,7 +446,7 @@ export const GetChainTipResponse_ShardToMaxOffsetMapEntry: MessageFns<GetChainTi
             break;
           }
 
-          message.value = reader.int64().toString();
+          message.value = reader.int64() as bigint;
           continue;
         }
       }
@@ -458,7 +461,7 @@ export const GetChainTipResponse_ShardToMaxOffsetMapEntry: MessageFns<GetChainTi
   fromJSON(object: any): GetChainTipResponse_ShardToMaxOffsetMapEntry {
     return {
       key: isSet(object.key) ? globalThis.Number(object.key) : 0,
-      value: isSet(object.value) ? globalThis.String(object.value) : "0",
+      value: isSet(object.value) ? BigInt(object.value) : 0n,
     };
   },
 
@@ -467,8 +470,8 @@ export const GetChainTipResponse_ShardToMaxOffsetMapEntry: MessageFns<GetChainTi
     if (message.key !== 0) {
       obj.key = Math.round(message.key);
     }
-    if (message.value !== "0") {
-      obj.value = message.value;
+    if (message.value !== 0n) {
+      obj.value = message.value.toString();
     }
     return obj;
   },
@@ -483,7 +486,7 @@ export const GetChainTipResponse_ShardToMaxOffsetMapEntry: MessageFns<GetChainTi
   ): GetChainTipResponse_ShardToMaxOffsetMapEntry {
     const message = createBaseGetChainTipResponse_ShardToMaxOffsetMapEntry();
     message.key = object.key ?? 0;
-    message.value = object.value ?? "0";
+    message.value = object.value ?? 0n;
     return message;
   },
 };
@@ -2138,12 +2141,15 @@ export const DataResponse: MessageFns<DataResponse> = {
 };
 
 function createBaseCommitOffset(): CommitOffset {
-  return { offset: "0", shardId: 0 };
+  return { offset: 0n, shardId: 0 };
 }
 
 export const CommitOffset: MessageFns<CommitOffset> = {
   encode(message: CommitOffset, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.offset !== "0") {
+    if (message.offset !== 0n) {
+      if (BigInt.asIntN(64, message.offset) !== message.offset) {
+        throw new globalThis.Error("value provided for field message.offset of type int64 too large");
+      }
       writer.uint32(8).int64(message.offset);
     }
     if (message.shardId !== 0) {
@@ -2164,7 +2170,7 @@ export const CommitOffset: MessageFns<CommitOffset> = {
             break;
           }
 
-          message.offset = reader.int64().toString();
+          message.offset = reader.int64() as bigint;
           continue;
         }
         case 2: {
@@ -2186,15 +2192,15 @@ export const CommitOffset: MessageFns<CommitOffset> = {
 
   fromJSON(object: any): CommitOffset {
     return {
-      offset: isSet(object.offset) ? globalThis.String(object.offset) : "0",
+      offset: isSet(object.offset) ? BigInt(object.offset) : 0n,
       shardId: isSet(object.shardId) ? globalThis.Number(object.shardId) : 0,
     };
   },
 
   toJSON(message: CommitOffset): unknown {
     const obj: any = {};
-    if (message.offset !== "0") {
-      obj.offset = message.offset;
+    if (message.offset !== 0n) {
+      obj.offset = message.offset.toString();
     }
     if (message.shardId !== 0) {
       obj.shardId = Math.round(message.shardId);
@@ -2207,7 +2213,7 @@ export const CommitOffset: MessageFns<CommitOffset> = {
   },
   fromPartial<I extends Exact<DeepPartial<CommitOffset>, I>>(object: I): CommitOffset {
     const message = createBaseCommitOffset();
-    message.offset = object.offset ?? "0";
+    message.offset = object.offset ?? 0n;
     message.shardId = object.shardId ?? 0;
     return message;
   },
@@ -2223,9 +2229,15 @@ export const PollBlockchainHistory: MessageFns<PollBlockchainHistory> = {
       writer.uint32(8).int32(message.shardId);
     }
     if (message.from !== undefined) {
+      if (BigInt.asIntN(64, message.from) !== message.from) {
+        throw new globalThis.Error("value provided for field message.from of type int64 too large");
+      }
       writer.uint32(16).int64(message.from);
     }
     if (message.limit !== undefined) {
+      if (BigInt.asIntN(64, message.limit) !== message.limit) {
+        throw new globalThis.Error("value provided for field message.limit of type int64 too large");
+      }
       writer.uint32(24).int64(message.limit);
     }
     return writer;
@@ -2251,7 +2263,7 @@ export const PollBlockchainHistory: MessageFns<PollBlockchainHistory> = {
             break;
           }
 
-          message.from = reader.int64().toString();
+          message.from = reader.int64() as bigint;
           continue;
         }
         case 3: {
@@ -2259,7 +2271,7 @@ export const PollBlockchainHistory: MessageFns<PollBlockchainHistory> = {
             break;
           }
 
-          message.limit = reader.int64().toString();
+          message.limit = reader.int64() as bigint;
           continue;
         }
       }
@@ -2274,8 +2286,8 @@ export const PollBlockchainHistory: MessageFns<PollBlockchainHistory> = {
   fromJSON(object: any): PollBlockchainHistory {
     return {
       shardId: isSet(object.shardId) ? globalThis.Number(object.shardId) : 0,
-      from: isSet(object.from) ? globalThis.String(object.from) : undefined,
-      limit: isSet(object.limit) ? globalThis.String(object.limit) : undefined,
+      from: isSet(object.from) ? BigInt(object.from) : undefined,
+      limit: isSet(object.limit) ? BigInt(object.limit) : undefined,
     };
   },
 
@@ -2285,10 +2297,10 @@ export const PollBlockchainHistory: MessageFns<PollBlockchainHistory> = {
       obj.shardId = Math.round(message.shardId);
     }
     if (message.from !== undefined) {
-      obj.from = message.from;
+      obj.from = message.from.toString();
     }
     if (message.limit !== undefined) {
-      obj.limit = message.limit;
+      obj.limit = message.limit.toString();
     }
     return obj;
   },
@@ -2307,11 +2319,11 @@ export const PollBlockchainHistory: MessageFns<PollBlockchainHistory> = {
 
 function createBaseBlockchainEvent(): BlockchainEvent {
   return {
-    offset: "0",
+    offset: 0n,
     blockchainId: new Uint8Array(0),
     blockUid: new Uint8Array(0),
     numShards: 0,
-    slot: "0",
+    slot: 0n,
     parentSlot: undefined,
     commitmentLevel: 0,
     blockchainShardId: 0,
@@ -2321,7 +2333,10 @@ function createBaseBlockchainEvent(): BlockchainEvent {
 
 export const BlockchainEvent: MessageFns<BlockchainEvent> = {
   encode(message: BlockchainEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.offset !== "0") {
+    if (message.offset !== 0n) {
+      if (BigInt.asIntN(64, message.offset) !== message.offset) {
+        throw new globalThis.Error("value provided for field message.offset of type int64 too large");
+      }
       writer.uint32(8).int64(message.offset);
     }
     if (message.blockchainId.length !== 0) {
@@ -2333,10 +2348,16 @@ export const BlockchainEvent: MessageFns<BlockchainEvent> = {
     if (message.numShards !== 0) {
       writer.uint32(32).uint32(message.numShards);
     }
-    if (message.slot !== "0") {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
       writer.uint32(40).uint64(message.slot);
     }
     if (message.parentSlot !== undefined) {
+      if (BigInt.asUintN(64, message.parentSlot) !== message.parentSlot) {
+        throw new globalThis.Error("value provided for field message.parentSlot of type uint64 too large");
+      }
       writer.uint32(48).uint64(message.parentSlot);
     }
     if (message.commitmentLevel !== 0) {
@@ -2363,7 +2384,7 @@ export const BlockchainEvent: MessageFns<BlockchainEvent> = {
             break;
           }
 
-          message.offset = reader.int64().toString();
+          message.offset = reader.int64() as bigint;
           continue;
         }
         case 2: {
@@ -2395,7 +2416,7 @@ export const BlockchainEvent: MessageFns<BlockchainEvent> = {
             break;
           }
 
-          message.slot = reader.uint64().toString();
+          message.slot = reader.uint64() as bigint;
           continue;
         }
         case 6: {
@@ -2403,7 +2424,7 @@ export const BlockchainEvent: MessageFns<BlockchainEvent> = {
             break;
           }
 
-          message.parentSlot = reader.uint64().toString();
+          message.parentSlot = reader.uint64() as bigint;
           continue;
         }
         case 7: {
@@ -2441,12 +2462,12 @@ export const BlockchainEvent: MessageFns<BlockchainEvent> = {
 
   fromJSON(object: any): BlockchainEvent {
     return {
-      offset: isSet(object.offset) ? globalThis.String(object.offset) : "0",
+      offset: isSet(object.offset) ? BigInt(object.offset) : 0n,
       blockchainId: isSet(object.blockchainId) ? bytesFromBase64(object.blockchainId) : new Uint8Array(0),
       blockUid: isSet(object.blockUid) ? bytesFromBase64(object.blockUid) : new Uint8Array(0),
       numShards: isSet(object.numShards) ? globalThis.Number(object.numShards) : 0,
-      slot: isSet(object.slot) ? globalThis.String(object.slot) : "0",
-      parentSlot: isSet(object.parentSlot) ? globalThis.String(object.parentSlot) : undefined,
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
+      parentSlot: isSet(object.parentSlot) ? BigInt(object.parentSlot) : undefined,
       commitmentLevel: isSet(object.commitmentLevel) ? commitmentLevelFromJSON(object.commitmentLevel) : 0,
       blockchainShardId: isSet(object.blockchainShardId) ? globalThis.Number(object.blockchainShardId) : 0,
       deadError: isSet(object.deadError) ? globalThis.String(object.deadError) : undefined,
@@ -2455,8 +2476,8 @@ export const BlockchainEvent: MessageFns<BlockchainEvent> = {
 
   toJSON(message: BlockchainEvent): unknown {
     const obj: any = {};
-    if (message.offset !== "0") {
-      obj.offset = message.offset;
+    if (message.offset !== 0n) {
+      obj.offset = message.offset.toString();
     }
     if (message.blockchainId.length !== 0) {
       obj.blockchainId = base64FromBytes(message.blockchainId);
@@ -2467,11 +2488,11 @@ export const BlockchainEvent: MessageFns<BlockchainEvent> = {
     if (message.numShards !== 0) {
       obj.numShards = Math.round(message.numShards);
     }
-    if (message.slot !== "0") {
-      obj.slot = message.slot;
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
     }
     if (message.parentSlot !== undefined) {
-      obj.parentSlot = message.parentSlot;
+      obj.parentSlot = message.parentSlot.toString();
     }
     if (message.commitmentLevel !== 0) {
       obj.commitmentLevel = commitmentLevelToJSON(message.commitmentLevel);
@@ -2490,11 +2511,11 @@ export const BlockchainEvent: MessageFns<BlockchainEvent> = {
   },
   fromPartial<I extends Exact<DeepPartial<BlockchainEvent>, I>>(object: I): BlockchainEvent {
     const message = createBaseBlockchainEvent();
-    message.offset = object.offset ?? "0";
+    message.offset = object.offset ?? 0n;
     message.blockchainId = object.blockchainId ?? new Uint8Array(0);
     message.blockUid = object.blockUid ?? new Uint8Array(0);
     message.numShards = object.numShards ?? 0;
-    message.slot = object.slot ?? "0";
+    message.slot = object.slot ?? 0n;
     message.parentSlot = object.parentSlot ?? undefined;
     message.commitmentLevel = object.commitmentLevel ?? 0;
     message.blockchainShardId = object.blockchainShardId ?? 0;
@@ -2854,12 +2875,15 @@ export const ControlResponse: MessageFns<ControlResponse> = {
 };
 
 function createBaseCommitOffsetResult(): CommitOffsetResult {
-  return { offset: "0", shardId: 0 };
+  return { offset: 0n, shardId: 0 };
 }
 
 export const CommitOffsetResult: MessageFns<CommitOffsetResult> = {
   encode(message: CommitOffsetResult, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.offset !== "0") {
+    if (message.offset !== 0n) {
+      if (BigInt.asIntN(64, message.offset) !== message.offset) {
+        throw new globalThis.Error("value provided for field message.offset of type int64 too large");
+      }
       writer.uint32(8).int64(message.offset);
     }
     if (message.shardId !== 0) {
@@ -2880,7 +2904,7 @@ export const CommitOffsetResult: MessageFns<CommitOffsetResult> = {
             break;
           }
 
-          message.offset = reader.int64().toString();
+          message.offset = reader.int64() as bigint;
           continue;
         }
         case 2: {
@@ -2902,15 +2926,15 @@ export const CommitOffsetResult: MessageFns<CommitOffsetResult> = {
 
   fromJSON(object: any): CommitOffsetResult {
     return {
-      offset: isSet(object.offset) ? globalThis.String(object.offset) : "0",
+      offset: isSet(object.offset) ? BigInt(object.offset) : 0n,
       shardId: isSet(object.shardId) ? globalThis.Number(object.shardId) : 0,
     };
   },
 
   toJSON(message: CommitOffsetResult): unknown {
     const obj: any = {};
-    if (message.offset !== "0") {
-      obj.offset = message.offset;
+    if (message.offset !== 0n) {
+      obj.offset = message.offset.toString();
     }
     if (message.shardId !== 0) {
       obj.shardId = Math.round(message.shardId);
@@ -2923,7 +2947,7 @@ export const CommitOffsetResult: MessageFns<CommitOffsetResult> = {
   },
   fromPartial<I extends Exact<DeepPartial<CommitOffsetResult>, I>>(object: I): CommitOffsetResult {
     const message = createBaseCommitOffsetResult();
-    message.offset = object.offset ?? "0";
+    message.offset = object.offset ?? 0n;
     message.shardId = object.shardId ?? 0;
     return message;
   },
@@ -2984,8 +3008,8 @@ export const InitialConsumerGroupState: MessageFns<InitialConsumerGroupState> = 
     return {
       blockchainId: isSet(object.blockchainId) ? bytesFromBase64(object.blockchainId) : new Uint8Array(0),
       lastCommittedOffsets: isObject(object.lastCommittedOffsets)
-        ? Object.entries(object.lastCommittedOffsets).reduce<{ [key: number]: string }>((acc, [key, value]) => {
-          acc[globalThis.Number(key)] = String(value);
+        ? Object.entries(object.lastCommittedOffsets).reduce<{ [key: number]: bigint }>((acc, [key, value]) => {
+          acc[globalThis.Number(key)] = BigInt(value as string | number | bigint | boolean);
           return acc;
         }, {})
         : {},
@@ -3002,7 +3026,7 @@ export const InitialConsumerGroupState: MessageFns<InitialConsumerGroupState> = 
       if (entries.length > 0) {
         obj.lastCommittedOffsets = {};
         entries.forEach(([k, v]) => {
-          obj.lastCommittedOffsets[k] = v;
+          obj.lastCommittedOffsets[k] = v.toString();
         });
       }
     }
@@ -3015,10 +3039,10 @@ export const InitialConsumerGroupState: MessageFns<InitialConsumerGroupState> = 
   fromPartial<I extends Exact<DeepPartial<InitialConsumerGroupState>, I>>(object: I): InitialConsumerGroupState {
     const message = createBaseInitialConsumerGroupState();
     message.blockchainId = object.blockchainId ?? new Uint8Array(0);
-    message.lastCommittedOffsets = Object.entries(object.lastCommittedOffsets ?? {}).reduce<{ [key: number]: string }>(
+    message.lastCommittedOffsets = Object.entries(object.lastCommittedOffsets ?? {}).reduce<{ [key: number]: bigint }>(
       (acc, [key, value]) => {
         if (value !== undefined) {
-          acc[globalThis.Number(key)] = globalThis.String(value);
+          acc[globalThis.Number(key)] = BigInt(value as string | number | bigint | boolean);
         }
         return acc;
       },
@@ -3029,7 +3053,7 @@ export const InitialConsumerGroupState: MessageFns<InitialConsumerGroupState> = 
 };
 
 function createBaseInitialConsumerGroupState_LastCommittedOffsetsEntry(): InitialConsumerGroupState_LastCommittedOffsetsEntry {
-  return { key: 0, value: "0" };
+  return { key: 0, value: 0n };
 }
 
 export const InitialConsumerGroupState_LastCommittedOffsetsEntry: MessageFns<
@@ -3042,7 +3066,10 @@ export const InitialConsumerGroupState_LastCommittedOffsetsEntry: MessageFns<
     if (message.key !== 0) {
       writer.uint32(8).int32(message.key);
     }
-    if (message.value !== "0") {
+    if (message.value !== 0n) {
+      if (BigInt.asIntN(64, message.value) !== message.value) {
+        throw new globalThis.Error("value provided for field message.value of type int64 too large");
+      }
       writer.uint32(16).int64(message.value);
     }
     return writer;
@@ -3068,7 +3095,7 @@ export const InitialConsumerGroupState_LastCommittedOffsetsEntry: MessageFns<
             break;
           }
 
-          message.value = reader.int64().toString();
+          message.value = reader.int64() as bigint;
           continue;
         }
       }
@@ -3083,7 +3110,7 @@ export const InitialConsumerGroupState_LastCommittedOffsetsEntry: MessageFns<
   fromJSON(object: any): InitialConsumerGroupState_LastCommittedOffsetsEntry {
     return {
       key: isSet(object.key) ? globalThis.Number(object.key) : 0,
-      value: isSet(object.value) ? globalThis.String(object.value) : "0",
+      value: isSet(object.value) ? BigInt(object.value) : 0n,
     };
   },
 
@@ -3092,8 +3119,8 @@ export const InitialConsumerGroupState_LastCommittedOffsetsEntry: MessageFns<
     if (message.key !== 0) {
       obj.key = Math.round(message.key);
     }
-    if (message.value !== "0") {
-      obj.value = message.value;
+    if (message.value !== 0n) {
+      obj.value = message.value.toString();
     }
     return obj;
   },
@@ -3108,7 +3135,7 @@ export const InitialConsumerGroupState_LastCommittedOffsetsEntry: MessageFns<
   ): InitialConsumerGroupState_LastCommittedOffsetsEntry {
     const message = createBaseInitialConsumerGroupState_LastCommittedOffsetsEntry();
     message.key = object.key ?? 0;
-    message.value = object.value ?? "0";
+    message.value = object.value ?? 0n;
     return message;
   },
 };
@@ -3495,7 +3522,7 @@ function base64FromBytes(arr: Uint8Array): string {
   }
 }
 
-type Builtin = Date | Function | Uint8Array | string | number | boolean | undefined;
+type Builtin = Date | Function | Uint8Array | string | number | boolean | bigint | undefined;
 
 export type DeepPartial<T> = T extends Builtin ? T
   : T extends globalThis.Array<infer U> ? globalThis.Array<DeepPartial<U>>
