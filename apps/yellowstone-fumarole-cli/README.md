@@ -40,40 +40,77 @@ Options:
 
 Here's how to configure your config file:
 
-```toml
-[fumarole]
-endpoints = ["https://fumarole.endpoint.rpcpool.com"]
-x-token = "00000000-0000-0000-0000-000000000000"
+```yaml
+endpoint: https://fumarole.endpoint.rpcpool.com
+x-token: 00000000-0000-0000-0000-000000000000
 ```
 
 You can test your configuration file with `test-config` subcommand:
 
 ```sh
-fume --config path/to/config.toml test-config
+fume --config path/to/config.yaml test-config
 ```
 
 By default, if you don't provide `--config`, fumarole CLI will use the value at `FUMAROLE_CONFIG` environment variable if set, 
 otherwise fallback to `~/.fumarole/config.yaml`.
 
-
 ```sh
-export FUMAROLE_CONFIG=path/to/config.toml
+export FUMAROLE_CONFIG=path/to/config.yaml
 fume test-config
 Successfully connected to Fumarole Service
 ```
 
+### Enabling ZSTD compression
+
+If you plan to subscribe to a lot of data or if your internet connection has high latency,
+you should enable ZSTD compression like so:
+
+```yaml
+endpoint: https://fumarole.endpoint.rpcpool.com
+x-token: 00000000-0000-0000-0000-000000000000
+response_compression: zstd
+```
 
 ## Create a Persistent Subscriber
+
+To create a persistent subscriber at the tip of Fumarole's log:
 
 ```sh
 fume create --name helloworld-1 \
 ```
 
+
+To replay from a slot, query the `slot-range` and pick a slot within the slot range:
+
+```sh
+fume --config <path/to/config.yaml> slot-range
+Slot range: <FIRST>-<LAST>
+```
+
+Then you can use `--initial-offset-policy` with `--from-slot` options:
+
+```sh
+fume --config '<path/to/config.yaml>' create --name test --initial-offset-policy 'from-slot' --from-slot '<YOUR SLOT>'
+```
+
+**Note**: The option `--from-slot` is only interpreted if you set `--initial-offset-policy 'from-slot`, otherwise it is ignored.
+
+
 ## List all persistent subscribers
 
 ```sh
-fume list
+fume --config '<path/to/config.yaml>' list
+
++--------------------------------------+---------+-------+
+| Uid                                  | Name    | Stale |
++--------------------------------------+---------+-------+
+| 00000000-0000-0000-0000-000000000000 | test1   | false |
++--------------------------------------+---------+-------+
+| 00000000-0000-0000-0000-000000000001 | test2   | true  |
++--------------------------------------+---------+-------+
 ```
+
+The stale column indicates if your persistent subscriber fell behind the fumarole log.
 
 ## Delete a persistent subscribers
 
@@ -138,6 +175,14 @@ The above command stream all data required by [DAS](https://github.com/rpcpool/d
 
 **Note**: This command serves more as a testing tool/playground for you to try it out as it only prints summarized data.
 
+### Parallel subscription
+
+By default, fumarole CLI tool only open one TCP connection to Fumarole service.
+In case you need to subscribe to a lot of traffic, enabling parallel TCP connections will help alot with performance.
+
+```sh
+fume --config '<path/to/config.yaml>' subscribe --name example --para 4
+```
 
 ### Enabling Prometheus metrics
 

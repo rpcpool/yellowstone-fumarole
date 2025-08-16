@@ -28,7 +28,7 @@ from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
     BlockFilters,
 )
 from yellowstone_fumarole_proto.fumarole_v2_pb2_grpc import (
-    Fumarole as GrpcFumaroleClient,
+    FumaroleStub,
 )
 from yellowstone_fumarole_client.utils.aio import Interval
 from yellowstone_fumarole_client.grpc_connectivity import FumaroleGrpcConnector
@@ -391,7 +391,7 @@ class GrpcSlotDownloader(AsyncSlotDownloader):
 
     def __init__(
         self,
-        client: GrpcFumaroleClient,
+        client: FumaroleStub,
     ):
         self.client = client
 
@@ -420,7 +420,7 @@ class GrpcDownloadBlockTaskRun:
     def __init__(
         self,
         download_request: FumeDownloadRequest,
-        client: GrpcFumaroleClient,
+        client: FumaroleStub,
         filters: Optional[BlockFilters],
         dragonsmouth_oulet: asyncio.Queue,
     ):

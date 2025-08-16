@@ -51,6 +51,7 @@
 //! ```yaml
 //! endpoint: https://example.com
 //! x-token: 00000000-0000-0000-0000-000000000000
+//! response_compression: zstd
 //! ```
 //!
 //!
@@ -188,6 +189,48 @@
 //! }
 //! ```
 //!
+//! ## High-traffic workload: parallel subscription + zstd
+//!
+//! For high-traffic workload or for higher latency connection, using parallel subscription and zstd will greatly improve performance to stay on-tip.
+//!
+//! Inside your `config.yaml` file enable compression with `response_compression: zstd`:
+//!
+//! ```yaml
+//! endpoint: https://fumarole.endpoint.rpcpool.com
+//! x-token: 00000000-0000-0000-0000-000000000000
+//! response_compression: zstd
+//! ```
+//!
+//! Uses `FumaroleSubscribeConfig` to configure the parallel subscription and zstd compression.
+//!
+//! ```rust
+//! let config: FumaroleConfig = serde_yaml::from_reader("<path/to/config.yaml>").expect("failed to parse fumarole config");
+//!
+//! let request = SubscribeRequest {
+//!    transactions: HashMap::from([(
+//!        "f1".to_owned(),
+//!        SubscribeRequestFilterTransactions::default(),
+//!    )]),
+//!    ..Default::default()
+//! };
+//!
+//!
+//! let mut fumarole_client = FumaroleClient::connect(config)
+//!    .await
+//!    .expect("Failed to connect to fumarole");
+//!
+//! let subscribe_config = FumaroleSubscribeConfig {
+//!    num_data_plane_tcp_connections: NonZeroU8::new(4).unwrap(), // maximum of 4 TCP connections is allowed
+//!    ..Default::default()
+//! };
+//!
+//! let dragonsmouth_session = fumarole_client
+//!    .dragonsmouth_subscribe_with_config(args.name, request, subscribe_config)
+//!    .await
+//!    .expect("Failed to subscribe");
+//! ```
+//!
+//!
 //! ## Enable Prometheus Metrics
 //!
 //! To enable Prometheus metrics, add the `features = [prometheus]` to your `Cargo.toml` file:
@@ -232,32 +275,34 @@ pub(crate) mod runtime;
 pub(crate) mod util;
 
 use {
+    crate::proto::GetSlotRangeRequest,
     config::FumaroleConfig,
-    futures::future::{select, Either},
+    futures::future::{Either, select},
     proto::control_response::Response,
     runtime::{
+        state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
         tokio::{
-            DownloadTaskRunnerChannels, GrpcDownloadTaskRunner, TokioFumeDragonsmouthRuntime,
-            DEFAULT_GC_INTERVAL,
+            DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, GrpcDownloadTaskRunner,
+            TokioFumeDragonsmouthRuntime,
         },
-        FumaroleSM, DEFAULT_SLOT_MEMORY_RETENTION,
     },
     std::{
         collections::HashMap,
-        num::NonZeroUsize,
+        num::{NonZeroU8, NonZeroUsize},
         time::{Duration, Instant},
     },
     tokio::sync::mpsc,
     tokio_stream::wrappers::ReceiverStream,
     tonic::{
         metadata::{
-            errors::{InvalidMetadataKey, InvalidMetadataValue},
             Ascii, MetadataKey, MetadataValue,
+            errors::{InvalidMetadataKey, InvalidMetadataValue},
         },
-        service::{interceptor::InterceptedService, Interceptor},
+        service::{Interceptor, interceptor::InterceptedService},
         transport::{Channel, ClientTlsConfig},
     },
     util::grpc::into_bounded_mpsc_rx,
+    uuid::Uuid,
 };
 
 mod solana {
@@ -275,12 +320,12 @@ mod geyser {
 #[allow(clippy::missing_const_for_fn)]
 #[allow(clippy::all)]
 pub mod proto {
-    include!(concat!(env!("OUT_DIR"), "/fumarole.rs"));
+    tonic::include_proto!("fumarole");
 }
 
 use {
     crate::grpc::FumaroleGrpcConnector,
-    proto::{fumarole_client::FumaroleClient as TonicFumaroleClient, JoinControlPlane},
+    proto::{JoinControlPlane, fumarole_client::FumaroleClient as TonicFumaroleClient},
     runtime::tokio::DataPlaneConn,
     tonic::transport::Endpoint,
 };
@@ -337,7 +382,7 @@ pub enum ConnectError {
 ///
 /// Default gRPC buffer capacity
 ///
-pub const DEFAULT_DRAGONSMOUTH_CAPACITY: usize = 10000;
+pub const DEFAULT_DRAGONSMOUTH_CAPACITY: usize = 100000;
 
 ///
 /// Default Fumarole commit offset interval
@@ -350,14 +395,19 @@ pub const DEFAULT_COMMIT_INTERVAL: Duration = Duration::from_secs(10);
 pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: usize = 3;
 
 ///
+/// MAXIMUM number of parallel data streams (TCP connections) to open to fumarole.
+///
+const MAX_PARA_DATA_STREAMS: u8 = 4;
+
+///
 /// Default number of parallel data streams (TCP connections) to open to fumarole.
 ///
-// const _DEFAULT_PARA_DATA_STREAMS: u8 = 3; /**TODO: enable this after beta*/
-///
+pub const DEFAULT_PARA_DATA_STREAMS: u8 = 4;
+
 ///
 /// Default maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
 ///
-pub const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP: usize = 10;
+pub const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP: usize = 1;
 
 ///
 /// Default refresh tip interval for the fumarole client.
@@ -399,7 +449,8 @@ pub struct FumaroleSubscribeConfig {
     ///
     /// Number of parallel data streams (TCP connections) to open to fumarole
     ///
-    // pub num_data_plane_tcp_connections: NonZeroU8, /*TODO: enable this after beta */
+    pub num_data_plane_tcp_connections: NonZeroU8,
+
     ///
     ///
     /// Maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
@@ -435,12 +486,20 @@ pub struct FumaroleSubscribeConfig {
     /// Interval to refresh the tip stats from the fumarole service.
     ///
     pub refresh_tip_stats_interval: Duration,
+
+    ///
+    /// Whether to disable committing offsets to the fumarole service.
+    /// This is useful for testing or when you don't care about committing offsets.
+    /// If set to `true`, the fumarole client will not commit offsets to the fumarole service.
+    /// This mean the current session will never commit progression.
+    /// If set to `true`, [`FumaroleSubscribeConfig::commit_interval`] will be ignored.
+    pub no_commit: bool,
 }
 
 impl Default for FumaroleSubscribeConfig {
     fn default() -> Self {
         Self {
-            // num_data_plane_tcp_connections: NonZeroU8::new(DEFAULT_PARA_DATA_STREAMS).unwrap(), /**THIS FEATURE WILL BE DONE AFTER BETA */
+            num_data_plane_tcp_connections: NonZeroU8::new(DEFAULT_PARA_DATA_STREAMS).unwrap(),
             concurrent_download_limit_per_tcp: NonZeroUsize::new(
                 DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
             )
@@ -451,6 +510,7 @@ impl Default for FumaroleSubscribeConfig {
             gc_interval: DEFAULT_GC_INTERVAL,
             slot_memory_retention: DEFAULT_SLOT_MEMORY_RETENTION,
             refresh_tip_stats_interval: DEFAULT_REFRESH_TIP_INTERVAL, // Default to 5 seconds
+            no_commit: false,
         }
     }
 }
@@ -519,8 +579,21 @@ fn string_pairs_to_metadata_header(
 
 impl FumaroleClient {
     pub async fn connect(config: FumaroleConfig) -> Result<FumaroleClient, ConnectError> {
+        let connection_window_size: u32 = config
+            .initial_connection_window_size
+            .as_u64()
+            .try_into()
+            .expect("initial_connection_window_size must fit in u32");
+        let stream_window_size: u32 = config
+            .initial_stream_window_size
+            .as_u64()
+            .try_into()
+            .expect("initial_stream_window_size must fit in u32");
         let endpoint = Endpoint::from_shared(config.endpoint.clone())?
-            .tls_config(ClientTlsConfig::new().with_native_roots())?;
+            .tls_config(ClientTlsConfig::new().with_native_roots())?
+            .initial_connection_window_size(connection_window_size)
+            .initial_stream_window_size(stream_window_size)
+            .http2_adaptive_window(config.enable_http2_adaptive_window);
 
         let connector = FumaroleGrpcConnector {
             config: config.clone(),
@@ -593,6 +666,11 @@ impl FumaroleClient {
         S: AsRef<str>,
     {
         assert!(
+            config.num_data_plane_tcp_connections.get() <= MAX_PARA_DATA_STREAMS,
+            "num_data_plane_tcp_connections must be less than or equal to {MAX_PARA_DATA_STREAMS}"
+        );
+
+        assert!(
             config.refresh_tip_stats_interval >= Duration::from_secs(5),
             "refresh_tip_stats_interval must be greater than or equal to 5 seconds"
         );
@@ -651,7 +729,7 @@ impl FumaroleClient {
 
         let mut data_plane_channel_vec = Vec::with_capacity(1);
         // TODO: support config.num_data_plane_tcp_connections
-        for _ in 0..1 {
+        for _ in 0..config.num_data_plane_tcp_connections.get() {
             let client = self
                 .connector
                 .connect()
@@ -660,7 +738,6 @@ impl FumaroleClient {
             let conn = DataPlaneConn::new(client, config.concurrent_download_limit_per_tcp.get());
             data_plane_channel_vec.push(conn);
         }
-
         let (download_task_runner_cnc_tx, download_task_runner_cnc_rx) = mpsc::channel(10);
         // Make sure the channel capacity is really low, since the grpc runner already implements its own concurrency control
         let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(10);
@@ -699,6 +776,8 @@ impl FumaroleClient {
             last_tip: Instant::now(),
             gc_interval: config.gc_interval,
             non_critical_background_jobs: Default::default(),
+            last_history_poll: Default::default(),
+            no_commit: config.no_commit,
         };
         let download_task_runner_jh = handle.spawn(grpc_download_task_runner.run());
         let fumarole_rt_jh = handle.spawn(tokio_rt.run());
@@ -727,6 +806,7 @@ impl FumaroleClient {
         request: impl tonic::IntoRequest<proto::ListConsumerGroupsRequest>,
     ) -> std::result::Result<tonic::Response<proto::ListConsumerGroupsResponse>, tonic::Status>
     {
+        tracing::trace!("list_consumer_groups called");
         self.inner.list_consumer_groups(request).await
     }
 
@@ -734,6 +814,7 @@ impl FumaroleClient {
         &mut self,
         request: impl tonic::IntoRequest<proto::GetConsumerGroupInfoRequest>,
     ) -> std::result::Result<tonic::Response<proto::ConsumerGroupInfo>, tonic::Status> {
+        tracing::trace!("get_consumer_group_info called");
         self.inner.get_consumer_group_info(request).await
     }
 
@@ -742,6 +823,7 @@ impl FumaroleClient {
         request: impl tonic::IntoRequest<proto::DeleteConsumerGroupRequest>,
     ) -> std::result::Result<tonic::Response<proto::DeleteConsumerGroupResponse>, tonic::Status>
     {
+        tracing::trace!("delete_consumer_group called");
         self.inner.delete_consumer_group(request).await
     }
 
@@ -750,6 +832,7 @@ impl FumaroleClient {
         request: impl tonic::IntoRequest<proto::CreateConsumerGroupRequest>,
     ) -> std::result::Result<tonic::Response<proto::CreateConsumerGroupResponse>, tonic::Status>
     {
+        tracing::trace!("create_consumer_group called");
         self.inner.create_consumer_group(request).await
     }
 
@@ -757,6 +840,18 @@ impl FumaroleClient {
         &mut self,
         request: impl tonic::IntoRequest<proto::GetChainTipRequest>,
     ) -> std::result::Result<tonic::Response<proto::GetChainTipResponse>, tonic::Status> {
+        tracing::trace!("get_chain_tip called");
         self.inner.get_chain_tip(request).await
+    }
+
+    pub async fn get_slot_range(
+        &mut self,
+    ) -> std::result::Result<tonic::Response<proto::GetSlotRangeResponse>, tonic::Status> {
+        tracing::trace!("get_slot_range called");
+        self.inner
+            .get_slot_range(GetSlotRangeRequest {
+                blockchain_id: Uuid::nil().as_bytes().to_vec(),
+            })
+            .await
     }
 }

@@ -7,13 +7,13 @@ use crate::metrics::{
     set_processed_slot_status_offset_queue_len, set_slot_status_update_queue_len,
 };
 use {
-    super::{FumaroleSM, FumeDownloadRequest, FumeOffset, FumeShardIdx},
+    super::state_machine::{FumaroleSM, FumeDownloadRequest, FumeOffset, FumeShardIdx},
     crate::{
-        proto::{
-            self, data_response, BlockFilters, CommitOffset, ControlCommand, DownloadBlockShard,
-            GetChainTipResponse, PollBlockchainHistory,
-        },
         FumaroleClient, FumaroleGrpcConnector, GrpcFumaroleClient,
+        proto::{
+            self, BlockFilters, CommitOffset, ControlCommand, DownloadBlockShard,
+            GetChainTipResponse, PollBlockchainHistory, data_response,
+        },
     },
     futures::StreamExt,
     solana_clock::Slot,
@@ -62,6 +62,7 @@ pub enum DownloadTaskResult {
 }
 
 pub enum BackgroundJobResult {
+    #[allow(dead_code)]
     UpdateTip(GetChainTipResponse),
 }
 
@@ -74,6 +75,7 @@ pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub sm: FumaroleSM,
     #[allow(dead_code)]
     pub blockchain_id: Vec<u8>,
+    #[allow(dead_code)]
     pub fumarole_client: FumaroleClient,
     pub download_task_runner_chans: DownloadTaskRunnerChannels,
     pub dragonsmouth_bidi: DragonsmouthSubscribeRequestBidi,
@@ -87,10 +89,13 @@ pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub get_tip_interval: Duration,
     pub last_commit: Instant,
     pub last_tip: Instant,
-
+    pub last_history_poll: Option<Instant>,
     pub gc_interval: usize, // in ticks
     pub non_critical_background_jobs: JoinSet<BackgroundJobResult>,
+    pub no_commit: bool,
 }
+
+const DEFAULT_HISTORY_POLL_SIZE: i64 = 100;
 
 const fn build_poll_history_cmd(from: Option<FumeOffset>) -> ControlCommand {
     ControlCommand {
@@ -99,7 +104,7 @@ const fn build_poll_history_cmd(from: Option<FumeOffset>) -> ControlCommand {
             PollBlockchainHistory {
                 shard_id: 0, /*ALWAYS 0-FOR FIRST VERSION OF FUMAROLE */
                 from,
-                limit: None,
+                limit: Some(DEFAULT_HISTORY_POLL_SIZE),
             },
         )),
     }
@@ -152,6 +157,7 @@ impl TokioFumeDragonsmouthRuntime {
                 self.sm.update_committed_offset(commit_offset_result.offset);
             }
             proto::control_response::Response::PollHist(blockchain_history) => {
+                self.last_history_poll = None;
                 if !blockchain_history.events.is_empty() {
                     tracing::debug!(
                         "polled blockchain history : {} events",
@@ -175,9 +181,15 @@ impl TokioFumeDragonsmouthRuntime {
     }
 
     async fn poll_history_if_needed(&mut self) {
-        if self.sm.need_new_blockchain_events() {
+        if self.last_history_poll.is_none() && self.sm.need_new_blockchain_events() {
+            #[cfg(feature = "prometheus")]
+            {
+                use crate::metrics::inc_poll_history_call_count;
+                inc_poll_history_call_count(Self::RUNTIME_NAME);
+            }
             let cmd = build_poll_history_cmd(Some(self.sm.committable_offset));
             self.control_plane_tx.send(cmd).await.expect("disconnected");
+            self.last_history_poll = Some(Instant::now());
         }
     }
 
@@ -198,6 +210,11 @@ impl TokioFumeDragonsmouthRuntime {
             let permit = match result {
                 Ok(permit) => permit,
                 Err(TrySendError::Full(_)) => {
+                    #[cfg(feature = "prometheus")]
+                    {
+                        use crate::metrics::incr_download_queue_full_detection_count;
+                        incr_download_queue_full_detection_count(Self::RUNTIME_NAME);
+                    }
                     break;
                 }
                 Err(TrySendError::Closed(_)) => {
@@ -236,6 +253,11 @@ impl TokioFumeDragonsmouthRuntime {
     }
 
     async unsafe fn force_commit_offset(&mut self) {
+        if self.no_commit {
+            tracing::debug!("no_commit is set, skipping offset commitment");
+            self.sm.update_committed_offset(self.sm.committable_offset);
+            return;
+        }
         self.control_plane_tx
             .send(build_commit_offset_cmd(self.sm.committable_offset))
             .await
@@ -399,12 +421,7 @@ impl TokioFumeDragonsmouthRuntime {
     }
 
     pub(crate) async fn run(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let inital_load_history_cmd = build_poll_history_cmd(None);
-
-        self.control_plane_tx
-            .send(inital_load_history_cmd)
-            .await
-            .expect("disconnected");
+        self.poll_history_if_needed().await;
 
         // Always start to commit offset, to make sure not another instance is committing to the same offset.
         unsafe {
@@ -800,7 +817,7 @@ impl GrpcDownloadTaskRunner {
             .entry(slot)
             .and_modify(|e| *e += 1)
             .or_insert(1);
-        conn.permits.checked_sub(1).expect("underflow");
+        conn.permits = conn.permits.checked_sub(1).expect("underflow");
 
         #[cfg(feature = "prometheus")]
         {
@@ -818,9 +835,27 @@ impl GrpcDownloadTaskRunner {
         }
     }
 
+    #[allow(dead_code)]
+    fn available_download_permit(&self) -> usize {
+        self.data_plane_channel_vec
+            .iter()
+            .map(|conn| conn.permits)
+            .sum()
+    }
+
     pub(crate) async fn run(mut self) -> Result<(), DownloadBlockError> {
         while !self.outlet.is_closed() {
             let maybe_available_client_idx = self.find_least_use_client();
+
+            #[cfg(feature = "prometheus")]
+            {
+                use crate::metrics::set_available_download_permit;
+                set_available_download_permit(
+                    Self::RUNTIME_NAME,
+                    self.available_download_permit() as i64,
+                );
+            }
+
             tokio::select! {
                 maybe = self.cnc_rx.recv() => {
                     match maybe {
@@ -848,7 +883,14 @@ impl GrpcDownloadTaskRunner {
                     }
                 }
                 Some(result) = self.tasks.join_next_with_id() => {
-                    let (task_id, result) = result.expect("should never panic");
+                    if result.is_err() && (self.outlet.is_closed() || self.cnc_rx.is_closed()) {
+                        // When we do Ctrl+C or shutdown the runtime,
+                        // the task runner will be closed and we will receive an error.
+                        // We can safely ignore this error.
+                        tracing::debug!("task runner closed");
+                        break;
+                    }
+                    let (task_id, result) = result.expect("download task result");
                     self.handle_data_plane_task_result(task_id, result).await?;
                 }
             }

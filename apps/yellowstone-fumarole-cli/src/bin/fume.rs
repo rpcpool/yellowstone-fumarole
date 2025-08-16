@@ -7,40 +7,45 @@ use {
         env,
         fmt::{self, Debug},
         fs::File,
-        io::{stdout, Write},
+        hash::Hash,
+        io::{Write, stdout},
         net::{AddrParseError, SocketAddr},
-        num::NonZeroUsize,
+        num::{NonZeroU8, NonZeroUsize},
         path::PathBuf,
         str::FromStr,
         time::Duration,
     },
-    tabled::{builder::Builder, Table},
+    tabled::{Table, builder::Builder},
     tokio::{
         io::{self, AsyncBufReadExt, BufReader},
-        signal::unix::{signal, SignalKind},
+        signal::unix::{SignalKind, signal},
     },
     tonic::Code,
     tracing_subscriber::EnvFilter,
     yellowstone_fumarole_cli::prom::prometheus_server,
     yellowstone_fumarole_client::{
+        DragonsmouthAdapterSession, FumaroleClient, FumaroleSubscribeConfig,
         config::FumaroleConfig,
         proto::{
             ConsumerGroupInfo, CreateConsumerGroupRequest, DeleteConsumerGroupRequest,
             GetConsumerGroupInfoRequest, InitialOffsetPolicy, ListConsumerGroupsRequest,
         },
-        DragonsmouthAdapterSession, FumaroleClient, FumaroleSubscribeConfig,
     },
     yellowstone_grpc_proto::geyser::{
-        subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
-        SubscribeRequestFilterAccounts, SubscribeRequestFilterBlocksMeta,
-        SubscribeRequestFilterSlots, SubscribeRequestFilterTransactions, SubscribeUpdateAccount,
-        SubscribeUpdateBlockMeta, SubscribeUpdateSlot, SubscribeUpdateTransaction,
+        CommitmentLevel, SubscribeRequest, SubscribeRequestFilterAccounts,
+        SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterSlots,
+        SubscribeRequestFilterTransactions, SubscribeUpdateAccount, SubscribeUpdateBlockMeta,
+        SubscribeUpdateSlot, SubscribeUpdateTransaction, subscribe_update::UpdateOneof,
     },
 };
 
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 const FUMAROLE_CONFIG_ENV: &str = "FUMAROLE_CONFIG";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct PrometheusBindAddr(SocketAddr);
 
 impl From<PrometheusBindAddr> for SocketAddr {
@@ -112,6 +117,10 @@ enum Action {
     DeleteAll,
     /// Subscribe to fumarole events
     Subscribe(SubscribeArgs),
+    /// Simimlar to `Subscribe`, but only outputs block statistics
+    Block(SubscribeArgs),
+    /// Returns the slot range of remote fumarole service
+    SlotRange,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -126,6 +135,10 @@ pub struct CreateCgArgs {
     /// Name of the persistent subscriber to create
     #[clap(long)]
     name: String,
+
+    /// If not specified, the subscriber will start from the latest slot.
+    #[clap(long)]
+    from_slot: Option<u64>,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -135,7 +148,7 @@ pub struct DeleteCgArgs {
     name: String,
 }
 
-#[derive(Debug, Clone, Parser, Default)]
+#[derive(Debug, Clone, Parser, Default, Copy)]
 pub enum CommitmentOption {
     Finalized,
     Confirmed,
@@ -186,6 +199,7 @@ pub enum SubscribeDataType {
     Transaction,
     Slot,
     BlockMeta,
+    Entry,
 }
 
 #[derive(Debug, Clone)]
@@ -214,12 +228,62 @@ impl FromStr for SubscribeInclude {
                     SubscribeDataType::Transaction,
                     SubscribeDataType::Slot,
                     SubscribeDataType::BlockMeta,
+                    SubscribeDataType::Entry,
                 ]),
+                "entry" => Ok(vec![SubscribeDataType::Entry]),
                 unknown => Err(format!("Invalid include type: {unknown}")),
             })
             .collect::<Result<Vec<_>, _>>()?;
         let include = include.into_iter().flatten().collect::<HashSet<_>>();
         Ok(SubscribeInclude { set: include })
+    }
+}
+
+///
+/// Represents a subscription to a specific pubkey with an optional filterset name.
+///
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SubscribePubkeyValue {
+    pub filter: Option<String>,
+    pub pubkey: Pubkey,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FromStrSubscribePubkeyValueErr {
+    #[error(transparent)]
+    ParsePubkeyError(#[from] ParsePubkeyError),
+    #[error("{0}")]
+    InvalidValue(String),
+}
+
+impl FromStr for SubscribePubkeyValue {
+    type Err = FromStrSubscribePubkeyValueErr;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split(':').collect();
+        match parts.len() {
+            0 => Err(FromStrSubscribePubkeyValueErr::InvalidValue(
+                "invalid pubkey filter, empty value".to_string(),
+            )),
+            1 => {
+                let pubkey = Pubkey::from_str(parts[0])?;
+                Ok(SubscribePubkeyValue {
+                    filter: None,
+                    pubkey,
+                })
+            }
+            2 => {
+                let filter = parts[0].to_string();
+                let pubkey = Pubkey::from_str(parts[1])?;
+                Ok(SubscribePubkeyValue {
+                    filter: Some(filter),
+                    pubkey,
+                })
+            }
+            _ => Err(FromStrSubscribePubkeyValueErr::InvalidValue(
+                "invalid pubkey filter, too many parts".to_string(),
+            )),
+        }
     }
 }
 
@@ -251,15 +315,30 @@ struct SubscribeArgs {
 
     /// List of account public keys to subscribe to
     #[clap(short, long)]
-    account: Vec<Pubkey>,
+    account: Vec<SubscribePubkeyValue>,
 
     /// List of account owners to subscribe to
     #[clap(short, long)]
-    owner: Vec<Pubkey>,
+    owner: Vec<SubscribePubkeyValue>,
 
     /// List of account public keys that must be included in the transaction
     #[clap(long, short)]
-    tx_account: Vec<Pubkey>,
+    tx_account: Vec<SubscribePubkeyValue>,
+
+    #[clap(long)]
+    tx_account_required: Vec<SubscribePubkeyValue>,
+
+    /// Number of parallel data streams (TCP connections) to open to fumarole.
+    #[clap(long, short, default_value = "1")]
+    para: NonZeroU8,
+
+    /// If true, the fumarole client will not commit offsets to the fumarole service.
+    #[clap(long, default_value = "false")]
+    no_commit: bool,
+
+    /// Path to the output transaction collected during the block subscription.
+    #[clap(long)]
+    tx_out: Option<PathBuf>,
 }
 
 fn summarize_account(account: SubscribeUpdateAccount) -> Option<String> {
@@ -334,14 +413,20 @@ async fn get_cg_info(args: GetCgInfoArgs, mut client: FumaroleClient) {
 }
 
 async fn create_cg(args: CreateCgArgs, mut client: FumaroleClient) {
-    let CreateCgArgs { name } = args;
+    let CreateCgArgs { name, from_slot } = args;
+
+    let mut initial_offset_policy = InitialOffsetPolicy::Latest;
+    if from_slot.is_some() {
+        initial_offset_policy = InitialOffsetPolicy::FromSlot;
+    }
+
     let request = CreateConsumerGroupRequest {
         consumer_group_name: name.clone(),
-        initial_offset_policy: InitialOffsetPolicy::Latest.into(),
+        initial_offset_policy: initial_offset_policy.into(),
+        from_slot,
     };
 
     let result = client.create_consumer_group(request).await;
-    // .expect("Failed to create consumer group");
 
     match result {
         Ok(_) => {
@@ -462,22 +547,111 @@ pub fn create_shutdown() -> BoxFuture<'static, ()> {
     .boxed()
 }
 
-async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
-    let SubscribeArgs {
-        prometheus,
-        name: cg_name,
-        include,
-        commitment,
-        account: pubkey,
-        owner,
-        tx_account: tx_pubkey,
-        out,
-    } = args;
+impl SubscribeArgs {
+    fn default_filter_name(&self) -> String {
+        "fumarole".to_string()
+    }
 
-    let mut out: Box<dyn Write> = if let Some(out) = out {
+    fn build_subscribe_account_filter(&self) -> HashMap<String, SubscribeRequestFilterAccounts> {
+        if self.account.is_empty() && self.owner.is_empty() {
+            // If no accounts or owners are specified, we return an empty filter
+            return HashMap::from([(self.default_filter_name(), Default::default())]);
+        }
+
+        let mut filter = HashMap::new();
+        for account in self.account.iter().cloned() {
+            let account_filter: &mut SubscribeRequestFilterAccounts = filter
+                .entry(account.filter.unwrap_or(self.default_filter_name()))
+                .or_default();
+            account_filter.account.push(account.pubkey.to_string());
+        }
+
+        for owner in self.owner.iter().cloned() {
+            let account_filter: &mut SubscribeRequestFilterAccounts = filter
+                .entry(owner.filter.unwrap_or(self.default_filter_name()))
+                .or_default();
+            account_filter.owner.push(owner.pubkey.to_string());
+        }
+
+        filter
+    }
+
+    fn build_subscribe_tx_filter(&self) -> HashMap<String, SubscribeRequestFilterTransactions> {
+        let mut filter = HashMap::new();
+
+        if self.tx_account.is_empty() && self.tx_account_required.is_empty() {
+            // If no tx accounts are specified, we return an empty filter
+            return HashMap::from([(self.default_filter_name(), Default::default())]);
+        }
+
+        for tx_account in self.tx_account.iter().cloned() {
+            let tx_filter: &mut SubscribeRequestFilterTransactions = filter
+                .entry(tx_account.filter.unwrap_or(self.default_filter_name()))
+                .or_default();
+            tx_filter
+                .account_include
+                .push(tx_account.pubkey.to_string());
+        }
+
+        for tx_account in self.tx_account_required.iter().cloned() {
+            let tx_filter: &mut SubscribeRequestFilterTransactions = filter
+                .entry(tx_account.filter.unwrap_or(self.default_filter_name()))
+                .or_default();
+            tx_filter
+                .account_required
+                .push(tx_account.pubkey.to_string());
+        }
+        filter
+    }
+
+    fn as_subscribe_request(&self) -> SubscribeRequest {
+        let commitment_level: CommitmentLevel = self.commitment.into();
+        // This request listen for all account updates and transaction updates
+        let mut request = SubscribeRequest {
+            commitment: Some(commitment_level.into()),
+            ..Default::default()
+        };
+
+        for to_include in &self.include.set {
+            match to_include {
+                SubscribeDataType::Account => {
+                    request.accounts = self.build_subscribe_account_filter();
+                }
+                SubscribeDataType::Transaction => {
+                    request.transactions = self.build_subscribe_tx_filter();
+                }
+                SubscribeDataType::Slot => {
+                    request.slots = HashMap::from([(
+                        self.default_filter_name(),
+                        SubscribeRequestFilterSlots {
+                            interslot_updates: Some(true),
+                            ..Default::default()
+                        },
+                    )]);
+                }
+                SubscribeDataType::BlockMeta => {
+                    request.blocks_meta = HashMap::from([(
+                        self.default_filter_name(),
+                        SubscribeRequestFilterBlocksMeta::default(),
+                    )]);
+                }
+                SubscribeDataType::Entry => {
+                    request.entry =
+                        HashMap::from([(self.default_filter_name(), Default::default())]);
+                }
+            }
+        }
+        request
+    }
+}
+
+async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
+    let mut out: Box<dyn Write> = if let Some(out) = &args.out {
         Box::new(
             File::options()
                 .write(true)
+                .create(true)
+                .truncate(true)
                 .open(PathBuf::from(out))
                 .expect("Failed to open output file"),
         )
@@ -488,58 +662,21 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     let registry = prometheus::Registry::new();
     yellowstone_fumarole_client::metrics::register_metrics(&registry);
 
-    if let Some(bind_addr) = prometheus {
-        let socket_addr: SocketAddr = bind_addr.into();
+    if let Some(bind_addr) = &args.prometheus {
+        let socket_addr: SocketAddr = bind_addr.0;
         tokio::spawn(prometheus_server(socket_addr, registry));
     }
 
-    let commitment_level: CommitmentLevel = commitment.into();
     // This request listen for all account updates and transaction updates
-    let mut request = SubscribeRequest {
-        commitment: Some(commitment_level.into()),
-        ..Default::default()
-    };
-
-    for to_include in include.set {
-        match to_include {
-            SubscribeDataType::Account => {
-                request.accounts = HashMap::from([(
-                    "fumarole".to_owned(),
-                    SubscribeRequestFilterAccounts {
-                        account: pubkey.iter().map(|p| p.to_string()).collect(),
-                        owner: owner.iter().map(|p| p.to_string()).collect(),
-                        ..Default::default()
-                    },
-                )]);
-            }
-            SubscribeDataType::Transaction => {
-                request.transactions = HashMap::from([(
-                    "fumarole".to_owned(),
-                    SubscribeRequestFilterTransactions {
-                        account_include: tx_pubkey.iter().map(|p| p.to_string()).collect(),
-                        ..Default::default()
-                    },
-                )]);
-            }
-            SubscribeDataType::Slot => {
-                request.slots = HashMap::from([(
-                    "fumarole".to_owned(),
-                    SubscribeRequestFilterSlots::default(),
-                )]);
-            }
-            SubscribeDataType::BlockMeta => {
-                request.blocks_meta = HashMap::from([(
-                    "fumarole".to_owned(),
-                    SubscribeRequestFilterBlocksMeta::default(),
-                )]);
-            }
-        }
-    }
+    let request = args.as_subscribe_request();
+    let cg_name = args.name.clone();
 
     println!("Subscribing to consumer group {}", cg_name);
     let subscribe_config = FumaroleSubscribeConfig {
         concurrent_download_limit_per_tcp: NonZeroUsize::new(1).unwrap(),
         commit_interval: Duration::from_secs(1),
+        num_data_plane_tcp_connections: args.para,
+        no_commit: args.no_commit,
         ..Default::default()
     };
     let dragonsmouth_session = client
@@ -607,6 +744,184 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     }
 }
 
+async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
+    let mut out: Box<dyn Write> = if let Some(out) = &args.out {
+        Box::new(
+            File::options()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(PathBuf::from(out))
+                .expect("Failed to open output file"),
+        )
+    } else {
+        Box::new(stdout())
+    };
+
+    let mut tx_out = if let Some(tx_out) = &args.tx_out {
+        let f = File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(tx_out)
+            .expect("Failed to open transaction output file");
+        Some(Box::new(f) as Box<dyn Write>)
+    } else {
+        None
+    };
+
+    let registry = prometheus::Registry::new();
+    yellowstone_fumarole_client::metrics::register_metrics(&registry);
+
+    if let Some(bind_addr) = &args.prometheus {
+        let socket_addr: SocketAddr = bind_addr.0;
+        tokio::spawn(prometheus_server(socket_addr, registry));
+    }
+    let mut request = args.as_subscribe_request();
+    // For block stats, we need to track block meta and entry updates
+    request
+        .blocks_meta
+        .insert(args.default_filter_name(), Default::default());
+    request
+        .entry
+        .insert(args.default_filter_name(), Default::default());
+    let cg_name = args.name.clone();
+    println!("Subscribing to consumer group {}", cg_name);
+    let subscribe_config = FumaroleSubscribeConfig {
+        concurrent_download_limit_per_tcp: NonZeroUsize::new(1).unwrap(),
+        commit_interval: Duration::from_secs(1),
+        num_data_plane_tcp_connections: args.para,
+        no_commit: args.no_commit,
+        ..Default::default()
+    };
+    let dragonsmouth_session = client
+        .dragonsmouth_subscribe_with_config(cg_name.clone(), request, subscribe_config)
+        .await
+        .expect("Failed to subscribe");
+    let DragonsmouthAdapterSession {
+        sink: _,
+        mut source,
+        fumarole_handle: _,
+    } = dragonsmouth_session;
+
+    let mut shutdown = create_shutdown();
+    #[derive(Default)]
+    struct BlockInfo {
+        success_tx: HashSet<Signature>,
+        failed_tx: HashSet<Signature>,
+        entry_count: u32,
+        account_updates: HashSet<(Pubkey, Signature)>,
+        block_meta: Option<SubscribeUpdateBlockMeta>,
+    }
+
+    let summarized_block = |block_info: &BlockInfo| {
+        let success_count = block_info.success_tx.len();
+        let failed_count = block_info.failed_tx.len();
+        let entry_count = block_info.entry_count;
+        let account_updates = block_info.account_updates.len();
+        let block_meta = block_info
+            .block_meta
+            .as_ref()
+            .expect("Block meta should be present");
+        let expected_tx_count = block_meta.executed_transaction_count;
+        let expected_entry_count = block_meta.entries_count;
+        let total_tx_cnt = success_count + failed_count;
+        format!(
+            "good tx: {success_count}, failed tx: {failed_count}, total tx: {total_tx_cnt}/{expected_tx_count}, entries: {entry_count}/{expected_entry_count}, account updates: {account_updates}"
+        )
+    };
+
+    let mut block_map: HashMap<u64, BlockInfo> = HashMap::new();
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => {
+                println!("Shutting down...");
+                break;
+            }
+            result = source.recv() => {
+                let Some(result) = result else {
+                    println!("grpc stream closed!");
+                    break;
+                };
+
+                let event = result.expect("Failed to receive event");
+
+                if let Some(oneof) = event.update_oneof {
+                    match oneof {
+                        UpdateOneof::Account(account_update) => {
+                            let slot = account_update.slot;
+                            let account = account_update.account.expect("Failed to get account update");
+                            let pubkey = Pubkey::try_from(account.pubkey)
+                                .expect("Failed to parse pubkey");
+                            let tx_sig = if let Some(tx_sig_bytes) = account.txn_signature {
+                                Signature::try_from(tx_sig_bytes)
+                                    .expect("Failed to parse transaction signature")
+                            } else {
+                                Signature::default()
+                            };
+                            let block = block_map.entry(slot).or_default();
+                            block.account_updates.insert((pubkey, tx_sig));
+                        },
+                        UpdateOneof::Transaction(tx) => {
+                            let slot = tx.slot;
+                            let transaction = tx.transaction.expect("Failed to get transaction");
+                            let sig = Signature::try_from(transaction.signature)
+                                .expect("Failed to parse transaction signature");
+                            let is_err = transaction.meta.expect("Failed to get transaction meta").err.is_some();
+                            let block = block_map.entry(slot).or_default();
+                            if is_err {
+                                block.failed_tx.insert(sig);
+                            } else {
+                                block.success_tx.insert(sig);
+                            }
+                            continue;
+                        },
+                        UpdateOneof::Slot(_) => {
+                            continue;
+                        }
+                        UpdateOneof::BlockMeta(block_meta) => {
+                            let slot = block_meta.slot;
+                            let mut block = block_map.remove(&slot).expect("Failed to get block info");
+                            block.block_meta = Some(block_meta);
+                            let msg = summarized_block(&block);
+                            writeln!(out, "{slot} -- {msg}").expect("Failed to write to output file");
+                            if let Some(tx_out) = &mut tx_out {
+                                for sig in block.success_tx.iter() {
+                                    writeln!(tx_out, "{slot} -- {sig}").expect("Failed to write to transaction output file");
+                                }
+                            }
+                        }
+                        UpdateOneof::Entry(entry) => {
+                            let slot = entry.slot;
+                            let block = block_map.entry(slot).or_default();
+                            block.entry_count += 1;
+                        }
+                        _ => {
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn slot_range(mut fumarole_client: FumaroleClient) {
+    let result = fumarole_client.get_slot_range().await;
+    match result {
+        Ok(response) => {
+            let slot_range = response.into_inner();
+            println!(
+                "Slot range: {} - {}",
+                slot_range.min_slot, slot_range.max_slot
+            );
+        }
+        Err(e) => {
+            eprintln!("Failed to get slot range: {}", e);
+        }
+    }
+}
+
 async fn test_config(mut fumarole_client: FumaroleClient) {
     let result = fumarole_client.version().await;
     match result {
@@ -639,14 +954,21 @@ fn home_dir() -> Option<PathBuf> {
 async fn main() {
     let args = Args::parse();
     let verbosity = args.verbose.tracing_level_filter();
-    let curr_crate = env!("CARGO_PKG_NAME");
+    let curr_exec = env::current_exe()
+        .expect("Failed to get current executable path")
+        .file_name()
+        .expect("Failed to get current executable file name")
+        .to_string_lossy()
+        .to_string();
 
-    let filter = format!("{curr_crate}={verbosity},yellowstone_fumarole_client={verbosity}");
+    let filter = format!("{curr_exec}={verbosity},yellowstone_fumarole_client={verbosity}");
     let env_filter = EnvFilter::new(filter);
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_line_number(true)
         .init();
+
+    tracing::trace!("starting Yellowstone Fumarole CLI");
 
     let maybe_config = args.config;
     let config_file = if let Some(config_path) = maybe_config {
@@ -665,6 +987,8 @@ async fn main() {
     };
     let config: FumaroleConfig =
         serde_yaml::from_reader(config_file).expect("failed to parse fumarole config");
+
+    tracing::debug!("Using config: {config:?}");
 
     let fumarole_client = FumaroleClient::connect(config.clone())
         .await
@@ -691,6 +1015,12 @@ async fn main() {
         }
         Action::Subscribe(subscribe_args) => {
             subscribe(fumarole_client, subscribe_args).await;
+        }
+        Action::SlotRange => {
+            slot_range(fumarole_client).await;
+        }
+        Action::Block(blocks_args) => {
+            block_stats(fumarole_client, blocks_args).await;
         }
     }
 }

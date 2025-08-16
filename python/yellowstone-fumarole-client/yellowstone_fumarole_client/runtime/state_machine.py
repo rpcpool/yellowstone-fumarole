@@ -1,9 +1,10 @@
-from typing import Optional, List, Dict, Set, Deque, Tuple, Any
+from typing import Optional, List, Dict, Set, Deque, Tuple, Any, Sequence
 from collections import deque, defaultdict
 from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
     CommitmentLevel,
     BlockchainEvent,
 )
+from yellowstone_fumarole_client.utils.collections import OrderedSet
 import heapq
 import uuid
 from enum import Enum
@@ -107,7 +108,7 @@ class FumaroleSM:
     def __init__(self, last_committed_offset: FumeOffset, slot_memory_retention: int):
         self.last_committed_offset = last_committed_offset
         self.slot_commitment_progression = dict()  # Slot -> SlotCommitmentProgression
-        self.downloaded_slot = set()  # Set of downloaded slots
+        self.downloaded_slot = OrderedSet()  # Set of downloaded slots
         self.inflight_slot_shard_download = {}  # Slot -> SlotDownloadProgress
         self.blocked_slot_status_update = defaultdict(
             deque
@@ -121,7 +122,9 @@ class FumaroleSM:
         ] = deque()
         self.sequence = 1
         self.last_processed_fume_sequence = 0
-        self.sequence_to_offset = {}  # FumeSessionSequence -> FumeOffset
+        self.sequence_to_offset: dict[FumeSessionSequence, FumeOffset] = (
+            {}
+        )  # FumeSessionSequence -> FumeOffset
         self.slot_memory_retention = slot_memory_retention
 
     def update_committed_offset(self, offset: FumeOffset) -> None:
@@ -138,14 +141,14 @@ class FumaroleSM:
     def gc(self) -> None:
         """Garbage collect old slots to respect memory retention limit."""
         while len(self.downloaded_slot) > self.slot_memory_retention:
-            slot = self.downloaded_slot.pop(0) if self.downloaded_slot else None
+            slot = self.downloaded_slot.popfirst() if self.downloaded_slot else None
             if slot is None:
                 break
             self.slot_commitment_progression.pop(slot, None)
             self.inflight_slot_shard_download.pop(slot, None)
             self.blocked_slot_status_update.pop(slot, None)
 
-    def queue_blockchain_event(self, events: List[BlockchainEvent]) -> None:
+    def queue_blockchain_event(self, events: Sequence[BlockchainEvent]) -> None:
         """Queue blockchain events for processing."""
         for event in events:
 
@@ -232,7 +235,7 @@ class FumaroleSM:
             blockchain_event: BlockchainEvent = blockchain_event
             event_cl = blockchain_event.commitment_level
 
-            if event_cl < min_commitment:
+            if event_cl != min_commitment:
                 self.slot_status_update_queue.append(
                     FumeSlotStatus(
                         session_sequence=session_sequence,
@@ -266,6 +269,18 @@ class FumaroleSM:
             else:
                 blockchain_id = bytes(blockchain_event.blockchain_id)
                 block_uid = bytes(blockchain_event.block_uid)
+
+                self.blocked_slot_status_update[blockchain_event.slot].append(
+                    FumeSlotStatus(
+                        session_sequence=session_sequence,
+                        offset=blockchain_event.offset,
+                        slot=blockchain_event.slot,
+                        parent_slot=blockchain_event.parent_slot,
+                        commitment_level=event_cl,
+                        dead_error=blockchain_event.dead_error,
+                    )
+                )
+
                 if blockchain_event.slot not in self.inflight_slot_shard_download:
                     download_request = FumeDownloadRequest(
                         slot=blockchain_event.slot,
@@ -280,16 +295,6 @@ class FumaroleSM:
                     self.inflight_slot_shard_download[blockchain_event.slot] = (
                         download_progress
                     )
-                    self.blocked_slot_status_update[blockchain_event.slot].append(
-                        FumeSlotStatus(
-                            session_sequence=session_sequence,
-                            offset=blockchain_event.offset,
-                            slot=blockchain_event.slot,
-                            parent_slot=blockchain_event.parent_slot,
-                            commitment_level=event_cl,
-                            dead_error=blockchain_event.dead_error,
-                        )
-                    )
                     return download_request
         return None
 
@@ -298,13 +303,10 @@ class FumaroleSM:
         fume_offset = self.sequence_to_offset.pop(event_seq_number, None)
         if fume_offset is None:
             raise ValueError("Event sequence number not found")
-        heapq.heappush(
-            self.processed_offset, (-event_seq_number, -fume_offset)
-        )  # Negate for min-heap
+        heapq.heappush(self.processed_offset, (event_seq_number, fume_offset))
 
         while self.processed_offset:
             seq, offset = self.processed_offset[0]
-            seq, offset = -seq, -offset  # Convert back to positive
             if seq != self.last_processed_fume_sequence + 1:
                 break
             heapq.heappop(self.processed_offset)

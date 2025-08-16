@@ -5,7 +5,7 @@ from yellowstone_fumarole_client.grpc_connectivity import (
 )
 from typing import Dict, Optional
 from dataclasses import dataclass
-from . import config
+from yellowstone_fumarole_client.config import FumaroleConfig
 from yellowstone_fumarole_client.runtime.aio import (
     AsyncioFumeDragonsmouthRuntime,
     FumaroleSM,
@@ -117,7 +117,7 @@ class FumaroleClient:
     async def version(self) -> VersionResponse:
         """Get the version of the Fumarole server."""
         request = VersionRequest()
-        response = await self.stub.version(request)
+        response = await self.stub.Version(request)
         return response
 
     async def dragonsmouth_subscribe(
@@ -165,9 +165,9 @@ class FumaroleClient:
                 except asyncio.QueueShutDown:
                     break
 
-        fume_control_plane_stream_rx: grpc.aio.StreamStreamMultiCallable = (
-            self.stub.Subscribe(control_plane_sink())
-        )
+        fume_control_plane_stream_rx: grpc.aio.StreamStreamCall = self.stub.Subscribe(
+            control_plane_sink()
+        )  # it's actually InterceptedStreamStreamCall, but grpc lib doesn't export it
 
         control_response: ControlResponse = await fume_control_plane_stream_rx.read()
         init = control_response.init

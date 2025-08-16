@@ -129,6 +129,49 @@ lazy_static! {
         ),
         &["runtime"],
     ).unwrap();
+
+
+    pub(crate) static ref AVAILABLE_DOWNLOAD_PERMIT: IntGaugeVec = IntGaugeVec::new(
+        Opts::new(
+            "fumarole_available_data_plane_connection",
+            "The number of available data plane connection to Fumarole runtime",
+        ),
+        &["runtime"],
+    ).unwrap();
+
+    pub(crate) static ref DOWNLOAD_QUEUE_FULL_DETECTION_COUNT: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "fumarole_download_queue_full_detection_count",
+            "The number of times the download queue is full",
+        ),
+        &["runtime"],
+    ).unwrap();
+
+    pub(crate) static ref POLL_HISTORY_CALL_COUNT: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "fumarole_poll_history_call_count",
+            "The number of times the poll history command was sent",
+        ),
+        &["runtime"],
+    ).unwrap();
+}
+
+pub(crate) fn inc_poll_history_call_count(name: impl AsRef<str>) {
+    POLL_HISTORY_CALL_COUNT
+        .with_label_values(&[name.as_ref()])
+        .inc();
+}
+
+pub(crate) fn incr_download_queue_full_detection_count(name: impl AsRef<str>) {
+    DOWNLOAD_QUEUE_FULL_DETECTION_COUNT
+        .with_label_values(&[name.as_ref()])
+        .inc();
+}
+
+pub(crate) fn set_available_download_permit(name: impl AsRef<str>, count: i64) {
+    AVAILABLE_DOWNLOAD_PERMIT
+        .with_label_values(&[name.as_ref()])
+        .set(count);
 }
 
 pub(crate) fn set_fumarole_blockchain_offset_tip(name: impl AsRef<str>, offset: i64) {
@@ -282,5 +325,14 @@ pub fn register_metrics(registry: &prometheus::Registry) {
         .unwrap();
     registry
         .register(Box::new(FUMAROLE_OFFSET_LAG_FROM_TIP.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(AVAILABLE_DOWNLOAD_PERMIT.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(DOWNLOAD_QUEUE_FULL_DETECTION_COUNT.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(POLL_HISTORY_CALL_COUNT.clone()))
         .unwrap();
 }

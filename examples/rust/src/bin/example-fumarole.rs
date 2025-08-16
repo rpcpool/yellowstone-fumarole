@@ -3,11 +3,11 @@ use {
     solana_pubkey::Pubkey,
     std::{collections::HashMap, path::PathBuf},
     yellowstone_fumarole_client::{
-        config::FumaroleConfig, DragonsmouthAdapterSession, FumaroleClient,
+        DragonsmouthAdapterSession, FumaroleClient, config::FumaroleConfig,
     },
     yellowstone_grpc_proto::geyser::{
-        subscribe_update::UpdateOneof, SubscribeRequest, SubscribeRequestFilterTransactions,
-        SubscribeUpdateAccount, SubscribeUpdateTransaction,
+        SubscribeRequest, SubscribeRequestFilterTransactions, SubscribeUpdateAccount,
+        SubscribeUpdateTransaction, subscribe_update::UpdateOneof,
     },
 };
 
