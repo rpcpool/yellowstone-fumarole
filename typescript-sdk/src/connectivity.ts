@@ -1,142 +1,284 @@
-import { ChannelCredentials, Metadata, credentials } from "@grpc/grpc-js";
+import {
+  ChannelCredentials,
+  credentials,
+  Metadata,
+  Client,
+  ServiceError,
+} from "@grpc/grpc-js";
 import { FumaroleClient } from "./grpc/fumarole";
-import { FumaroleConfig } from "./config/config";
 
-const X_TOKEN_HEADER = "x-token";
+export const X_TOKEN_HEADER = "x-token";
 
-class TritonAuthMetadataGenerator {
-  constructor(private readonly xToken: string) {}
-
-  generateMetadata(): Promise<Metadata> {
-    const metadata = new Metadata();
-    metadata.set(X_TOKEN_HEADER, this.xToken);
-    return Promise.resolve(metadata);
-  }
+interface FumaroleConfig {
+  xToken?: string;
+  xMetadata?: Record<string, string>;
 }
 
-interface CallMetadataOptions {
-  metadata?: Metadata;
-}
+// Simple logger implementation
+class Logger {
+  constructor(private prefix: string) {}
 
-class MetadataProvider {
-  private metadata: Metadata;
-
-  constructor(metadata: Record<string, string>) {
-    this.metadata = new Metadata();
-    Object.entries(metadata).forEach(([key, value]) => {
-      this.metadata.set(key, value);
-    });
-  }
-
-  getMetadata(): Promise<Metadata> {
-    return Promise.resolve(this.metadata);
+  debug(message: string) {
+    console.debug(`[${this.prefix}] ${message}`);
   }
 }
 
 export class FumaroleGrpcConnector {
-  private static readonly logger = console;
+  private readonly logger: Logger;
+  private readonly config: FumaroleConfig;
+  private readonly endpoint: string;
 
-  constructor(
-    private readonly config: FumaroleConfig,
-    private readonly endpoint: string
-  ) {}
+  constructor(config: FumaroleConfig, endpoint: string) {
+    this.logger = new Logger("FumaroleGrpcConnector");
+    this.config = config;
+    this.endpoint = endpoint;
+  }
+
+  private createMetadata(): Metadata {
+    const metadata = new Metadata();
+    if (this.config.xMetadata) {
+      Object.entries(this.config.xMetadata).forEach(([key, value]) => {
+        metadata.set(key, value);
+      });
+    }
+    return metadata;
+  }
 
   async connect(
-    grpcOptions: Record<string, any> = {}
+    grpcOptions: { [key: string]: any }[] = []
   ): Promise<FumaroleClient> {
-    const options = {
+    this.logger.debug(`Connecting to endpoint: ${this.endpoint}`);
+
+    const defaultOptions: { [key: string]: any } = {
       "grpc.max_receive_message_length": 111111110,
-      ...grpcOptions,
-    };
-
-    let channelCredentials: ChannelCredentials;
-    let insecureXToken: string | undefined;
-
-    // Parse endpoint properly
-    const endpointURL = new URL(this.endpoint);
-    let port = endpointURL.port;
-    if (port === "") {
-      port = endpointURL.protocol === "https:" ? "443" : "80";
-    }
-    const address = `${endpointURL.hostname}:${port}`;
-
-    // Handle credentials based on protocol
-    if (endpointURL.protocol === "https:") {
-      channelCredentials = credentials.combineChannelCredentials(
-        credentials.createSsl(),
-        credentials.createFromMetadataGenerator((_params, callback) => {
-          const metadata = new Metadata();
-          if (this.config.xToken) {
-            metadata.add("x-token", this.config.xToken);
-          }
-          if (this.config.xMetadata) {
-            Object.entries(this.config.xMetadata).forEach(([key, value]) => {
-              metadata.add(key, value);
-            });
-          }
-          callback(null, metadata);
-        })
-      );
-    } else {
-      channelCredentials = credentials.createInsecure();
-      if (this.config.xToken) {
-        insecureXToken = this.config.xToken;
-      }
-    }
-
-    // Create the client options with simpler settings
-    const clientOptions = {
-      ...options,
-      "grpc.enable_http_proxy": 0,
-      // Basic keepalive settings
-      "grpc.keepalive_time_ms": 20000,
-      "grpc.keepalive_timeout_ms": 10000,
+      "grpc.keepalive_time_ms": 10000,
+      "grpc.keepalive_timeout_ms": 5000,
       "grpc.http2.min_time_between_pings_ms": 10000,
-      // Connection settings
-      "grpc.initial_reconnect_backoff_ms": 100,
-      "grpc.max_reconnect_backoff_ms": 3000,
-      "grpc.min_reconnect_backoff_ms": 100,
-      // Enable retries
-      "grpc.enable_retries": 1,
+      "grpc.keepalive_permit_without_calls": 1,
+      "grpc.initial_reconnect_backoff_ms": 1000,
+      "grpc.max_reconnect_backoff_ms": 10000,
       "grpc.service_config": JSON.stringify({
+        loadBalancingConfig: [{ round_robin: {} }],
         methodConfig: [
           {
-            name: [{}], // Apply to all methods
+            name: [{ service: "fumarole.Fumarole" }],
             retryPolicy: {
               maxAttempts: 5,
-              initialBackoff: "0.1s",
-              maxBackoff: "3s",
+              initialBackoff: "1s",
+              maxBackoff: "10s",
               backoffMultiplier: 2,
-              retryableStatusCodes: ["UNAVAILABLE", "DEADLINE_EXCEEDED"],
+              retryableStatusCodes: ["UNAVAILABLE"],
             },
           },
         ],
       }),
     };
 
-    // Create the client with credentials and options
-    const client = new FumaroleClient(
-      address,
-      channelCredentials,
-      clientOptions
-    );
+    const channelOptions: { [key: string]: any } = {
+      ...defaultOptions,
+    };
 
-    // Do a simple connection check
+    // Add additional options
+    grpcOptions.forEach((opt) => {
+      Object.entries(opt).forEach(([key, value]) => {
+        this.logger.debug(`Setting channel option: ${key} = ${value}`);
+        channelOptions[key] = value;
+      });
+    });
+
+    let channelCredentials: ChannelCredentials;
+
     try {
-      await new Promise<void>((resolve, reject) => {
-        const deadline = Date.now() + 5000; // 5 second timeout
-        client.waitForReady(deadline, (err) => {
-          if (err) {
-            reject(err);
+      const endpointURL = new URL(this.endpoint);
+      this.logger.debug(
+        `Parsed URL - protocol: ${endpointURL.protocol}, hostname: ${endpointURL.hostname}, port: ${endpointURL.port}`
+      );
+
+      let port = endpointURL.port;
+      if (port === "") {
+        switch (endpointURL.protocol) {
+          case "https:":
+            port = "443";
+            break;
+          case "http:":
+            port = "80";
+            break;
+        }
+        this.logger.debug(`No port specified, using default port: ${port}`);
+      }
+
+      // Check if we need to use TLS.
+      if (endpointURL.protocol === "https:") {
+        this.logger.debug("HTTPS detected, setting up SSL credentials");
+        const sslCreds = credentials.createSsl();
+        this.logger.debug("SSL credentials created");
+
+        const callCreds = credentials.createFromMetadataGenerator(
+          (_params, callback) => {
+            const metadata = new Metadata();
+            if (this.config.xToken !== undefined) {
+              this.logger.debug("Adding x-token to metadata");
+              metadata.add(X_TOKEN_HEADER, this.config.xToken);
+            }
+            return callback(null, metadata);
+          }
+        );
+        this.logger.debug("Call credentials created");
+
+        channelCredentials = credentials.combineChannelCredentials(
+          sslCreds,
+          callCreds
+        );
+        this.logger.debug("Using secure channel with x-token authentication");
+      } else {
+        channelCredentials = credentials.createInsecure();
+        this.logger.debug("Using insecure channel without authentication");
+      }
+
+      const finalEndpoint = `${endpointURL.hostname}:${port}`;
+      this.logger.debug(`Creating gRPC client with endpoint: ${finalEndpoint}`);
+
+      const client = new FumaroleClient(
+        finalEndpoint,
+        channelCredentials,
+        channelOptions
+      );
+
+      this.logger.debug(`gRPC client created, waiting for ready state...`);
+
+      // Wait for the client to be ready with a longer timeout
+      await new Promise((resolve, reject) => {
+        const deadline = new Date().getTime() + 30000; // 30 second timeout
+        client.waitForReady(deadline, (error) => {
+          if (error) {
+            this.logger.debug(
+              `Client failed to become ready: ${error.message}`
+            );
+            const grpcError = error as ServiceError;
+            if (grpcError.code !== undefined)
+              this.logger.debug(`Error code: ${grpcError.code}`);
+            if (grpcError.details)
+              this.logger.debug(`Error details: ${grpcError.details}`);
+            if (grpcError.metadata)
+              this.logger.debug(`Error metadata: ${grpcError.metadata}`);
+            reject(error);
           } else {
-            resolve();
+            this.logger.debug(`Client is ready`);
+            resolve(undefined);
           }
         });
       });
+
+      this.logger.debug(
+        `gRPC client created successfully for ${finalEndpoint}`
+      );
+      return client;
     } catch (error) {
+      this.logger.debug(
+        `Error during connection setup: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
       throw error;
     }
+  }
+}
 
+// Helper function to create a gRPC channel (for backward compatibility)
+export function createGrpcChannel(
+  endpoint: string,
+  xToken?: string,
+  compression?: any,
+  ...grpcOptions: { [key: string]: any }[]
+): Client {
+  console.debug(`Creating gRPC channel for endpoint: ${endpoint}`);
+
+  const defaultOptions: { [key: string]: any } = {
+    "grpc.max_receive_message_length": 111111110,
+    "grpc.keepalive_time_ms": 10000,
+    "grpc.keepalive_timeout_ms": 5000,
+    "grpc.http2.min_time_between_pings_ms": 10000,
+    "grpc.keepalive_permit_without_calls": 1,
+  };
+
+  const channelOptions: { [key: string]: any } = {
+    ...defaultOptions,
+  };
+
+  // Add additional options
+  grpcOptions.forEach((opt) => {
+    Object.entries(opt).forEach(([key, value]) => {
+      console.debug(`Setting channel option: ${key} = ${value}`);
+      channelOptions[key] = value;
+    });
+  });
+
+  try {
+    const endpointURL = new URL(endpoint);
+    console.debug(
+      `Parsed URL - protocol: ${endpointURL.protocol}, hostname: ${endpointURL.hostname}, port: ${endpointURL.port}`
+    );
+
+    let port = endpointURL.port;
+    if (port === "") {
+      switch (endpointURL.protocol) {
+        case "https:":
+          port = "443";
+          break;
+        case "http:":
+          port = "80";
+          break;
+      }
+      console.debug(`No port specified, using default port: ${port}`);
+    }
+
+    let channelCredentials: ChannelCredentials;
+
+    // Check if we need to use TLS.
+    if (endpointURL.protocol === "https:") {
+      console.debug("HTTPS detected, setting up SSL credentials");
+      const sslCreds = credentials.createSsl();
+      console.debug("SSL credentials created");
+
+      const callCreds = credentials.createFromMetadataGenerator(
+        (_params, callback) => {
+          const metadata = new Metadata();
+          if (xToken !== undefined) {
+            console.debug("Adding x-token to metadata");
+            metadata.add(X_TOKEN_HEADER, xToken);
+          }
+          return callback(null, metadata);
+        }
+      );
+      console.debug("Call credentials created");
+
+      channelCredentials = credentials.combineChannelCredentials(
+        sslCreds,
+        callCreds
+      );
+      console.debug("Combined credentials created for secure channel");
+    } else {
+      channelCredentials = credentials.createInsecure();
+      console.debug("Using insecure channel without authentication");
+    }
+
+    const finalEndpoint = `${endpointURL.hostname}:${port}`;
+    console.debug(`Creating gRPC client with endpoint: ${finalEndpoint}`);
+
+    const client = new Client(
+      finalEndpoint,
+      channelCredentials,
+      channelOptions
+    );
+
+    console.debug("gRPC client created successfully");
     return client;
+  } catch (error) {
+    console.debug(
+      `Error creating gRPC channel: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    throw error;
   }
 }

@@ -1,7 +1,9 @@
-import { Metadata, ServiceError } from "@grpc/grpc-js";
+import { Metadata, ServiceError, MetadataValue, status } from "@grpc/grpc-js";
 import { FumaroleConfig } from "./config/config";
 import { FumaroleClient as GrpcClient } from "./grpc/fumarole";
 import { FumaroleGrpcConnector } from "./connectivity";
+
+const X_TOKEN_HEADER = "x-token";
 import {
   VersionRequest,
   VersionResponse,
@@ -16,8 +18,13 @@ import {
   DeleteConsumerGroupResponse,
   CreateConsumerGroupRequest,
   CreateConsumerGroupResponse,
+  InitialOffsetPolicy,
 } from "./grpc/fumarole";
-import { SubscribeRequest, SubscribeUpdate } from "./grpc/geyser";
+import {
+  SubscribeRequest,
+  SubscribeUpdate,
+  CommitmentLevel,
+} from "./grpc/geyser";
 import type {
   DragonsmouthAdapterSession,
   FumaroleSubscribeConfig,
@@ -30,12 +37,19 @@ import {
   DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
   DEFAULT_GC_INTERVAL,
   DEFAULT_SLOT_MEMORY_RETENTION,
+  getDefaultFumaroleSubscribeConfig,
 } from "./types";
 
 export class FumaroleClient {
   private static readonly logger = console;
   private readonly connector: FumaroleGrpcConnector;
   private readonly stub: GrpcClient;
+
+  private static safeStringify(obj: unknown): string {
+    return JSON.stringify(obj, (_, v) =>
+      typeof v === "bigint" ? v.toString() : v
+    );
+  }
 
   constructor(connector: FumaroleGrpcConnector, stub: GrpcClient) {
     this.connector = connector;
@@ -47,11 +61,14 @@ export class FumaroleClient {
     const connector = new FumaroleGrpcConnector(config, endpoint);
 
     FumaroleClient.logger.debug(`Connecting to ${endpoint}`);
-    FumaroleClient.logger.debug("Connection config:", {
-      endpoint: config.endpoint,
-      xToken: config.xToken ? "***" : "none",
-      maxDecodingMessageSizeBytes: config.maxDecodingMessageSizeBytes,
-    });
+    FumaroleClient.logger.debug(
+      "Connection config:",
+      FumaroleClient.safeStringify({
+        endpoint: config.endpoint,
+        xToken: config.xToken ? "***" : "none",
+        maxDecodingMessageSizeBytes: config.maxDecodingMessageSizeBytes,
+      })
+    );
 
     const client = await connector.connect();
     FumaroleClient.logger.debug(`Connected to ${endpoint}, testing stub...`);
@@ -61,7 +78,10 @@ export class FumaroleClient {
       const deadline = new Date().getTime() + 5000; // 5 second timeout
       client.waitForReady(deadline, (error) => {
         if (error) {
-          FumaroleClient.logger.error("Client failed to become ready:", error);
+          FumaroleClient.logger.error(
+            "Client failed to become ready:",
+            FumaroleClient.safeStringify(error)
+          );
           reject(error);
         } else {
           FumaroleClient.logger.debug("Client is ready");
@@ -75,7 +95,10 @@ export class FumaroleClient {
       const methods = client
         ? Object.getOwnPropertyNames(Object.getPrototypeOf(client))
         : [];
-      FumaroleClient.logger.error("Available methods:", methods);
+      FumaroleClient.logger.error(
+        "Available methods:",
+        FumaroleClient.safeStringify(methods)
+      );
       throw new Error("gRPC client or listConsumerGroups method not available");
     }
 
@@ -89,129 +112,32 @@ export class FumaroleClient {
     return new Promise((resolve, reject) => {
       this.stub.version(request, (error, response) => {
         if (error) {
-          FumaroleClient.logger.error("Version request failed:", error);
+          FumaroleClient.logger.error(
+            "Version request failed:",
+            FumaroleClient.safeStringify(error)
+          );
           reject(error);
         } else {
-          FumaroleClient.logger.debug("Version response:", response);
+          FumaroleClient.logger.debug(
+            "Version response:",
+            FumaroleClient.safeStringify(response)
+          );
           resolve(response);
         }
       });
     });
   }
 
-  async dragonsmouthSubscribe(
-    consumerGroupName: string,
-    request: SubscribeRequest
-  ): Promise<DragonsmouthAdapterSession> {
-    return this.dragonsmouthSubscribeWithConfig(consumerGroupName, request, {});
-  }
-
-  async dragonsmouthSubscribeWithConfig(
-    consumerGroupName: string,
-    request: SubscribeRequest,
-    config: FumaroleSubscribeConfig
-  ): Promise<DragonsmouthAdapterSession> {
-    const finalConfig = {
-      concurrentDownloadLimit: DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
-      commitInterval: DEFAULT_COMMIT_INTERVAL,
-      maxFailedSlotDownloadAttempt: DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT,
-      dataChannelCapacity: DEFAULT_DRAGONSMOUTH_CAPACITY,
-      gcInterval: DEFAULT_GC_INTERVAL,
-      slotMemoryRetention: DEFAULT_SLOT_MEMORY_RETENTION,
-      ...config,
-    };
-
-    const dragonsmouthOutlet = new AsyncQueue<SubscribeUpdate>(
-      finalConfig.dataChannelCapacity
-    );
-    const fumeControlPlaneQ = new AsyncQueue<ControlCommand>(100);
-
-    const initialJoin = { consumerGroupName } as JoinControlPlane;
-    const initialJoinCommand = { initialJoin } as ControlCommand;
-    await fumeControlPlaneQ.put(initialJoinCommand);
-
-    FumaroleClient.logger.debug(
-      `Sent initial join command: ${JSON.stringify(initialJoinCommand)}`
-    );
-
-    const controlPlaneStream = this.stub.subscribe();
-    const subscribeRequestQueue = new AsyncQueue<SubscribeRequest>(100);
-    const fumeControlPlaneRxQ = new AsyncQueue<ControlResponse>(100);
-
-    // Start the control plane source task
-    const controlPlaneSourceTask = (async () => {
-      try {
-        for await (const update of controlPlaneStream) {
-          await fumeControlPlaneRxQ.put(update);
-        }
-      } catch (error: any) {
-        if (error.code !== "CANCELLED") {
-          throw error;
-        }
-      }
-    })();
-
-    // Read the initial response
-    const controlResponse =
-      (await fumeControlPlaneRxQ.get()) as ControlResponse;
-    const init = controlResponse.init;
-    if (!init) {
-      throw new Error(
-        `Unexpected initial response: ${JSON.stringify(controlResponse)}`
-      );
-    }
-
-    FumaroleClient.logger.debug(
-      `Control response: ${JSON.stringify(controlResponse)}`
-    );
-
-    const lastCommittedOffsetStr = init.lastCommittedOffsets?.[0];
-    if (!lastCommittedOffsetStr) {
-      throw new Error("No last committed offset");
-    }
-    const lastCommittedOffset = BigInt(lastCommittedOffsetStr);
-
-    // Create the runtime
-    const dataPlaneClient = await this.connector.connect();
-
-    // Start the runtime task
-    const runtimeTask = this.startRuntime(
-      subscribeRequestQueue,
-      fumeControlPlaneQ,
-      fumeControlPlaneRxQ,
-      dragonsmouthOutlet,
-      request,
-      consumerGroupName,
-      lastCommittedOffset,
-      finalConfig,
-      dataPlaneClient
-    );
-
-    FumaroleClient.logger.debug(`Fumarole handle created: ${runtimeTask}`);
-
-    return {
-      sink: subscribeRequestQueue,
-      source: dragonsmouthOutlet,
-      fumaroleHandle: runtimeTask,
-    };
-  }
-
-  private async startRuntime(
-    subscribeRequestQueue: AsyncQueue<SubscribeRequest>,
-    controlPlaneTxQ: AsyncQueue<ControlCommand>,
-    controlPlaneRxQ: AsyncQueue<ControlResponse>,
-    dragonsmouthOutlet: AsyncQueue<SubscribeUpdate>,
-    request: SubscribeRequest,
-    consumerGroupName: string,
-    lastCommittedOffset: bigint,
-    config: Required<FumaroleSubscribeConfig>,
-    dataPlaneClient: GrpcClient
-  ): Promise<void> {
-    // Implementation of runtime task here
-    // This would be equivalent to AsyncioFumeDragonsmouthRuntime in Python
-    // For brevity, this is a placeholder implementation
-    return Promise.resolve();
-  }
+  // async dragonsmouthSubscribe(
+  //   consumerGroupName: string,
+  //   request: SubscribeRequest
+  // ): Promise<DragonsmouthAdapterSession> {
+  //   return this.dragonsmouthSubscribeWithConfig(
+  //     consumerGroupName,
+  //     request,
+  //     getDefaultFumaroleSubscribeConfig()
+  //   );
+  // }
 
   async listConsumerGroups(): Promise<ListConsumerGroupsResponse> {
     if (!this.stub) {
@@ -274,7 +200,7 @@ export class FumaroleClient {
             } else {
               FumaroleClient.logger.debug(
                 "ListConsumerGroups success - Response:",
-                JSON.stringify(response, null, 2)
+                FumaroleClient.safeStringify(response)
               );
               resolve(response);
             }
@@ -392,7 +318,9 @@ export class FumaroleClient {
     const failures = results.filter((result) => !result.success);
     if (failures.length > 0) {
       throw new Error(
-        `Failed to delete some consumer groups: ${JSON.stringify(failures)}`
+        `Failed to delete some consumer groups: ${FumaroleClient.safeStringify(
+          failures
+        )}`
       );
     }
   }
@@ -426,6 +354,10 @@ export class FumaroleClient {
 
 export {
   FumaroleConfig,
+  InitialOffsetPolicy,
+  CommitmentLevel,
+  SubscribeRequest,
+  SubscribeUpdate,
   DEFAULT_DRAGONSMOUTH_CAPACITY,
   DEFAULT_COMMIT_INTERVAL,
   DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT,

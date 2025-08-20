@@ -36,8 +36,8 @@ import {
 export const protobufPackage = "fumarole";
 
 export enum InitialOffsetPolicy {
-  /** LATEST - FROM_SLOT = 1; */
   LATEST = 0,
+  FROM_SLOT = 1,
   UNRECOGNIZED = -1,
 }
 
@@ -46,6 +46,9 @@ export function initialOffsetPolicyFromJSON(object: any): InitialOffsetPolicy {
     case 0:
     case "LATEST":
       return InitialOffsetPolicy.LATEST;
+    case 1:
+    case "FROM_SLOT":
+      return InitialOffsetPolicy.FROM_SLOT;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -57,10 +60,22 @@ export function initialOffsetPolicyToJSON(object: InitialOffsetPolicy): string {
   switch (object) {
     case InitialOffsetPolicy.LATEST:
       return "LATEST";
+    case InitialOffsetPolicy.FROM_SLOT:
+      return "FROM_SLOT";
     case InitialOffsetPolicy.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
   }
+}
+
+export interface GetSlotRangeRequest {
+  blockchainId: Uint8Array;
+}
+
+export interface GetSlotRangeResponse {
+  blockchainId: Uint8Array;
+  minSlot: bigint;
+  maxSlot: bigint;
 }
 
 export interface GetChainTipRequest {
@@ -245,9 +260,165 @@ export interface CreateConsumerGroupResponse {
 
 export interface CreateConsumerGroupRequest {
   consumerGroupName: string;
-  /** optional uint64 from_slot = 3; */
   initialOffsetPolicy: InitialOffsetPolicy;
+  fromSlot?: bigint | undefined;
 }
+
+function createBaseGetSlotRangeRequest(): GetSlotRangeRequest {
+  return { blockchainId: new Uint8Array(0) };
+}
+
+export const GetSlotRangeRequest: MessageFns<GetSlotRangeRequest> = {
+  encode(message: GetSlotRangeRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.blockchainId.length !== 0) {
+      writer.uint32(10).bytes(message.blockchainId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetSlotRangeRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetSlotRangeRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.blockchainId = reader.bytes();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetSlotRangeRequest {
+    return { blockchainId: isSet(object.blockchainId) ? bytesFromBase64(object.blockchainId) : new Uint8Array(0) };
+  },
+
+  toJSON(message: GetSlotRangeRequest): unknown {
+    const obj: any = {};
+    if (message.blockchainId.length !== 0) {
+      obj.blockchainId = base64FromBytes(message.blockchainId);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GetSlotRangeRequest>, I>>(base?: I): GetSlotRangeRequest {
+    return GetSlotRangeRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GetSlotRangeRequest>, I>>(object: I): GetSlotRangeRequest {
+    const message = createBaseGetSlotRangeRequest();
+    message.blockchainId = object.blockchainId ?? new Uint8Array(0);
+    return message;
+  },
+};
+
+function createBaseGetSlotRangeResponse(): GetSlotRangeResponse {
+  return { blockchainId: new Uint8Array(0), minSlot: 0n, maxSlot: 0n };
+}
+
+export const GetSlotRangeResponse: MessageFns<GetSlotRangeResponse> = {
+  encode(message: GetSlotRangeResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.blockchainId.length !== 0) {
+      writer.uint32(10).bytes(message.blockchainId);
+    }
+    if (message.minSlot !== 0n) {
+      if (BigInt.asIntN(64, message.minSlot) !== message.minSlot) {
+        throw new globalThis.Error("value provided for field message.minSlot of type int64 too large");
+      }
+      writer.uint32(16).int64(message.minSlot);
+    }
+    if (message.maxSlot !== 0n) {
+      if (BigInt.asIntN(64, message.maxSlot) !== message.maxSlot) {
+        throw new globalThis.Error("value provided for field message.maxSlot of type int64 too large");
+      }
+      writer.uint32(24).int64(message.maxSlot);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetSlotRangeResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetSlotRangeResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.blockchainId = reader.bytes();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.minSlot = reader.int64() as bigint;
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.maxSlot = reader.int64() as bigint;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetSlotRangeResponse {
+    return {
+      blockchainId: isSet(object.blockchainId) ? bytesFromBase64(object.blockchainId) : new Uint8Array(0),
+      minSlot: isSet(object.minSlot) ? BigInt(object.minSlot) : 0n,
+      maxSlot: isSet(object.maxSlot) ? BigInt(object.maxSlot) : 0n,
+    };
+  },
+
+  toJSON(message: GetSlotRangeResponse): unknown {
+    const obj: any = {};
+    if (message.blockchainId.length !== 0) {
+      obj.blockchainId = base64FromBytes(message.blockchainId);
+    }
+    if (message.minSlot !== 0n) {
+      obj.minSlot = message.minSlot.toString();
+    }
+    if (message.maxSlot !== 0n) {
+      obj.maxSlot = message.maxSlot.toString();
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GetSlotRangeResponse>, I>>(base?: I): GetSlotRangeResponse {
+    return GetSlotRangeResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GetSlotRangeResponse>, I>>(object: I): GetSlotRangeResponse {
+    const message = createBaseGetSlotRangeResponse();
+    message.blockchainId = object.blockchainId ?? new Uint8Array(0);
+    message.minSlot = object.minSlot ?? 0n;
+    message.maxSlot = object.maxSlot ?? 0n;
+    return message;
+  },
+};
 
 function createBaseGetChainTipRequest(): GetChainTipRequest {
   return { blockchainId: new Uint8Array(0) };
@@ -3199,7 +3370,7 @@ export const CreateConsumerGroupResponse: MessageFns<CreateConsumerGroupResponse
 };
 
 function createBaseCreateConsumerGroupRequest(): CreateConsumerGroupRequest {
-  return { consumerGroupName: "", initialOffsetPolicy: 0 };
+  return { consumerGroupName: "", initialOffsetPolicy: 0, fromSlot: undefined };
 }
 
 export const CreateConsumerGroupRequest: MessageFns<CreateConsumerGroupRequest> = {
@@ -3209,6 +3380,12 @@ export const CreateConsumerGroupRequest: MessageFns<CreateConsumerGroupRequest> 
     }
     if (message.initialOffsetPolicy !== 0) {
       writer.uint32(16).int32(message.initialOffsetPolicy);
+    }
+    if (message.fromSlot !== undefined) {
+      if (BigInt.asUintN(64, message.fromSlot) !== message.fromSlot) {
+        throw new globalThis.Error("value provided for field message.fromSlot of type uint64 too large");
+      }
+      writer.uint32(24).uint64(message.fromSlot);
     }
     return writer;
   },
@@ -3236,6 +3413,14 @@ export const CreateConsumerGroupRequest: MessageFns<CreateConsumerGroupRequest> 
           message.initialOffsetPolicy = reader.int32() as any;
           continue;
         }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.fromSlot = reader.uint64() as bigint;
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -3251,6 +3436,7 @@ export const CreateConsumerGroupRequest: MessageFns<CreateConsumerGroupRequest> 
       initialOffsetPolicy: isSet(object.initialOffsetPolicy)
         ? initialOffsetPolicyFromJSON(object.initialOffsetPolicy)
         : 0,
+      fromSlot: isSet(object.fromSlot) ? BigInt(object.fromSlot) : undefined,
     };
   },
 
@@ -3262,6 +3448,9 @@ export const CreateConsumerGroupRequest: MessageFns<CreateConsumerGroupRequest> 
     if (message.initialOffsetPolicy !== 0) {
       obj.initialOffsetPolicy = initialOffsetPolicyToJSON(message.initialOffsetPolicy);
     }
+    if (message.fromSlot !== undefined) {
+      obj.fromSlot = message.fromSlot.toString();
+    }
     return obj;
   },
 
@@ -3272,6 +3461,7 @@ export const CreateConsumerGroupRequest: MessageFns<CreateConsumerGroupRequest> 
     const message = createBaseCreateConsumerGroupRequest();
     message.consumerGroupName = object.consumerGroupName ?? "";
     message.initialOffsetPolicy = object.initialOffsetPolicy ?? 0;
+    message.fromSlot = object.fromSlot ?? undefined;
     return message;
   },
 };
@@ -3368,6 +3558,16 @@ export const FumaroleService = {
     responseSerialize: (value: VersionResponse): Buffer => Buffer.from(VersionResponse.encode(value).finish()),
     responseDeserialize: (value: Buffer): VersionResponse => VersionResponse.decode(value),
   },
+  getSlotRange: {
+    path: "/fumarole.Fumarole/GetSlotRange",
+    requestStream: false,
+    responseStream: false,
+    requestSerialize: (value: GetSlotRangeRequest): Buffer => Buffer.from(GetSlotRangeRequest.encode(value).finish()),
+    requestDeserialize: (value: Buffer): GetSlotRangeRequest => GetSlotRangeRequest.decode(value),
+    responseSerialize: (value: GetSlotRangeResponse): Buffer =>
+      Buffer.from(GetSlotRangeResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): GetSlotRangeResponse => GetSlotRangeResponse.decode(value),
+  },
 } as const;
 
 export interface FumaroleServer extends UntypedServiceImplementation {
@@ -3382,6 +3582,7 @@ export interface FumaroleServer extends UntypedServiceImplementation {
   /** Represents subscription to the control plane */
   subscribe: handleBidiStreamingCall<ControlCommand, ControlResponse>;
   version: handleUnaryCall<VersionRequest, VersionResponse>;
+  getSlotRange: handleUnaryCall<GetSlotRangeRequest, GetSlotRangeResponse>;
 }
 
 export interface FumaroleClient extends Client {
@@ -3488,6 +3689,21 @@ export interface FumaroleClient extends Client {
     metadata: Metadata,
     options: Partial<CallOptions>,
     callback: (error: ServiceError | null, response: VersionResponse) => void,
+  ): ClientUnaryCall;
+  getSlotRange(
+    request: GetSlotRangeRequest,
+    callback: (error: ServiceError | null, response: GetSlotRangeResponse) => void,
+  ): ClientUnaryCall;
+  getSlotRange(
+    request: GetSlotRangeRequest,
+    metadata: Metadata,
+    callback: (error: ServiceError | null, response: GetSlotRangeResponse) => void,
+  ): ClientUnaryCall;
+  getSlotRange(
+    request: GetSlotRangeRequest,
+    metadata: Metadata,
+    options: Partial<CallOptions>,
+    callback: (error: ServiceError | null, response: GetSlotRangeResponse) => void,
   ): ClientUnaryCall;
 }
 
