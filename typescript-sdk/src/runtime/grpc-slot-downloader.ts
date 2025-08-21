@@ -49,7 +49,7 @@ export class DownloadTaskArgs {
   constructor(
     public downloadRequest: FumeDownloadRequest,
     // TODO: figure out a type for this
-    public dragonsmouthOutlet: AsyncQueue<SubscribeUpdate>
+    public dragonsmouthOutlet: AsyncQueue<SubscribeUpdate| Error>
   ) {}
 }
 
@@ -64,13 +64,13 @@ export class GrpcDownloadBlockTaskRun {
   public downloadRequest: FumeDownloadRequest;
   public client: FumaroleClient;
   public filters?: BlockFilters | null;
-  public dragonsmouthOutlet: AsyncQueue<SubscribeUpdate>;
+  public dragonsmouthOutlet: AsyncQueue<SubscribeUpdate | Error>;
 
   constructor(
     downloadRequest: FumeDownloadRequest,
     client: FumaroleClient,
     filters: BlockFilters | null,
-    dragonsmouthOutlet: AsyncQueue<SubscribeUpdate>
+    dragonsmouthOutlet: AsyncQueue<SubscribeUpdate | Error>
   ) {
     this.downloadRequest = downloadRequest;
     this.client = client;
@@ -236,3 +236,26 @@ export class GrpcSlotDownloader extends AsyncSlotDownloader {
     return await downloadTask.run();
   }
 }
+
+export class DownloadTaskRunnerCommand {
+  kind: string;
+  subscribeRequest?: SubscribeRequest;
+
+  private constructor(kind: string, subscribeRequest?: SubscribeRequest) {
+    this.kind = kind;
+    this.subscribeRequest = subscribeRequest;
+  }
+
+  static UpdateSubscribeRequest(subscribeRequest: SubscribeRequest): DownloadTaskRunnerCommand {
+    return new DownloadTaskRunnerCommand("UpdateSubscribeRequest", subscribeRequest);
+  }
+}
+
+export class DownloadTaskRunnerChannels {
+  constructor(
+    public downloadTaskQueueTx: AsyncQueue<{}>,
+    public cncTx: AsyncQueue<{}>,
+    public downloadResultRx: AsyncQueue<{}>
+  ) {}
+}
+
