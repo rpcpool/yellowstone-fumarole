@@ -81,7 +81,9 @@ class FumaroleSubscribeConfig:
     slot_memory_retention: int = DEFAULT_SLOT_MEMORY_RETENTION
 
 @dataclass
-class FumaroleStats:
+class FumaroleSubscribeStats:
+    """Commit/slot statistics for the Fumarole subscribe session.
+    """
     # Last committed log offset in Fumarole -- this is a low-level, implementation detail.
     # NOTE: this should not be part as business logic, can change any time.
     log_committed_offset: FumeOffset
@@ -113,13 +115,13 @@ class DragonsmouthAdapterSession:
     async def __aexit__(self, exc_type, exc_value, traceback):
         self._fumarole_handle.cancel()
 
-    def stats(self) -> FumaroleStats:
-        """Get low-level statistics of the Fumarole session.
+    def stats(self) -> FumaroleSubscribeStats:
+        """Get low-level statistics of the Fumarole state-machine.
         """
         commitable = self._sm.committable_offset
         committed = self._sm.last_committed_offset
         max_slot = self._sm.max_slot_detected
-        return FumaroleStats(
+        return FumaroleSubscribeStats(
             log_committed_offset=committed,
             log_committable_offset=commitable,
             max_slot_seen=max_slot,
@@ -291,6 +293,7 @@ class FumaroleClient:
             sink=subscribe_request_queue,
             source=source_gen(),
             _fumarole_handle=fumarole_handle,
+            _sm=sm,
         )
 
     async def list_consumer_groups(

@@ -69,26 +69,18 @@ async def dragonsmouth_like_session(fumarole_config):
             slots={"fumarole": SubscribeRequestFilterSlots()},
         ),
     )
-    dragonsmouth_source = session.source
-    handle = session.fumarole_handle
-    block_map = defaultdict(BlockConstruction)
-    while True:
-        tasks = [asyncio.create_task(dragonsmouth_source.get()), handle]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in done:
-            if tasks[0] == t:
-                result: SubscribeUpdate = t.result()
-                if result.HasField("block_meta"):
-                    block_meta: SubscribeUpdateBlockMeta = result.block_meta
-                elif result.HasField("transaction"):
-                    tx: SubscribeUpdateTransaction = result.transaction
-                elif result.HasField("account"):
-                    account: SubscribeUpdateAccount = result.account
-                elif result.HasField("entry"):
-                    entry: SubscribeUpdateEntry = result.entry
-                elif result.HasField("slot"):
-                    result: SubscribeUpdateSlot = result.slot
-            else:
-                result = t.result()
-                raise RuntimeError("failed to get dragonsmouth source: %s" % result)
+    async with session:
+        dragonsmouth_like_source = session.source
+        # result: SubscribeUpdate
+        async for result in dragonsmouth_like_source:
+            if result.HasField("block_meta"):
+                block_meta: SubscribeUpdateBlockMeta = result.block_meta
+            elif result.HasField("transaction"):
+                tx: SubscribeUpdateTransaction = result.transaction
+            elif result.HasField("account"):
+                account: SubscribeUpdateAccount = result.account
+            elif result.HasField("entry"):
+                entry: SubscribeUpdateEntry = result.entry
+            elif result.HasField("slot"):
+                result: SubscribeUpdateSlot = result.slot
 ```

@@ -218,6 +218,10 @@ async def test_dragonsmouth_adapter(fumarole_config):
                     logging.info("slot received")
                     assert block.check_block_integrity()
                     break
+        stats = session.stats()
+        assert stats.max_slot_seen >= max(block_map.keys())
+        assert stats.log_committable_offset >= stats.log_committed_offset
+        assert stats.log_committable_offset > 0
     assert block_map, "No blocks received"
 
 @pytest.mark.asyncio
