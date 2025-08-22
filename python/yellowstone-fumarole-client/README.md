@@ -62,7 +62,7 @@ async def dragonsmouth_like_session(fumarole_config):
     session = await client.dragonsmouth_subscribe(
         consumer_group_name="test",
         request=SubscribeRequest(
-            # accounts={"fumarole": SubscribeRequestFilterAccounts()},
+            accounts={"fumarole": SubscribeRequestFilterAccounts()},
             transactions={"fumarole": SubscribeRequestFilterTransactions()},
             blocks_meta={"fumarole": SubscribeRequestFilterBlocksMeta()},
             entry={"fumarole": SubscribeRequestFilterEntry()},
@@ -83,4 +83,21 @@ async def dragonsmouth_like_session(fumarole_config):
                 entry: SubscribeUpdateEntry = result.entry
             elif result.HasField("slot"):
                 result: SubscribeUpdateSlot = result.slot
+
+    # OUTSIDE THE SCOPE, YOU SHOULD NEVER USE `session` again.
 ```
+
+
+At any point you can get a rough estimate if you are progression through the slot using `DragonsmouthAdapterSession.stats()` call:
+
+```python
+
+async with session:
+    stats: FumaroleSubscribeStats = session.stats()
+    print(f"{stats.log_committed_offset}, {stats.log_committable_offset}, {stats.max_slot_seen}")
+```
+
+`log_committed_offset` : what have been ACK so for to fumarole remote service.
+`log_committable_offset` : what can be ACK to next commit call.
+`max_slot_seen` : maximum slot seen in the inner fumarole client state -- not yet processed by your code.
+
