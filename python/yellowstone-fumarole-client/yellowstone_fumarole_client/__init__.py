@@ -90,17 +90,14 @@ class DragonsmouthAdapterSession:
     source: asyncio.Queue
 
     # The task handle for the fumarole runtime.
-    fumarole_handle: asyncio.Task
-
-    rt: AsyncioFumeDragonsmouthRuntime
-
+    _fumarole_handle: asyncio.Task
 
     async def __aenter__(self):
         """Enter the session context."""
         return self
     
     async def __aexit__(self, exc_type, exc_value, traceback):
-        await self.rt.aclose()
+        self._fumarole_handle.cancel()
 
 # FumaroleClient
 class FumaroleClient:
@@ -202,6 +199,9 @@ class FumaroleClient:
                     break
                 except asyncio.CancelledError:
                     break
+                finally:
+                    fume_control_plane_rx_q.shutdown()
+            
 
         control_plane_src_task = asyncio.create_task(control_plane_source())
 
@@ -234,8 +234,11 @@ class FumaroleClient:
             max_concurrent_download=config.concurrent_download_limit,
         )
 
+        async def rt_run(rt):
+            async with rt as rt:
+                await rt.run()
 
-        rt_task = asyncio.create_task(rt.run())
+        rt_task = asyncio.create_task(rt_run(rt))
 
         async def fumarole_overseer():
             done, pending = await asyncio.wait([rt_task, control_plane_src_task], return_when=asyncio.FIRST_COMPLETED)
@@ -246,8 +249,7 @@ class FumaroleClient:
         return DragonsmouthAdapterSession(
             sink=subscribe_request_queue,
             source=dragonsmouth_outlet,
-            fumarole_handle=fumarole_handle,
-            rt=rt,
+            _fumarole_handle=fumarole_handle,
         )
 
     async def list_consumer_groups(

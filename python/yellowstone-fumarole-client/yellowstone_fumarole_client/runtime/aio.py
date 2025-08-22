@@ -125,12 +125,12 @@ class AsyncioFumeDragonsmouthRuntime:
         """
         self.sm = sm
         self.slot_downloader: AsyncSlotDownloader = slot_downloader
-        self.subscribe_request_update_q = subscribe_request_update_q
+        self.subscribe_request_update_rx: asyncio.Queue = subscribe_request_update_q
         self.subscribe_request = subscribe_request
         self.consumer_group_name = consumer_group_name
-        self.control_plane_tx = control_plane_tx_q
-        self.control_plane_rx = control_plane_rx_q
-        self.dragonsmouth_outlet = dragonsmouth_outlet
+        self.control_plane_tx: asyncio.Queue = control_plane_tx_q
+        self.control_plane_rx: asyncio.Queue = control_plane_rx_q
+        self.dragonsmouth_outlet: asyncio.Queue = dragonsmouth_outlet
         self.commit_interval = commit_interval
         self.gc_interval = gc_interval
         self.max_concurrent_download = max_concurrent_download
@@ -139,7 +139,16 @@ class AsyncioFumeDragonsmouthRuntime:
         self.download_tasks = dict()
         self.inflight_tasks = dict()
 
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.aclose()
+
     async def aclose(self):
+        self.control_plane_tx.shutdown()
+        self.dragonsmouth_outlet.shutdown()
         for t, kind in self.inflight_tasks.items():
             LOGGER.debug(f"closing {kind} task")
             t.cancel()
@@ -233,10 +242,10 @@ class AsyncioFumeDragonsmouthRuntime:
         )
 
     async def _commit_offset(self):
+        self.last_commit = time.time()
         if self.sm.last_committed_offset < self.sm.committable_offset:
             LOGGER.debug(f"Committing offset {self.sm.committable_offset}")
             await self._force_commit_offset()
-        self.last_commit = time.time()
 
     async def _drain_slot_status(self):
         """Drains the slot status from the state machine and sends updates to the Dragonsmouth outlet."""
@@ -271,11 +280,7 @@ class AsyncioFumeDragonsmouthRuntime:
                         dead_error=slot_status.dead_error,
                     ),
                 )
-                assert update.HasField("slot"), "Update must have a slot field"
-                try:
-                    await self.dragonsmouth_outlet.put(update)
-                except asyncio.QueueFull:
-                    return
+                await self.dragonsmouth_outlet.put(update)
 
             self.sm.mark_event_as_processed(slot_status.session_sequence)
 
@@ -303,7 +308,7 @@ class AsyncioFumeDragonsmouthRuntime:
 
         self.inflight_tasks = {
             asyncio.create_task(
-                self.subscribe_request_update_q.get()
+                self.subscribe_request_update_rx.get()
             ): SUBSCRIBE_REQ_UPDATE_TYPE_MARKER,
             asyncio.create_task(self.control_plane_rx.get()): CONTROL_PLANE_RESP_TYPE_MARKER,
             asyncio.create_task(Interval(self.commit_interval).tick()): COMMIT_TICK_TYPE_MARKER,
@@ -337,7 +342,7 @@ class AsyncioFumeDragonsmouthRuntime:
                     ), "Expected SubscribeRequest"
                     self.handle_new_subscribe_request(result)
                     new_task = asyncio.create_task(
-                        self.subscribe_request_update_q.get()
+                        self.subscribe_request_update_rx.get()
                     )
                     self.inflight_tasks[new_task] = SUBSCRIBE_REQ_UPDATE_TYPE_MARKER
                     pass
@@ -364,6 +369,7 @@ class AsyncioFumeDragonsmouthRuntime:
 
             await self._drain_slot_status()
 
+        self.aclose()
         LOGGER.debug("Fumarole runtime exiting")
 
 

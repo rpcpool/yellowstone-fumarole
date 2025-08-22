@@ -107,22 +107,15 @@ async def test_updating_subscribe_request(fumarole_config):
     )
 
     dragonsmouth_source = session.source
-    handle = session.fumarole_handle
-
     slot_status_recv = []
-    for _ in range(10):
-        tasks = [asyncio.create_task(dragonsmouth_source.get()), handle]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in done:
-            if tasks[0] == t:
-                result: SubscribeUpdate = t.result()
-                assert result.HasField("slot"), "Expected slot update"
-                slot: SubscribeUpdateSlot = result.slot
-                slot_status_recv.append(slot)
-            else:
-                result = t.result()
-                raise RuntimeError("failed to get dragonsmouth source: %s" % result)
-    assert len(slot_status_recv) == 10
+
+    async with session:
+        for _ in range(10):
+            result: SubscribeUpdate = await dragonsmouth_source.get()
+            assert result.HasField("slot"), "Expected slot update"
+            slot: SubscribeUpdateSlot = result.slot
+            slot_status_recv.append(slot)
+        assert len(slot_status_recv) == 10
 
 
 @pytest.mark.asyncio
@@ -151,24 +144,16 @@ async def test_updating_subscribe_request(fumarole_config):
         ),
     )
 
-    dragonsmouth_source = session.source
-    handle = session.fumarole_handle
-
-    entry_recv = []
-    for _ in range(1000):
-        tasks = [asyncio.create_task(dragonsmouth_source.get()), handle]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in done:
-            if tasks[0] == t:
-                result: SubscribeUpdate = t.result()
-                assert result.HasField("entry"), "Expected slot update"
-                entry: SubscribeUpdateEntry = result.entry
-                assert isinstance(entry, SubscribeUpdateEntry), "Expected entry update"
-                entry_recv.append(entry)
-            else:
-                result = t.result()
-                raise RuntimeError("failed to get dragonsmouth source: %s" % result)
-    assert len(entry_recv) == 1000
+    async with session:
+        dragonsmouth_source = session.source
+        entry_recv = []
+        for _ in range(1000):
+            result: SubscribeUpdate = await dragonsmouth_source.get()
+            assert result.HasField("entry"), "Expected slot update"
+            entry: SubscribeUpdateEntry = result.entry
+            assert isinstance(entry, SubscribeUpdateEntry), "Expected entry update"
+            entry_recv.append(entry)
+        assert len(entry_recv) == 1000
 
 
 @pytest.mark.asyncio
@@ -229,50 +214,38 @@ async def test_dragonsmouth_adapter(fumarole_config):
         def default(cls) -> "BlockConstruction":
             return cls()
 
-    async with session as session:
+    async with session:
         dragonsmouth_source = session.source
-        handle = session.fumarole_handle
         block_map = dict()
         while True:
-            tasks = [asyncio.create_task(dragonsmouth_source.get()), handle]
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for t in done:
-                if t == handle:
-                    logging.error("task done: %s", t)
-                    raise RuntimeError("handle task completed unexpectedly")
-                if tasks[0] == t:
-                    result: SubscribeUpdate = t.result()
-                    if result.HasField("block_meta"):
-                        block_meta: SubscribeUpdateBlockMeta = result.block_meta
-                        slot = block_meta.slot
-                        block = block_map.setdefault(slot, BlockConstruction.default())
-                        block.meta = block_meta
-                    elif result.HasField("transaction"):
-                        tx: SubscribeUpdateTransaction = result.transaction
-                        slot = tx.slot
-                        block = block_map.setdefault(slot, BlockConstruction.default())
-                        block.tx_vec.append(tx)
-                    elif result.HasField("account"):
-                        account: SubscribeUpdateAccount = result.account
-                        slot = account.slot
-                        block = block_map.setdefault(slot, BlockConstruction.default())
-                        block.account_vec.append(account)
-                    elif result.HasField("entry"):
-                        entry: SubscribeUpdateEntry = result.entry
-                        slot = entry.slot
-                        block = block_map.setdefault(slot, BlockConstruction.default())
-                        block.entry_vec.append(entry)
-                    elif result.HasField("slot"):
-                        result: SubscribeUpdateSlot = result.slot
-                        block = block_map.get(result.slot, None)
-                        if block is not None:
-                            logging.info("slot received")
-                            assert block.check_block_integrity()
-                            return
-                else:
-                    result = t.result()
-                    raise RuntimeError("failed to get dragonsmouth source: %s" % result)
-
+            result: SubscribeUpdate =  await dragonsmouth_source.get()
+            if result.HasField("block_meta"):
+                block_meta: SubscribeUpdateBlockMeta = result.block_meta
+                slot = block_meta.slot
+                block = block_map.setdefault(slot, BlockConstruction.default())
+                block.meta = block_meta
+            elif result.HasField("transaction"):
+                tx: SubscribeUpdateTransaction = result.transaction
+                slot = tx.slot
+                block = block_map.setdefault(slot, BlockConstruction.default())
+                block.tx_vec.append(tx)
+            elif result.HasField("account"):
+                account: SubscribeUpdateAccount = result.account
+                slot = account.slot
+                block = block_map.setdefault(slot, BlockConstruction.default())
+                block.account_vec.append(account)
+            elif result.HasField("entry"):
+                entry: SubscribeUpdateEntry = result.entry
+                slot = entry.slot
+                block = block_map.setdefault(slot, BlockConstruction.default())
+                block.entry_vec.append(entry)
+            elif result.HasField("slot"):
+                result: SubscribeUpdateSlot = result.slot
+                block = block_map.get(result.slot, None)
+                if block is not None:
+                    logging.info("slot received")
+                    assert block.check_block_integrity()
+                    return
 
 @pytest.mark.asyncio
 async def test_updating_subscribe_request(fumarole_config):
@@ -306,62 +279,49 @@ async def test_updating_subscribe_request(fumarole_config):
     request2 = SubscribeRequest(
         slots={"fumarole": SubscribeRequestFilterSlots()},
     )
-    dragonsmouth_source = session.source
-    handle = session.fumarole_handle
-    update_subscribe_request_q = session.sink
-    data_recv = []
-    for _ in range(500):
-        tasks = [asyncio.create_task(dragonsmouth_source.get()), handle]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in done:
-            if tasks[0] == t:
-                result: SubscribeUpdate = t.result()
-                assert result.HasField("entry"), "Expected slot update"
+
+    async with session:
+        dragonsmouth_source = session.source
+        update_subscribe_request_q = session.sink
+        data_recv = []
+        for _ in range(500):
+            result: SubscribeUpdate = await dragonsmouth_source.get()
+            assert result.HasField("entry"), "Expected slot update"
+            entry: SubscribeUpdateEntry = result.entry
+            assert isinstance(entry, SubscribeUpdateEntry), "Expected entry update"
+            data_recv.append(entry)
+
+        await update_subscribe_request_q.put(request2)
+
+        when_new_filter_in_effect = None
+        slot_update_detected = 0
+        while slot_update_detected < 10:
+            result: SubscribeUpdate = await dragonsmouth_source.get()
+            assert result.HasField("slot") or result.HasField(
+                "entry"
+            ), "Expected slot or entry update"
+            if result.HasField("entry"):
                 entry: SubscribeUpdateEntry = result.entry
-                assert isinstance(entry, SubscribeUpdateEntry), "Expected entry update"
+                assert isinstance(
+                    entry, SubscribeUpdateEntry
+                ), "Expected entry update"
                 data_recv.append(entry)
-            else:
-                result = t.result()
-                raise RuntimeError("failed to get dragonsmouth source: %s" % result)
+                if when_new_filter_in_effect is not None:
+                    assert (
+                        when_new_filter_in_effect > entry.slot
+                    ), "New filter should be in effect after the slot update"
+            elif result.HasField("slot"):
+                assert isinstance(
+                    result.slot, SubscribeUpdateSlot
+                ), "Expected slot update"
+                if when_new_filter_in_effect is None:
+                    slot = result.slot.slot
+                    when_new_filter_in_effect = slot
+                data_recv.append(result.slot)
+                slot_update_detected += 1
+            slot: SubscribeUpdateSlot = result.slot
+            assert isinstance(slot, SubscribeUpdateSlot), "Expected slot update"
 
-    await update_subscribe_request_q.put(request2)
-
-    when_new_filter_in_effect = None
-    slot_update_detected = 0
-    while slot_update_detected < 10:
-        tasks = [asyncio.create_task(dragonsmouth_source.get()), handle]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in done:
-            if tasks[0] == t:
-                result: SubscribeUpdate = t.result()
-                assert result.HasField("slot") or result.HasField(
-                    "entry"
-                ), "Expected slot or entry update"
-                if result.HasField("entry"):
-                    entry: SubscribeUpdateEntry = result.entry
-                    assert isinstance(
-                        entry, SubscribeUpdateEntry
-                    ), "Expected entry update"
-                    data_recv.append(entry)
-                    if when_new_filter_in_effect is not None:
-                        assert (
-                            when_new_filter_in_effect > entry.slot
-                        ), "New filter should be in effect after the slot update"
-                elif result.HasField("slot"):
-                    assert isinstance(
-                        result.slot, SubscribeUpdateSlot
-                    ), "Expected slot update"
-                    if when_new_filter_in_effect is None:
-                        slot = result.slot.slot
-                        when_new_filter_in_effect = slot
-                    data_recv.append(result.slot)
-                    slot_update_detected += 1
-                slot: SubscribeUpdateSlot = result.slot
-                assert isinstance(slot, SubscribeUpdateSlot), "Expected slot update"
-            else:
-                result = t.result()
-                raise RuntimeError("failed to get dragonsmouth source: %s" % result)
-
-    assert (
-        when_new_filter_in_effect is not None
-    ), "New filter should be in effect after the slot update"
+        assert (
+            when_new_filter_in_effect is not None
+        ), "New filter should be in effect after the slot update"
