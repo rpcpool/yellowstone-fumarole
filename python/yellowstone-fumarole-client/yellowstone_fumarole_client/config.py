@@ -3,7 +3,8 @@ from typing import Dict, Optional
 import yaml
 
 
-SUPPORTED_COMPRESSION = ['none', 'gzip']
+SUPPORTED_COMPRESSION = ["none", "gzip"]
+
 
 @dataclass
 class FumaroleConfig:
@@ -11,7 +12,7 @@ class FumaroleConfig:
     x_token: Optional[str] = None
     max_decoding_message_size_bytes: int = 512_000_000
     x_metadata: Dict[str, str] = None
-    response_compression: str = 'none'
+    response_compression: str = "none"
 
     def __post_init__(self):
         self.x_metadata = self.x_metadata or {}
@@ -19,7 +20,9 @@ class FumaroleConfig:
     @classmethod
     def from_yaml(cls, fileobj) -> "FumaroleConfig":
         data = yaml.safe_load(fileobj)
-        response_compression = data.get("response_compression", cls.response_compression)
+        response_compression = data.get(
+            "response_compression", cls.response_compression
+        )
         if response_compression not in SUPPORTED_COMPRESSION:
             raise ValueError(f"response_compression must be in {SUPPORTED_COMPRESSION}")
         return cls(
@@ -29,5 +32,7 @@ class FumaroleConfig:
                 "max_decoding_message_size_bytes", cls.max_decoding_message_size_bytes
             ),
             x_metadata=data.get("x-metadata", {}),
-            response_compression=data.get("response_compression", cls.response_compression),
+            response_compression=data.get(
+                "response_compression", cls.response_compression
+            ),
         )

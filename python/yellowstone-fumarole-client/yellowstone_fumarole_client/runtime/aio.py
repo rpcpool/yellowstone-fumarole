@@ -134,11 +134,10 @@ class AsyncioFumeDragonsmouthRuntime:
         self.commit_interval = commit_interval
         self.gc_interval = gc_interval
         self.max_concurrent_download = max_concurrent_download
-        
+
         # holds metadata about the download task
         self.download_tasks = dict()
         self.inflight_tasks = dict()
-
 
     async def __aenter__(self):
         return self
@@ -269,7 +268,9 @@ class AsyncioFumeDragonsmouthRuntime:
                 elif not filter.filter_by_commitment:
                     matched_filters.append(filter_name)
             if matched_filters:
-                LOGGER.debug(f"Matched {len(matched_filters)} filters for SlotStatus Update")
+                LOGGER.debug(
+                    f"Matched {len(matched_filters)} filters for SlotStatus Update"
+                )
                 update = SubscribeUpdate(
                     filters=matched_filters,
                     created_at=None,
@@ -310,10 +311,14 @@ class AsyncioFumeDragonsmouthRuntime:
             asyncio.create_task(
                 self.subscribe_request_update_rx.get()
             ): SUBSCRIBE_REQ_UPDATE_TYPE_MARKER,
-            asyncio.create_task(self.control_plane_rx.get()): CONTROL_PLANE_RESP_TYPE_MARKER,
-            asyncio.create_task(Interval(self.commit_interval).tick()): COMMIT_TICK_TYPE_MARKER,
+            asyncio.create_task(
+                self.control_plane_rx.get()
+            ): CONTROL_PLANE_RESP_TYPE_MARKER,
+            asyncio.create_task(
+                Interval(self.commit_interval).tick()
+            ): COMMIT_TICK_TYPE_MARKER,
         }
-        
+
         while self.inflight_tasks:
             ticks += 1
             LOGGER.debug(f"Runtime loop tick")

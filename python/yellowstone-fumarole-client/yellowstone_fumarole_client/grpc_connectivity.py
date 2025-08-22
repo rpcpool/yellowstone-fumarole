@@ -166,7 +166,11 @@ class FumaroleGrpcConnector:
     async def connect(self, *grpc_options) -> FumaroleStub:
         options = [("grpc.max_receive_message_length", 111111110), *grpc_options]
         interceptors = MetadataInterceptor(self.config.x_metadata).interceptors()
-        compression = grpc.Compression.Gzip if self.config.response_compression == 'gzip' else None
+        compression = (
+            grpc.Compression.Gzip
+            if self.config.response_compression == "gzip"
+            else None
+        )
         if self.config.x_token is not None:
             auth = TritonAuthMetadataPlugin(self.config.x_token)
             # ssl_creds allow you to use our https endpoint
@@ -193,7 +197,10 @@ class FumaroleGrpcConnector:
                 "Using insecure channel without authentication"
             )
             channel = grpc.aio.insecure_channel(
-                self.endpoint, options=options, interceptors=interceptors, compression=compression
+                self.endpoint,
+                options=options,
+                interceptors=interceptors,
+                compression=compression,
             )
 
         return FumaroleStub(channel)
