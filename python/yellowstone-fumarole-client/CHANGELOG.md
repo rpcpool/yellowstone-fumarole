@@ -32,6 +32,7 @@ The minor version will be incremented upon a breaking change and the patch versi
 ### Breaking
 
 - `yellowstone_fumarole_client.DragonsmouthAdapterSession.source` returns `AsyncGenerator` instead of `asyncio.Queue`. [#31](https://github.com/rpcpool/yellowstone-fumarole/issues/31)
+- Migrated `protobuf` from `^5` to `^6.32.0` 
 
 ## [0.1.0]
 
