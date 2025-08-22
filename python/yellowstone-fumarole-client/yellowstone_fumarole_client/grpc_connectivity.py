@@ -30,35 +30,8 @@ class TritonAuthMetadataPlugin(grpc.AuthMetadataPlugin):
     ):
         return _triton_sign_request(callback, self.x_token, None)
 
-
-def grpc_channel(endpoint: str, x_token=None, compression=None, *grpc_options):
-    options = [("grpc.max_receive_message_length", 111111110), *grpc_options]
-    if x_token is not None:
-        auth = TritonAuthMetadataPlugin(x_token)
-        # ssl_creds allow you to use our https endpoint
-        # grpc.ssl_channel_credentials with no arguments will look through your CA trust store.
-        ssl_creds = grpc.ssl_channel_credentials()
-
-        # call credentials will be sent on each request if setup with composite_channel_credentials.
-        call_creds: grpc.CallCredentials = grpc.metadata_call_credentials(auth)
-
-        # Combined creds will store the channel creds aswell as the call credentials
-        combined_creds = grpc.composite_channel_credentials(ssl_creds, call_creds)
-
-        return grpc.secure_channel(
-            endpoint,
-            credentials=combined_creds,
-            compression=compression,
-            options=options,
-        )
-    else:
-        return grpc.insecure_channel(endpoint, compression=compression, options=options)
-
-
 # Because of a bug in grpcio library, multiple inheritance of ClientInterceptor subclasses does not work.
 # You have to create a new class for each type of interceptor you want to use.
-
-
 class MetadataInterceptor(
     grpc.aio.UnaryStreamClientInterceptor,
     grpc.aio.StreamUnaryClientInterceptor,

@@ -113,6 +113,7 @@ class DragonsmouthAdapterSession:
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        self.sink.shutdown()
         self._fumarole_handle.cancel()
 
     def stats(self) -> FumaroleSubscribeStats:
