@@ -8,10 +8,13 @@ from dataclasses import dataclass
 from yellowstone_fumarole_client.config import FumaroleConfig
 from yellowstone_fumarole_client.runtime.aio import (
     AsyncioFumeDragonsmouthRuntime,
-    FumaroleSM,
     DEFAULT_GC_INTERVAL,
     DEFAULT_SLOT_MEMORY_RETENTION,
     GrpcSlotDownloader,
+)
+from yellowstone_fumarole_client.runtime.state_machine import (
+    FumaroleSM,
+    FumeOffset,
 )
 from yellowstone_fumarole_proto.geyser_pb2 import SubscribeRequest, SubscribeUpdate
 from yellowstone_fumarole_proto.fumarole_pb2 import (
@@ -77,6 +80,15 @@ class FumaroleSubscribeConfig:
     # The retention period for slot memory in seconds.
     slot_memory_retention: int = DEFAULT_SLOT_MEMORY_RETENTION
 
+@dataclass
+class FumaroleStats:
+    # Last committed log offset in Fumarole -- this is a low-level, implementation detail.
+    # NOTE: this should not be part as business logic, can change any time.
+    log_committed_offset: FumeOffset
+    # NOTE:: this is a low-level information, can change any time.
+    log_committable_offset: FumeOffset
+    # Max slot seen by the in the current session - does not mean it has been processed.
+    max_slot_seen: int
 
 # DragonsmouthAdapterSession
 @dataclass
@@ -92,12 +104,26 @@ class DragonsmouthAdapterSession:
     # The task handle for the fumarole runtime.
     _fumarole_handle: asyncio.Task
 
+    _sm: FumaroleSM = None
+
     async def __aenter__(self):
         """Enter the session context."""
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback):
         self._fumarole_handle.cancel()
+
+    def stats(self) -> FumaroleStats:
+        """Get low-level statistics of the Fumarole session.
+        """
+        commitable = self._sm.committable_offset
+        committed = self._sm.last_committed_offset
+        max_slot = self._sm.max_slot_detected
+        return FumaroleStats(
+            log_committed_offset=committed,
+            log_committable_offset=commitable,
+            max_slot_seen=max_slot,
+        )
 
 
 # FumaroleClient
