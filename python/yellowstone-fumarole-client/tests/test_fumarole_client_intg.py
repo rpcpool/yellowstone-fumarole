@@ -1,10 +1,8 @@
 from typing import Optional
 import uuid
 import pytest
-import asyncio
 import logging
 from os import environ
-from collections import defaultdict
 from yellowstone_fumarole_client.config import FumaroleConfig
 from yellowstone_fumarole_client import FumaroleClient, FumaroleSubscribeConfig
 from yellowstone_fumarole_proto.fumarole_pb2 import CreateConsumerGroupRequest
@@ -24,6 +22,13 @@ from yellowstone_fumarole_proto.geyser_pb2 import (
     SubscribeUpdateEntry,
     SubscribeUpdateSlot,
 )
+import random
+import string
+
+def random_string(length=8):
+    """Generate a random string of given length (default: 8)."""
+    characters = string.ascii_letters + string.digits  # A-Z, a-z, 0-9
+    return ''.join(random.choice(characters) for _ in range(length))
 
 
 @pytest.fixture
@@ -52,16 +57,18 @@ async def test_fumarole_delete_all(fumarole_config):
     # Call the delete_all_cg function
     await client.delete_all_consumer_groups()
 
+    consumer_group_name = random_string(12)
     resp = await client.create_consumer_group(
         CreateConsumerGroupRequest(
-            consumer_group_name="test",
+            consumer_group_name=consumer_group_name,
         )
     )
     assert resp.consumer_group_id, "Failed to create consumer group"
-
+    
+    consumer_groiup_name2 = random_string(12)
     resp = await client.create_consumer_group(
         CreateConsumerGroupRequest(
-            consumer_group_name="test2",
+            consumer_group_name=consumer_groiup_name2,
         )
     )
 
@@ -79,7 +86,6 @@ async def test_fumarole_delete_all(fumarole_config):
     cg_info = await client.get_consumer_group_info(consumer_group_name="test")
     assert cg_info is None, "Failed to get consumer group info"
 
-
 @pytest.mark.asyncio
 async def test_updating_subscribe_request(fumarole_config):
     """
@@ -92,53 +98,16 @@ async def test_updating_subscribe_request(fumarole_config):
 
     client: FumaroleClient = await FumaroleClient.connect(fumarole_config)
 
+    consumer_group_name = random_string(12)
     resp = await client.create_consumer_group(
         CreateConsumerGroupRequest(
-            consumer_group_name="test",
+            consumer_group_name=consumer_group_name,
         )
     )
     assert resp.consumer_group_id, "Failed to create consumer group"
 
     session = await client.dragonsmouth_subscribe(
-        consumer_group_name="test",
-        request=SubscribeRequest(
-            slots={"fumarole": SubscribeRequestFilterSlots()},
-        ),
-    )
-
-    dragonsmouth_source = session.source
-    slot_status_recv = []
-
-    async with session:
-        for _ in range(10):
-            result: SubscribeUpdate = await dragonsmouth_source.get()
-            assert result.HasField("slot"), "Expected slot update"
-            slot: SubscribeUpdateSlot = result.slot
-            slot_status_recv.append(slot)
-        assert len(slot_status_recv) == 10
-
-
-@pytest.mark.asyncio
-async def test_updating_subscribe_request(fumarole_config):
-    """
-    Test the slot update subscription.
-    """
-    logging.debug("test_slot_update_subscribe")
-    # Create a FumaroleClient instance
-
-    fumarole_config.x_metadata = {"x-subscription-id": str(uuid.uuid4())}
-
-    client: FumaroleClient = await FumaroleClient.connect(fumarole_config)
-
-    resp = await client.create_consumer_group(
-        CreateConsumerGroupRequest(
-            consumer_group_name="test",
-        )
-    )
-    assert resp.consumer_group_id, "Failed to create consumer group"
-
-    session = await client.dragonsmouth_subscribe(
-        consumer_group_name="test",
+        consumer_group_name=consumer_group_name,
         request=SubscribeRequest(
             entry={"fumarole": SubscribeRequestFilterEntry()},
         ),
@@ -147,19 +116,22 @@ async def test_updating_subscribe_request(fumarole_config):
     async with session:
         dragonsmouth_source = session.source
         entry_recv = []
-        for _ in range(1000):
-            result: SubscribeUpdate = await dragonsmouth_source.get()
+        i = 0
+        async for result in dragonsmouth_source:
             assert result.HasField("entry"), "Expected slot update"
             entry: SubscribeUpdateEntry = result.entry
             assert isinstance(entry, SubscribeUpdateEntry), "Expected entry update"
             entry_recv.append(entry)
+            i += 1
+            if i == 1000:
+                break
         assert len(entry_recv) == 1000
 
 
 @pytest.mark.asyncio
 async def test_dragonsmouth_adapter(fumarole_config):
     """
-    Test the delete_all_cg function.
+    test `DragonsmouthAdapterSession`
     """
     logging.debug("test_fumarole_delete_all")
     # Create a FumaroleClient instance
@@ -171,9 +143,10 @@ async def test_dragonsmouth_adapter(fumarole_config):
     client: FumaroleClient = await FumaroleClient.connect(fumarole_config)
     await client.delete_all_consumer_groups()
 
+    consumer_group_name = random_string(12)
     resp = await client.create_consumer_group(
         CreateConsumerGroupRequest(
-            consumer_group_name="test",
+            consumer_group_name=consumer_group_name,
         )
     )
     assert resp.consumer_group_id, "Failed to create consumer group"
@@ -183,9 +156,9 @@ async def test_dragonsmouth_adapter(fumarole_config):
     )
     logging.info(f"subscribe config : {subscribe_config}")
     session = await client.dragonsmouth_subscribe_with_config(
-        consumer_group_name="test",
+        consumer_group_name=consumer_group_name,
         request=SubscribeRequest(
-            # accounts={"fumarole": SubscribeRequestFilterAccounts()},
+            accounts={"fumarole": SubscribeRequestFilterAccounts()},
             transactions={"fumarole": SubscribeRequestFilterTransactions()},
             blocks_meta={"fumarole": SubscribeRequestFilterBlocksMeta()},
             entry={"fumarole": SubscribeRequestFilterEntry()},
@@ -217,8 +190,7 @@ async def test_dragonsmouth_adapter(fumarole_config):
     async with session:
         dragonsmouth_source = session.source
         block_map = dict()
-        while True:
-            result: SubscribeUpdate =  await dragonsmouth_source.get()
+        async for result in dragonsmouth_source:
             if result.HasField("block_meta"):
                 block_meta: SubscribeUpdateBlockMeta = result.block_meta
                 slot = block_meta.slot
@@ -245,10 +217,11 @@ async def test_dragonsmouth_adapter(fumarole_config):
                 if block is not None:
                     logging.info("slot received")
                     assert block.check_block_integrity()
-                    return
+                    break
+    assert block_map, "No blocks received"
 
 @pytest.mark.asyncio
-async def test_updating_subscribe_request(fumarole_config):
+async def test_update_subscription_to_include_slotstatus_update(fumarole_config):
     """
     Test the slot update subscription.
     """
@@ -259,9 +232,10 @@ async def test_updating_subscribe_request(fumarole_config):
 
     client: FumaroleClient = await FumaroleClient.connect(fumarole_config)
 
+    consumer_group_name = random_string(12)
     resp = await client.create_consumer_group(
         CreateConsumerGroupRequest(
-            consumer_group_name="test",
+            consumer_group_name=consumer_group_name,
         )
     )
     assert resp.consumer_group_id, "Failed to create consumer group"
@@ -269,7 +243,7 @@ async def test_updating_subscribe_request(fumarole_config):
         concurrent_download_limit=1,
     )
     session = await client.dragonsmouth_subscribe_with_config(
-        consumer_group_name="test",
+        consumer_group_name=consumer_group_name,
         request=SubscribeRequest(
             entry={"fumarole": SubscribeRequestFilterEntry()},
         ),
@@ -284,19 +258,22 @@ async def test_updating_subscribe_request(fumarole_config):
         dragonsmouth_source = session.source
         update_subscribe_request_q = session.sink
         data_recv = []
-        for _ in range(500):
-            result: SubscribeUpdate = await dragonsmouth_source.get()
+        i = 0
+        async for result in dragonsmouth_source:
             assert result.HasField("entry"), "Expected slot update"
             entry: SubscribeUpdateEntry = result.entry
             assert isinstance(entry, SubscribeUpdateEntry), "Expected entry update"
             data_recv.append(entry)
+            i += 1
+            if i == 500:
+                break
 
         await update_subscribe_request_q.put(request2)
 
         when_new_filter_in_effect = None
         slot_update_detected = 0
         while slot_update_detected < 10:
-            result: SubscribeUpdate = await dragonsmouth_source.get()
+            result: SubscribeUpdate = await anext(dragonsmouth_source)
             assert result.HasField("slot") or result.HasField(
                 "entry"
             ), "Expected slot or entry update"

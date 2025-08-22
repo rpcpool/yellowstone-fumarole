@@ -3,7 +3,7 @@ import logging
 from yellowstone_fumarole_client.grpc_connectivity import (
     FumaroleGrpcConnector,
 )
-from typing import Dict, Optional
+from typing import AsyncGenerator, Dict, Optional
 from dataclasses import dataclass
 from yellowstone_fumarole_client.config import FumaroleConfig
 from yellowstone_fumarole_client.runtime.aio import (
@@ -46,7 +46,7 @@ __all__ = [
 ]
 
 # Constants
-DEFAULT_DRAGONSMOUTH_CAPACITY = 10000
+DEFAULT_DRAGONSMOUTH_CAPACITY = 100000
 DEFAULT_COMMIT_INTERVAL = 5.0  # seconds
 DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT = 3
 DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP = 10
@@ -87,7 +87,7 @@ class DragonsmouthAdapterSession:
     sink: asyncio.Queue
 
     # The queue for receiving SubscribeUpdate from the dragonsmouth stream.
-    source: asyncio.Queue
+    source: AsyncGenerator[SubscribeUpdate, None]
 
     # The task handle for the fumarole runtime.
     _fumarole_handle: asyncio.Task
@@ -246,9 +246,23 @@ class FumaroleClient:
                 t.cancel()
 
         fumarole_handle = asyncio.create_task(fumarole_overseer())
+
+        async def source_gen() -> AsyncGenerator[SubscribeUpdate, None]:
+            try:
+                while True:
+                    update = await dragonsmouth_outlet.get()
+                    yield update
+            except asyncio.CancelledError:
+                pass
+            except asyncio.Queue:
+                pass
+            finally:
+                dragonsmouth_outlet.shutdown()
+
+
         return DragonsmouthAdapterSession(
             sink=subscribe_request_queue,
-            source=dragonsmouth_outlet,
+            source=source_gen(),
             _fumarole_handle=fumarole_handle,
         )
 
