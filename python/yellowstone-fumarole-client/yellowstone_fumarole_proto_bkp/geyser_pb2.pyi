@@ -422,16 +422,6 @@ class SubscribeUpdatePong(_message.Message):
     id: int
     def __init__(self, id: _Optional[int] = ...) -> None: ...
 
-class SubscribeReplayInfoRequest(_message.Message):
-    __slots__ = ()
-    def __init__(self) -> None: ...
-
-class SubscribeReplayInfoResponse(_message.Message):
-    __slots__ = ("first_available",)
-    FIRST_AVAILABLE_FIELD_NUMBER: _ClassVar[int]
-    first_available: int
-    def __init__(self, first_available: _Optional[int] = ...) -> None: ...
-
 class PingRequest(_message.Message):
     __slots__ = ("count",)
     COUNT_FIELD_NUMBER: _ClassVar[int]

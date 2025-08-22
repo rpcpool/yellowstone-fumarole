@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+set -x
 
 script_dir=$(dirname "$(realpath "$BASH_SOURCE")")
 
@@ -22,19 +23,18 @@ package_dir="$(dirname "$script_dir")"
 echo "fume_dir: $package_dir"
 echo "repo_dir: $repo_dir"
 proto_path="$repo_dir/proto"
-proto_path2="$repo_dir/yellowstone-grpc/yellowstone-grpc-proto/proto"
+# proto_path2="$repo_dir/yellowstone-grpc/yellowstone-grpc-proto/proto"
 out_dir="$package_dir/yellowstone_fumarole_proto"
 module_name="yellowstone_fumarole_proto"
-rm -fr $out_dir/*
 mkdir -p $out_dir
+rm -fr $out_dir/*
 
 /bin/env python -m grpc_tools.protoc \
     -I$proto_path \
-    -I$proto_path2 \
     --python_out=$out_dir \
     --pyi_out=$out_dir \
     --grpc_python_out=$out_dir \
-    $proto_path/*.proto $proto_path2/*.proto
+    $proto_path/*.proto
 
 pushd $out_dir
 for file in *.py*; do

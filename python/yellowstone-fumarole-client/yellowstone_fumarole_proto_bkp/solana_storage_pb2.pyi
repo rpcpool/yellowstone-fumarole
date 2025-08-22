@@ -92,7 +92,7 @@ class MessageAddressTableLookup(_message.Message):
     def __init__(self, account_key: _Optional[bytes] = ..., writable_indexes: _Optional[bytes] = ..., readonly_indexes: _Optional[bytes] = ...) -> None: ...
 
 class TransactionStatusMeta(_message.Message):
-    __slots__ = ("err", "fee", "pre_balances", "post_balances", "inner_instructions", "inner_instructions_none", "log_messages", "log_messages_none", "pre_token_balances", "post_token_balances", "rewards", "loaded_writable_addresses", "loaded_readonly_addresses", "return_data", "return_data_none", "compute_units_consumed", "cost_units")
+    __slots__ = ("err", "fee", "pre_balances", "post_balances", "inner_instructions", "inner_instructions_none", "log_messages", "log_messages_none", "pre_token_balances", "post_token_balances", "rewards", "loaded_writable_addresses", "loaded_readonly_addresses", "return_data", "return_data_none", "compute_units_consumed")
     ERR_FIELD_NUMBER: _ClassVar[int]
     FEE_FIELD_NUMBER: _ClassVar[int]
     PRE_BALANCES_FIELD_NUMBER: _ClassVar[int]
@@ -109,7 +109,6 @@ class TransactionStatusMeta(_message.Message):
     RETURN_DATA_FIELD_NUMBER: _ClassVar[int]
     RETURN_DATA_NONE_FIELD_NUMBER: _ClassVar[int]
     COMPUTE_UNITS_CONSUMED_FIELD_NUMBER: _ClassVar[int]
-    COST_UNITS_FIELD_NUMBER: _ClassVar[int]
     err: TransactionError
     fee: int
     pre_balances: _containers.RepeatedScalarFieldContainer[int]
@@ -126,8 +125,7 @@ class TransactionStatusMeta(_message.Message):
     return_data: ReturnData
     return_data_none: bool
     compute_units_consumed: int
-    cost_units: int
-    def __init__(self, err: _Optional[_Union[TransactionError, _Mapping]] = ..., fee: _Optional[int] = ..., pre_balances: _Optional[_Iterable[int]] = ..., post_balances: _Optional[_Iterable[int]] = ..., inner_instructions: _Optional[_Iterable[_Union[InnerInstructions, _Mapping]]] = ..., inner_instructions_none: bool = ..., log_messages: _Optional[_Iterable[str]] = ..., log_messages_none: bool = ..., pre_token_balances: _Optional[_Iterable[_Union[TokenBalance, _Mapping]]] = ..., post_token_balances: _Optional[_Iterable[_Union[TokenBalance, _Mapping]]] = ..., rewards: _Optional[_Iterable[_Union[Reward, _Mapping]]] = ..., loaded_writable_addresses: _Optional[_Iterable[bytes]] = ..., loaded_readonly_addresses: _Optional[_Iterable[bytes]] = ..., return_data: _Optional[_Union[ReturnData, _Mapping]] = ..., return_data_none: bool = ..., compute_units_consumed: _Optional[int] = ..., cost_units: _Optional[int] = ...) -> None: ...
+    def __init__(self, err: _Optional[_Union[TransactionError, _Mapping]] = ..., fee: _Optional[int] = ..., pre_balances: _Optional[_Iterable[int]] = ..., post_balances: _Optional[_Iterable[int]] = ..., inner_instructions: _Optional[_Iterable[_Union[InnerInstructions, _Mapping]]] = ..., inner_instructions_none: bool = ..., log_messages: _Optional[_Iterable[str]] = ..., log_messages_none: bool = ..., pre_token_balances: _Optional[_Iterable[_Union[TokenBalance, _Mapping]]] = ..., post_token_balances: _Optional[_Iterable[_Union[TokenBalance, _Mapping]]] = ..., rewards: _Optional[_Iterable[_Union[Reward, _Mapping]]] = ..., loaded_writable_addresses: _Optional[_Iterable[bytes]] = ..., loaded_readonly_addresses: _Optional[_Iterable[bytes]] = ..., return_data: _Optional[_Union[ReturnData, _Mapping]] = ..., return_data_none: bool = ..., compute_units_consumed: _Optional[int] = ...) -> None: ...
 
 class TransactionError(_message.Message):
     __slots__ = ("err",)

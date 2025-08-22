@@ -43,9 +43,12 @@ async def test_fumarole_delete_all(fumarole_config):
     logging.debug("test_fumarole_delete_all")
     # Create a FumaroleClient instance
 
-    fumarole_config.x_metadata = {"x-subscription-id": str(uuid.uuid4())}
-
+    # fumarole_config.x_metadata = {"x-subscription-id": str(uuid.uuid4())}
     client: FumaroleClient = await FumaroleClient.connect(fumarole_config)
+
+    logging.debug(f"fumarole_config: {fumarole_config}")
+    version = await client.version()
+    logging.debug(f"Fumarole version: {version}")
     # Call the delete_all_cg function
     await client.delete_all_consumer_groups()
 
