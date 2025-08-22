@@ -14,7 +14,7 @@ from yellowstone_fumarole_client.runtime.aio import (
     GrpcSlotDownloader,
 )
 from yellowstone_fumarole_proto.geyser_pb2 import SubscribeRequest, SubscribeUpdate
-from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
+from yellowstone_fumarole_proto.fumarole_pb2 import (
     ControlResponse,
     VersionRequest,
     VersionResponse,
@@ -29,8 +29,10 @@ from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
     CreateConsumerGroupRequest,
     CreateConsumerGroupResponse,
 )
-from yellowstone_fumarole_proto.fumarole_v2_pb2_grpc import FumaroleStub
+from yellowstone_fumarole_proto.fumarole_pb2_grpc import FumaroleStub
 import grpc
+
+from yellowstone_fumarole_client import config
 
 __all__ = [
     "FumaroleClient",
@@ -90,6 +92,15 @@ class DragonsmouthAdapterSession:
     # The task handle for the fumarole runtime.
     fumarole_handle: asyncio.Task
 
+    rt: AsyncioFumeDragonsmouthRuntime
+
+
+    async def __aenter__(self):
+        """Enter the session context."""
+        return self
+    
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.rt.aclose()
 
 # FumaroleClient
 class FumaroleClient:
@@ -164,6 +175,8 @@ class FumaroleClient:
                     yield update
                 except asyncio.QueueShutDown:
                     break
+                except asyncio.CancelledError:
+                    break
 
         fume_control_plane_stream_rx: grpc.aio.StreamStreamCall = self.stub.Subscribe(
             control_plane_sink()
@@ -187,8 +200,10 @@ class FumaroleClient:
                         await fume_control_plane_rx_q.put(update)
                 except asyncio.QueueShutDown:
                     break
+                except asyncio.CancelledError:
+                    break
 
-        _cp_src_task = asyncio.create_task(control_plane_source())
+        control_plane_src_task = asyncio.create_task(control_plane_source())
 
         FumaroleClient.logger.debug(f"Control response: {control_response}")
 
@@ -219,12 +234,20 @@ class FumaroleClient:
             max_concurrent_download=config.concurrent_download_limit,
         )
 
-        fumarole_handle = asyncio.create_task(rt.run())
-        FumaroleClient.logger.debug(f"Fumarole handle created: {fumarole_handle}")
+
+        rt_task = asyncio.create_task(rt.run())
+
+        async def fumarole_overseer():
+            done, pending = await asyncio.wait([rt_task, control_plane_src_task], return_when=asyncio.FIRST_COMPLETED)
+            for t in pending:
+                t.cancel()
+
+        fumarole_handle = asyncio.create_task(fumarole_overseer())
         return DragonsmouthAdapterSession(
             sink=subscribe_request_queue,
             source=dragonsmouth_outlet,
             fumarole_handle=fumarole_handle,
+            rt=rt,
         )
 
     async def list_consumer_groups(

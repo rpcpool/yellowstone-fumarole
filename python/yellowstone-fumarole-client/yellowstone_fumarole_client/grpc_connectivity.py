@@ -2,7 +2,7 @@ import logging
 from typing import Optional
 import grpc
 from yellowstone_fumarole_client.config import FumaroleConfig
-from yellowstone_fumarole_proto.fumarole_v2_pb2_grpc import FumaroleStub
+from yellowstone_fumarole_proto.fumarole_pb2_grpc import FumaroleStub
 
 X_TOKEN_HEADER = "x-token"
 
@@ -166,6 +166,7 @@ class FumaroleGrpcConnector:
     async def connect(self, *grpc_options) -> FumaroleStub:
         options = [("grpc.max_receive_message_length", 111111110), *grpc_options]
         interceptors = MetadataInterceptor(self.config.x_metadata).interceptors()
+        compression = grpc.Compression.Gzip if self.config.response_compression == 'gzip' else None
         if self.config.x_token is not None:
             auth = TritonAuthMetadataPlugin(self.config.x_token)
             # ssl_creds allow you to use our https endpoint
@@ -184,6 +185,7 @@ class FumaroleGrpcConnector:
                 self.endpoint,
                 credentials=combined_creds,
                 options=options,
+                compression=compression,
                 interceptors=interceptors,
             )
         else:
@@ -191,7 +193,7 @@ class FumaroleGrpcConnector:
                 "Using insecure channel without authentication"
             )
             channel = grpc.aio.insecure_channel(
-                self.endpoint, options=options, interceptors=interceptors
+                self.endpoint, options=options, interceptors=interceptors, compression=compression
             )
 
         return FumaroleStub(channel)

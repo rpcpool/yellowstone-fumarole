@@ -19,7 +19,7 @@ from yellowstone_fumarole_proto.geyser_pb2 import (
     SubscribeUpdateSlot,
     CommitmentLevel as ProtoCommitmentLevel,
 )
-from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
+from yellowstone_fumarole_proto.fumarole_pb2 import (
     ControlCommand,
     PollBlockchainHistory,
     CommitOffset,
@@ -27,7 +27,7 @@ from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
     DownloadBlockShard,
     BlockFilters,
 )
-from yellowstone_fumarole_proto.fumarole_v2_pb2_grpc import (
+from yellowstone_fumarole_proto.fumarole_pb2_grpc import (
     FumaroleStub,
 )
 from yellowstone_fumarole_client.utils.aio import Interval
@@ -84,6 +84,12 @@ class AsyncSlotDownloader(ABC):
         pass
 
 
+SUBSCRIBE_REQ_UPDATE_TYPE_MARKER: int = 1
+CONTROL_PLANE_RESP_TYPE_MARKER: int = 2
+COMMIT_TICK_TYPE_MARKER: int = 3
+DOWNLOAD_TASK_TYPE_MARKER: int = 4
+
+
 # TokioFumeDragonsmouthRuntime
 class AsyncioFumeDragonsmouthRuntime:
     """Asynchronous runtime for Fumarole with Dragonsmouth-like stream support."""
@@ -128,8 +134,15 @@ class AsyncioFumeDragonsmouthRuntime:
         self.commit_interval = commit_interval
         self.gc_interval = gc_interval
         self.max_concurrent_download = max_concurrent_download
+        
+        # holds metadata about the download task
         self.download_tasks = dict()
-        self.inner_runtime_channel: asyncio.Queue = asyncio.Queue()
+        self.inflight_tasks = dict()
+
+    async def aclose(self):
+        for t, kind in self.inflight_tasks.items():
+            LOGGER.debug(f"closing {kind} task")
+            t.cancel()
 
     def _build_poll_history_cmd(
         self, from_offset: Optional[FumeOffset]
@@ -195,8 +208,9 @@ class AsyncioFumeDragonsmouthRuntime:
             coro = self.slot_downloader.run_download(
                 self.subscribe_request, download_task_args
             )
-            donwload_task = asyncio.create_task(coro)
-            self.download_tasks[donwload_task] = download_request
+            download_task = asyncio.create_task(coro)
+            self.download_tasks[download_task] = download_request
+            self.inflight_tasks[download_task] = DOWNLOAD_TASK_TYPE_MARKER
             LOGGER.debug(f"Scheduling download task for slot {download_request.slot}")
 
     def _handle_download_result(self, download_result: DownloadTaskResult):
@@ -245,8 +259,8 @@ class AsyncioFumeDragonsmouthRuntime:
                     matched_filters.append(filter_name)
                 elif not filter.filter_by_commitment:
                     matched_filters.append(filter_name)
-
             if matched_filters:
+                LOGGER.debug(f"Matched {len(matched_filters)} filters for SlotStatus Update")
                 update = SubscribeUpdate(
                     filters=matched_filters,
                     created_at=None,
@@ -257,6 +271,7 @@ class AsyncioFumeDragonsmouthRuntime:
                         dead_error=slot_status.dead_error,
                     ),
                 )
+                assert update.HasField("slot"), "Update must have a slot field"
                 try:
                     await self.dragonsmouth_outlet.put(update)
                 except asyncio.QueueFull:
@@ -286,16 +301,15 @@ class AsyncioFumeDragonsmouthRuntime:
         LOGGER.debug("Initial commit offset command sent")
         ticks = 0
 
-        task_map = {
+        self.inflight_tasks = {
             asyncio.create_task(
                 self.subscribe_request_update_q.get()
-            ): "dragonsmouth_bidi",
-            asyncio.create_task(self.control_plane_rx.get()): "control_plane_rx",
-            asyncio.create_task(Interval(self.commit_interval).tick()): "commit_tick",
+            ): SUBSCRIBE_REQ_UPDATE_TYPE_MARKER,
+            asyncio.create_task(self.control_plane_rx.get()): CONTROL_PLANE_RESP_TYPE_MARKER,
+            asyncio.create_task(Interval(self.commit_interval).tick()): COMMIT_TICK_TYPE_MARKER,
         }
-
-        pending = set(task_map.keys())
-        while pending:
+        
+        while self.inflight_tasks:
             ticks += 1
             LOGGER.debug(f"Runtime loop tick")
             if ticks % self.gc_interval == 0:
@@ -306,55 +320,47 @@ class AsyncioFumeDragonsmouthRuntime:
             await self.poll_history_if_needed()
             LOGGER.debug("Scheduling download tasks if any")
             self._schedule_download_task_if_any()
-            for t in self.download_tasks.keys():
-                pending.add(t)
-                task_map[t] = "download_task"
-
             download_task_inflight = len(self.download_tasks)
             LOGGER.debug(
                 f"Current download tasks in flight: {download_task_inflight} / {self.max_concurrent_download}"
             )
-            done, pending = await asyncio.wait(
-                pending, return_when=asyncio.FIRST_COMPLETED
+            done, _pending = await asyncio.wait(
+                self.inflight_tasks.keys(), return_when=asyncio.FIRST_COMPLETED
             )
             for t in done:
                 result = t.result()
-                name = task_map.pop(t)
-                match name:
-                    case "dragonsmouth_bidi":
-                        LOGGER.debug("Dragonsmouth subscribe request received")
-                        assert isinstance(
-                            result, SubscribeRequest
-                        ), "Expected SubscribeRequest"
-                        self.handle_new_subscribe_request(result)
-                        new_task = asyncio.create_task(
-                            self.subscribe_request_update_q.get()
-                        )
-                        task_map[new_task] = "dragonsmouth_bidi"
-                        pending.add(new_task)
-                        pass
-                    case "control_plane_rx":
-                        LOGGER.debug("Control plane response received")
-                        if not await self._handle_control_plane_resp(result):
-                            LOGGER.debug("Control plane error")
-                            return
-                        new_task = asyncio.create_task(self.control_plane_rx.get())
-                        task_map[new_task] = "control_plane_rx"
-                        pending.add(new_task)
-                    case "download_task":
-                        LOGGER.debug("Download task result received")
-                        assert self.download_tasks.pop(t)
-                        self._handle_download_result(result)
-                    case "commit_tick":
-                        LOGGER.debug("Commit tick reached")
-                        await self._commit_offset()
-                        new_task = asyncio.create_task(
-                            Interval(self.commit_interval).tick()
-                        )
-                        task_map[new_task] = "commit_tick"
-                        pending.add(new_task)
-                    case unknown:
-                        raise RuntimeError(f"Unexpected task name: {unknown}")
+                sigcode = self.inflight_tasks.pop(t)
+                if sigcode == SUBSCRIBE_REQ_UPDATE_TYPE_MARKER:
+                    LOGGER.debug("Dragonsmouth subscribe request received")
+                    assert isinstance(
+                        result, SubscribeRequest
+                    ), "Expected SubscribeRequest"
+                    self.handle_new_subscribe_request(result)
+                    new_task = asyncio.create_task(
+                        self.subscribe_request_update_q.get()
+                    )
+                    self.inflight_tasks[new_task] = SUBSCRIBE_REQ_UPDATE_TYPE_MARKER
+                    pass
+                elif sigcode == CONTROL_PLANE_RESP_TYPE_MARKER:
+                    LOGGER.debug("Control plane response received")
+                    if not await self._handle_control_plane_resp(result):
+                        LOGGER.debug("Control plane error")
+                        return
+                    new_task = asyncio.create_task(self.control_plane_rx.get())
+                    self.inflight_tasks[new_task] = CONTROL_PLANE_RESP_TYPE_MARKER
+                elif sigcode == DOWNLOAD_TASK_TYPE_MARKER:
+                    LOGGER.debug("Download task result received")
+                    assert self.download_tasks.pop(t)
+                    self._handle_download_result(result)
+                elif sigcode == COMMIT_TICK_TYPE_MARKER:
+                    LOGGER.debug("Commit tick reached")
+                    await self._commit_offset()
+                    new_task = asyncio.create_task(
+                        Interval(self.commit_interval).tick()
+                    )
+                    self.inflight_tasks[new_task] = COMMIT_TICK_TYPE_MARKER
+                else:
+                    raise RuntimeError(f"Unexpected task name: {sigcode}")
 
             await self._drain_slot_status()
 

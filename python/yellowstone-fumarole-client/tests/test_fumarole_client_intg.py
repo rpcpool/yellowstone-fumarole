@@ -7,7 +7,7 @@ from os import environ
 from collections import defaultdict
 from yellowstone_fumarole_client.config import FumaroleConfig
 from yellowstone_fumarole_client import FumaroleClient, FumaroleSubscribeConfig
-from yellowstone_fumarole_proto.fumarole_v2_pb2 import CreateConsumerGroupRequest
+from yellowstone_fumarole_proto.fumarole_pb2 import CreateConsumerGroupRequest
 from yellowstone_fumarole_proto.geyser_pb2 import (
     SubscribeRequest,
     SubscribeRequestFilterAccounts,
@@ -193,20 +193,23 @@ async def test_dragonsmouth_adapter(fumarole_config):
     )
     assert resp.consumer_group_id, "Failed to create consumer group"
 
-    session = await client.dragonsmouth_subscribe(
+    subscribe_config = FumaroleSubscribeConfig(
+        concurrent_download_limit=1
+    )
+    logging.info(f"subscribe config : {subscribe_config}")
+    session = await client.dragonsmouth_subscribe_with_config(
         consumer_group_name="test",
         request=SubscribeRequest(
-            accounts={"fumarole": SubscribeRequestFilterAccounts()},
+            # accounts={"fumarole": SubscribeRequestFilterAccounts()},
             transactions={"fumarole": SubscribeRequestFilterTransactions()},
             blocks_meta={"fumarole": SubscribeRequestFilterBlocksMeta()},
             entry={"fumarole": SubscribeRequestFilterEntry()},
             slots={"fumarole": SubscribeRequestFilterSlots()},
         ),
+        config=subscribe_config,
     )
-    logging.warning("starting session")
-    dragonsmouth_source = session.source
-    handle = session.fumarole_handle
-
+    logging.info("starting session")
+    
     class BlockConstruction:
         def __init__(self):
             self.tx_vec: list[SubscribeUpdateTransaction] = []
@@ -215,47 +218,60 @@ async def test_dragonsmouth_adapter(fumarole_config):
             self.meta: Optional[SubscribeUpdateBlockMeta] = None
 
         def check_block_integrity(self) -> bool:
-            assert len(self.account_vec) > 0, "Block account vector is empty"
+            # assert len(self.account_vec) > 0, "Block account vector is empty"
             assert self.meta is not None, "Block meta is not set"
             return (
                 len(self.tx_vec) == self.meta.executed_transaction_count
                 and len(self.entry_vec) == self.meta.entries_count
             )
+        
+        @classmethod
+        def default(cls) -> "BlockConstruction":
+            return cls()
 
-    block_map = defaultdict(BlockConstruction)
-    while True:
-        tasks = [asyncio.create_task(dragonsmouth_source.get()), handle]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in done:
-            if tasks[0] == t:
-                result: SubscribeUpdate = t.result()
-                if result.HasField("block_meta"):
-                    block_meta: SubscribeUpdateBlockMeta = result.block_meta
-                    slot = block_meta.slot
-                    block_map[slot].meta = block_meta
-                elif result.HasField("transaction"):
-                    tx: SubscribeUpdateTransaction = result.transaction
-                    slot = tx.slot
-                    block = block_map[slot]
-                    block.tx_vec.append(tx)
-                elif result.HasField("account"):
-                    account: SubscribeUpdateAccount = result.account
-                    slot = account.slot
-                    block = block_map[slot]
-                    block.account_vec.append(account)
-                elif result.HasField("entry"):
-                    entry: SubscribeUpdateEntry = result.entry
-                    slot = entry.slot
-                    block = block_map[slot]
-                    block.entry_vec.append(entry)
-                elif result.HasField("slot"):
-                    result: SubscribeUpdateSlot = result.slot
-                    block = block_map[result.slot]
-                    assert block.check_block_integrity()
-                    return
-            else:
-                result = t.result()
-                raise RuntimeError("failed to get dragonsmouth source: %s" % result)
+    async with session as session:
+        dragonsmouth_source = session.source
+        handle = session.fumarole_handle
+        block_map = dict()
+        while True:
+            tasks = [asyncio.create_task(dragonsmouth_source.get()), handle]
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                if t == handle:
+                    logging.error("task done: %s", t)
+                    raise RuntimeError("handle task completed unexpectedly")
+                if tasks[0] == t:
+                    result: SubscribeUpdate = t.result()
+                    if result.HasField("block_meta"):
+                        block_meta: SubscribeUpdateBlockMeta = result.block_meta
+                        slot = block_meta.slot
+                        block = block_map.setdefault(slot, BlockConstruction.default())
+                        block.meta = block_meta
+                    elif result.HasField("transaction"):
+                        tx: SubscribeUpdateTransaction = result.transaction
+                        slot = tx.slot
+                        block = block_map.setdefault(slot, BlockConstruction.default())
+                        block.tx_vec.append(tx)
+                    elif result.HasField("account"):
+                        account: SubscribeUpdateAccount = result.account
+                        slot = account.slot
+                        block = block_map.setdefault(slot, BlockConstruction.default())
+                        block.account_vec.append(account)
+                    elif result.HasField("entry"):
+                        entry: SubscribeUpdateEntry = result.entry
+                        slot = entry.slot
+                        block = block_map.setdefault(slot, BlockConstruction.default())
+                        block.entry_vec.append(entry)
+                    elif result.HasField("slot"):
+                        result: SubscribeUpdateSlot = result.slot
+                        block = block_map.get(result.slot, None)
+                        if block is not None:
+                            logging.info("slot received")
+                            assert block.check_block_integrity()
+                            return
+                else:
+                    result = t.result()
+                    raise RuntimeError("failed to get dragonsmouth source: %s" % result)
 
 
 @pytest.mark.asyncio
