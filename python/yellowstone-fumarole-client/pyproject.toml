@@ -15,7 +15,7 @@ packages = [
 [tool.poetry.dependencies]
 python = "^3.13"
 grpcio = "^1.71.1"
-protobuf = "^5.29.1"
+protobuf = "^6.32.0"
 pyyaml = "^6.0.2"
 
 [tool.poetry.group.test.dependencies]

@@ -1,6 +1,5 @@
 #!/bin/bash
 set -e
-set -x
 
 script_dir=$(dirname "$(realpath "$BASH_SOURCE")")
 

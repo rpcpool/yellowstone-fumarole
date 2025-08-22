@@ -1,10 +1,9 @@
 # DataPlaneConn
 from abc import abstractmethod, ABC
 import asyncio
-import uuid
 import grpc
-from typing import Optional, List
-from collections import abc, deque
+from typing import Optional
+from collections import deque
 from dataclasses import dataclass
 import time
 from yellowstone_fumarole_client.runtime.state_machine import (

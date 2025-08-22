@@ -1,10 +1,13 @@
+import datetime
+
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
 import yellowstone_fumarole_proto.solana_storage_pb2 as _solana_storage_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
+from collections.abc import Iterable as _Iterable, Mapping as _Mapping
+from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 from yellowstone_fumarole_proto.solana_storage_pb2 import ConfirmedBlock as ConfirmedBlock
 from yellowstone_fumarole_proto.solana_storage_pb2 import ConfirmedTransaction as ConfirmedTransaction
 from yellowstone_fumarole_proto.solana_storage_pb2 import Transaction as Transaction
@@ -264,7 +267,7 @@ class SubscribeUpdate(_message.Message):
     block_meta: SubscribeUpdateBlockMeta
     entry: SubscribeUpdateEntry
     created_at: _timestamp_pb2.Timestamp
-    def __init__(self, filters: _Optional[_Iterable[str]] = ..., account: _Optional[_Union[SubscribeUpdateAccount, _Mapping]] = ..., slot: _Optional[_Union[SubscribeUpdateSlot, _Mapping]] = ..., transaction: _Optional[_Union[SubscribeUpdateTransaction, _Mapping]] = ..., transaction_status: _Optional[_Union[SubscribeUpdateTransactionStatus, _Mapping]] = ..., block: _Optional[_Union[SubscribeUpdateBlock, _Mapping]] = ..., ping: _Optional[_Union[SubscribeUpdatePing, _Mapping]] = ..., pong: _Optional[_Union[SubscribeUpdatePong, _Mapping]] = ..., block_meta: _Optional[_Union[SubscribeUpdateBlockMeta, _Mapping]] = ..., entry: _Optional[_Union[SubscribeUpdateEntry, _Mapping]] = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+    def __init__(self, filters: _Optional[_Iterable[str]] = ..., account: _Optional[_Union[SubscribeUpdateAccount, _Mapping]] = ..., slot: _Optional[_Union[SubscribeUpdateSlot, _Mapping]] = ..., transaction: _Optional[_Union[SubscribeUpdateTransaction, _Mapping]] = ..., transaction_status: _Optional[_Union[SubscribeUpdateTransactionStatus, _Mapping]] = ..., block: _Optional[_Union[SubscribeUpdateBlock, _Mapping]] = ..., ping: _Optional[_Union[SubscribeUpdatePing, _Mapping]] = ..., pong: _Optional[_Union[SubscribeUpdatePong, _Mapping]] = ..., block_meta: _Optional[_Union[SubscribeUpdateBlockMeta, _Mapping]] = ..., entry: _Optional[_Union[SubscribeUpdateEntry, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class SubscribeUpdateAccount(_message.Message):
     __slots__ = ("account", "slot", "is_startup")

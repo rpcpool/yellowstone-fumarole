@@ -3,7 +3,7 @@ import logging
 from yellowstone_fumarole_client.grpc_connectivity import (
     FumaroleGrpcConnector,
 )
-from typing import AsyncGenerator, Dict, Optional
+from typing import AsyncGenerator, Optional
 from dataclasses import dataclass
 from yellowstone_fumarole_client.config import FumaroleConfig
 from yellowstone_fumarole_client.runtime.aio import (
