@@ -22,6 +22,7 @@ The minor version will be incremented upon a breaking change and the patch versi
 
 - `yellowstone_fumarole_client.DragonsmouthAdapterSession` implements async contextmanager [#30](https://github.com/rpcpool/yellowstone-fumarole/issues/30)
 - Supports for gzip compression in gRPC response [#21](https://github.com/rpcpool/yellowstone-fumarole/issues/21)
+- Exposes low-level metrics about fumarole session [#32](https://github.com/rpcpool/yellowstone-fumarole/issues/32)
 
 ### Fixes
 
