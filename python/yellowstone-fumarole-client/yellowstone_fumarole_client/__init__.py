@@ -3,18 +3,21 @@ import logging
 from yellowstone_fumarole_client.grpc_connectivity import (
     FumaroleGrpcConnector,
 )
-from typing import Dict, Optional
+from typing import AsyncGenerator, Optional
 from dataclasses import dataclass
 from yellowstone_fumarole_client.config import FumaroleConfig
 from yellowstone_fumarole_client.runtime.aio import (
     AsyncioFumeDragonsmouthRuntime,
-    FumaroleSM,
     DEFAULT_GC_INTERVAL,
     DEFAULT_SLOT_MEMORY_RETENTION,
     GrpcSlotDownloader,
 )
+from yellowstone_fumarole_client.runtime.state_machine import (
+    FumaroleSM,
+    FumeOffset,
+)
 from yellowstone_fumarole_proto.geyser_pb2 import SubscribeRequest, SubscribeUpdate
-from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
+from yellowstone_fumarole_proto.fumarole_pb2 import (
     ControlResponse,
     VersionRequest,
     VersionResponse,
@@ -29,8 +32,10 @@ from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
     CreateConsumerGroupRequest,
     CreateConsumerGroupResponse,
 )
-from yellowstone_fumarole_proto.fumarole_v2_pb2_grpc import FumaroleStub
+from yellowstone_fumarole_proto.fumarole_pb2_grpc import FumaroleStub
 import grpc
+
+from yellowstone_fumarole_client import config
 
 __all__ = [
     "FumaroleClient",
@@ -44,7 +49,7 @@ __all__ = [
 ]
 
 # Constants
-DEFAULT_DRAGONSMOUTH_CAPACITY = 10000
+DEFAULT_DRAGONSMOUTH_CAPACITY = 100000
 DEFAULT_COMMIT_INTERVAL = 5.0  # seconds
 DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT = 3
 DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP = 10
@@ -72,8 +77,21 @@ class FumaroleSubscribeConfig:
     # The interval at which to perform garbage collection on the slot memory.
     gc_interval: int = DEFAULT_GC_INTERVAL
 
-    # The retention period for slot memory in seconds.
+    # How many processed slot numbers to retain in memory to avoid duplication.
     slot_memory_retention: int = DEFAULT_SLOT_MEMORY_RETENTION
+
+
+@dataclass
+class FumaroleSubscribeStats:
+    """Commit/slot statistics for the Fumarole subscribe session."""
+
+    # Last committed log offset in Fumarole -- this is a low-level, implementation detail.
+    # NOTE: this should not be part as business logic, can change any time.
+    log_committed_offset: FumeOffset
+    # NOTE:: this is a low-level information, can change any time.
+    log_committable_offset: FumeOffset
+    # Max slot seen by the in the current session - does not mean it has been processed.
+    max_slot_seen: int
 
 
 # DragonsmouthAdapterSession
@@ -85,10 +103,31 @@ class DragonsmouthAdapterSession:
     sink: asyncio.Queue
 
     # The queue for receiving SubscribeUpdate from the dragonsmouth stream.
-    source: asyncio.Queue
+    source: AsyncGenerator[SubscribeUpdate, None]
 
     # The task handle for the fumarole runtime.
-    fumarole_handle: asyncio.Task
+    _fumarole_handle: asyncio.Task
+
+    _sm: FumaroleSM
+
+    async def __aenter__(self):
+        """Enter the session context."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        self.sink.shutdown()
+        self._fumarole_handle.cancel()
+
+    def stats(self) -> FumaroleSubscribeStats:
+        """Get low-level statistics of the Fumarole state-machine."""
+        commitable = self._sm.committable_offset
+        committed = self._sm.last_committed_offset
+        max_slot = self._sm.max_slot_detected
+        return FumaroleSubscribeStats(
+            log_committed_offset=committed,
+            log_committable_offset=commitable,
+            max_slot_seen=max_slot,
+        )
 
 
 # FumaroleClient
@@ -162,7 +201,7 @@ class FumaroleClient:
                 try:
                     update = await fume_control_plane_q.get()
                     yield update
-                except asyncio.QueueShutDown:
+                except (asyncio.CancelledError, asyncio.QueueShutDown):
                     break
 
         fume_control_plane_stream_rx: grpc.aio.StreamStreamCall = self.stub.Subscribe(
@@ -187,8 +226,12 @@ class FumaroleClient:
                         await fume_control_plane_rx_q.put(update)
                 except asyncio.QueueShutDown:
                     break
+                except asyncio.CancelledError:
+                    break
+                finally:
+                    fume_control_plane_rx_q.shutdown()
 
-        _cp_src_task = asyncio.create_task(control_plane_source())
+        control_plane_src_task = asyncio.create_task(control_plane_source())
 
         FumaroleClient.logger.debug(f"Control response: {control_response}")
 
@@ -219,12 +262,38 @@ class FumaroleClient:
             max_concurrent_download=config.concurrent_download_limit,
         )
 
-        fumarole_handle = asyncio.create_task(rt.run())
-        FumaroleClient.logger.debug(f"Fumarole handle created: {fumarole_handle}")
+        async def rt_run(rt):
+            async with rt as rt:
+                await rt.run()
+
+        rt_task = asyncio.create_task(rt_run(rt))
+
+        async def fumarole_overseer():
+            done, pending = await asyncio.wait(
+                [rt_task, control_plane_src_task], return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in pending:
+                t.cancel()
+
+        fumarole_handle = asyncio.create_task(fumarole_overseer())
+
+        async def source_gen() -> AsyncGenerator[SubscribeUpdate, None]:
+            try:
+                while True:
+                    update = await dragonsmouth_outlet.get()
+                    yield update
+            except asyncio.CancelledError:
+                pass
+            except asyncio.Queue:
+                pass
+            finally:
+                dragonsmouth_outlet.shutdown()
+
         return DragonsmouthAdapterSession(
             sink=subscribe_request_queue,
-            source=dragonsmouth_outlet,
-            fumarole_handle=fumarole_handle,
+            source=source_gen(),
+            _fumarole_handle=fumarole_handle,
+            _sm=sm,
         )
 
     async def list_consumer_groups(

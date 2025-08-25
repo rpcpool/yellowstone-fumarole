@@ -62,33 +62,42 @@ async def dragonsmouth_like_session(fumarole_config):
     session = await client.dragonsmouth_subscribe(
         consumer_group_name="test",
         request=SubscribeRequest(
-            # accounts={"fumarole": SubscribeRequestFilterAccounts()},
+            accounts={"fumarole": SubscribeRequestFilterAccounts()},
             transactions={"fumarole": SubscribeRequestFilterTransactions()},
             blocks_meta={"fumarole": SubscribeRequestFilterBlocksMeta()},
             entry={"fumarole": SubscribeRequestFilterEntry()},
             slots={"fumarole": SubscribeRequestFilterSlots()},
         ),
     )
-    dragonsmouth_source = session.source
-    handle = session.fumarole_handle
-    block_map = defaultdict(BlockConstruction)
-    while True:
-        tasks = [asyncio.create_task(dragonsmouth_source.get()), handle]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in done:
-            if tasks[0] == t:
-                result: SubscribeUpdate = t.result()
-                if result.HasField("block_meta"):
-                    block_meta: SubscribeUpdateBlockMeta = result.block_meta
-                elif result.HasField("transaction"):
-                    tx: SubscribeUpdateTransaction = result.transaction
-                elif result.HasField("account"):
-                    account: SubscribeUpdateAccount = result.account
-                elif result.HasField("entry"):
-                    entry: SubscribeUpdateEntry = result.entry
-                elif result.HasField("slot"):
-                    result: SubscribeUpdateSlot = result.slot
-            else:
-                result = t.result()
-                raise RuntimeError("failed to get dragonsmouth source: %s" % result)
+    async with session:
+        dragonsmouth_like_source = session.source
+        # result: SubscribeUpdate
+        async for result in dragonsmouth_like_source:
+            if result.HasField("block_meta"):
+                block_meta: SubscribeUpdateBlockMeta = result.block_meta
+            elif result.HasField("transaction"):
+                tx: SubscribeUpdateTransaction = result.transaction
+            elif result.HasField("account"):
+                account: SubscribeUpdateAccount = result.account
+            elif result.HasField("entry"):
+                entry: SubscribeUpdateEntry = result.entry
+            elif result.HasField("slot"):
+                result: SubscribeUpdateSlot = result.slot
+
+    # OUTSIDE THE SCOPE, YOU SHOULD NEVER USE `session` again.
 ```
+
+
+At any point you can get a rough estimate if you are progression through the slot using `DragonsmouthAdapterSession.stats()` call:
+
+```python
+
+async with session:
+    stats: FumaroleSubscribeStats = session.stats()
+    print(f"{stats.log_committed_offset}, {stats.log_committable_offset}, {stats.max_slot_seen}")
+```
+
+`log_committed_offset` : what have been ACK so for to fumarole remote service.
+`log_committable_offset` : what can be ACK to next commit call.
+`max_slot_seen` : maximum slot seen in the inner fumarole client state -- not yet processed by your code.
+

@@ -1,12 +1,11 @@
-from typing import Optional, List, Dict, Set, Deque, Tuple, Any, Sequence
+from typing import Optional, Set, Deque, Sequence
 from collections import deque, defaultdict
-from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
+from yellowstone_fumarole_proto.fumarole_pb2 import (
     CommitmentLevel,
     BlockchainEvent,
 )
 from yellowstone_fumarole_client.utils.collections import OrderedSet
 import heapq
-import uuid
 from enum import Enum
 
 __all__ = [

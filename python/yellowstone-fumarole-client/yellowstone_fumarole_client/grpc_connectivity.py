@@ -2,7 +2,7 @@ import logging
 from typing import Optional
 import grpc
 from yellowstone_fumarole_client.config import FumaroleConfig
-from yellowstone_fumarole_proto.fumarole_v2_pb2_grpc import FumaroleStub
+from yellowstone_fumarole_proto.fumarole_pb2_grpc import FumaroleStub
 
 X_TOKEN_HEADER = "x-token"
 
@@ -31,34 +31,8 @@ class TritonAuthMetadataPlugin(grpc.AuthMetadataPlugin):
         return _triton_sign_request(callback, self.x_token, None)
 
 
-def grpc_channel(endpoint: str, x_token=None, compression=None, *grpc_options):
-    options = [("grpc.max_receive_message_length", 111111110), *grpc_options]
-    if x_token is not None:
-        auth = TritonAuthMetadataPlugin(x_token)
-        # ssl_creds allow you to use our https endpoint
-        # grpc.ssl_channel_credentials with no arguments will look through your CA trust store.
-        ssl_creds = grpc.ssl_channel_credentials()
-
-        # call credentials will be sent on each request if setup with composite_channel_credentials.
-        call_creds: grpc.CallCredentials = grpc.metadata_call_credentials(auth)
-
-        # Combined creds will store the channel creds aswell as the call credentials
-        combined_creds = grpc.composite_channel_credentials(ssl_creds, call_creds)
-
-        return grpc.secure_channel(
-            endpoint,
-            credentials=combined_creds,
-            compression=compression,
-            options=options,
-        )
-    else:
-        return grpc.insecure_channel(endpoint, compression=compression, options=options)
-
-
 # Because of a bug in grpcio library, multiple inheritance of ClientInterceptor subclasses does not work.
 # You have to create a new class for each type of interceptor you want to use.
-
-
 class MetadataInterceptor(
     grpc.aio.UnaryStreamClientInterceptor,
     grpc.aio.StreamUnaryClientInterceptor,
@@ -166,6 +140,11 @@ class FumaroleGrpcConnector:
     async def connect(self, *grpc_options) -> FumaroleStub:
         options = [("grpc.max_receive_message_length", 111111110), *grpc_options]
         interceptors = MetadataInterceptor(self.config.x_metadata).interceptors()
+        compression = (
+            grpc.Compression.Gzip
+            if self.config.response_compression == "gzip"
+            else None
+        )
         if self.config.x_token is not None:
             auth = TritonAuthMetadataPlugin(self.config.x_token)
             # ssl_creds allow you to use our https endpoint
@@ -184,6 +163,7 @@ class FumaroleGrpcConnector:
                 self.endpoint,
                 credentials=combined_creds,
                 options=options,
+                compression=compression,
                 interceptors=interceptors,
             )
         else:
@@ -191,7 +171,10 @@ class FumaroleGrpcConnector:
                 "Using insecure channel without authentication"
             )
             channel = grpc.aio.insecure_channel(
-                self.endpoint, options=options, interceptors=interceptors
+                self.endpoint,
+                options=options,
+                interceptors=interceptors,
+                compression=compression,
             )
 
         return FumaroleStub(channel)

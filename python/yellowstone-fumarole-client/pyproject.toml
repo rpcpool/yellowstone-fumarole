@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "yellowstone-fumarole-client"
-version = "0.1.0"
+version = "0.2.0"
 homepage = "https://github.com/rpcpool/yellowstone-fumarole"
 repository = "https://github.com/rpcpool/yellowstone-fumarole"
 description = "Yellowstone Fumarole Python Client"
@@ -15,7 +15,7 @@ packages = [
 [tool.poetry.dependencies]
 python = "^3.13"
 grpcio = "^1.71.1"
-protobuf = "^5.29.1"
+protobuf = "^6.32.0"
 pyyaml = "^6.0.2"
 
 [tool.poetry.group.test.dependencies]
