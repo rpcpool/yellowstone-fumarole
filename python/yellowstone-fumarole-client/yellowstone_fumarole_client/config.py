@@ -6,6 +6,7 @@ import yaml
 SUPPORTED_COMPRESSION = ["gzip"]
 SupportedCompression = Literal["gzip"]
 
+
 @dataclass
 class FumaroleConfig:
     endpoint: str
@@ -23,7 +24,10 @@ class FumaroleConfig:
         response_compression = data.get(
             "response_compression", cls.response_compression
         )
-        if response_compression is not None and response_compression not in SUPPORTED_COMPRESSION:
+        if (
+            response_compression is not None
+            and response_compression not in SUPPORTED_COMPRESSION
+        ):
             raise ValueError(f"response_compression must be in {SUPPORTED_COMPRESSION}")
         return cls(
             endpoint=data["endpoint"],

@@ -80,10 +80,11 @@ class FumaroleSubscribeConfig:
     # How many processed slot numbers to retain in memory to avoid duplication.
     slot_memory_retention: int = DEFAULT_SLOT_MEMORY_RETENTION
 
+
 @dataclass
 class FumaroleSubscribeStats:
-    """Commit/slot statistics for the Fumarole subscribe session.
-    """
+    """Commit/slot statistics for the Fumarole subscribe session."""
+
     # Last committed log offset in Fumarole -- this is a low-level, implementation detail.
     # NOTE: this should not be part as business logic, can change any time.
     log_committed_offset: FumeOffset
@@ -91,6 +92,7 @@ class FumaroleSubscribeStats:
     log_committable_offset: FumeOffset
     # Max slot seen by the in the current session - does not mean it has been processed.
     max_slot_seen: int
+
 
 # DragonsmouthAdapterSession
 @dataclass
@@ -117,8 +119,7 @@ class DragonsmouthAdapterSession:
         self._fumarole_handle.cancel()
 
     def stats(self) -> FumaroleSubscribeStats:
-        """Get low-level statistics of the Fumarole state-machine.
-        """
+        """Get low-level statistics of the Fumarole state-machine."""
         commitable = self._sm.committable_offset
         committed = self._sm.last_committed_offset
         max_slot = self._sm.max_slot_detected

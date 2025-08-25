@@ -30,6 +30,7 @@ class TritonAuthMetadataPlugin(grpc.AuthMetadataPlugin):
     ):
         return _triton_sign_request(callback, self.x_token, None)
 
+
 # Because of a bug in grpcio library, multiple inheritance of ClientInterceptor subclasses does not work.
 # You have to create a new class for each type of interceptor you want to use.
 class MetadataInterceptor(
