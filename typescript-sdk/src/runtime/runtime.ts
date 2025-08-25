@@ -97,14 +97,14 @@ export class FumeDragonsmouthRuntime {
     // Determine which oneof field is set
     if (controlResponse.pollHist) {
       const pollHist = controlResponse.pollHist;
-      console.debug(`Received poll history ${pollHist.events.length} events`);
+      console.log(`Received poll history ${pollHist.events.length} events`);
       this.stateMachine.queueBlockchainEvent(pollHist.events);
     } else if (controlResponse.commitOffset) {
       const commitOffset = controlResponse.commitOffset;
-      console.debug(`Received commit offset: ${commitOffset}`);
+      console.log(`Received commit offset: ${commitOffset}`);
       this.stateMachine.updateCommittedOffset(commitOffset.offset);
     } else if (controlResponse.pong) {
-      console.debug("Received pong");
+      console.log("Received pong");
     } else {
       throw new Error("Unexpected control response");
     }
@@ -118,7 +118,7 @@ export class FumeDragonsmouthRuntime {
     // Poll the history if the state machine needs new events.
     if (this.stateMachine.needNewBlockchainEvents()) {
       const cmd = this.buildPollHistoryCmd(
-        this.stateMachine.committable_offset
+        this.stateMachine.committableOffset
       );
       await this.controlPlaneTransmitQueue.put(cmd);
     }
@@ -126,22 +126,22 @@ export class FumeDragonsmouthRuntime {
 
   private scheduleDownloadTaskIfAny(): void {
     while (true) {
-      console.debug("Checking for download tasks to schedule");
+      console.log("Checking for download tasks to schedule");
 
       if (this.downloadTasks.size >= this.maxConcurrentDownload) {
         break;
       }
 
-      console.debug("Popping slot to download");
+      console.log("Popping slot to download");
       const downloadRequest = this.stateMachine.popSlotToDownload(
         this.commitmentLevel
       );
       if (!downloadRequest) {
-        console.debug("No download request available");
+        console.log("No download request available");
         break;
       }
 
-      console.debug(`Download request for slot ${downloadRequest.slot} popped`);
+      console.log(`Download request for slot ${downloadRequest.slot} popped`);
       if (!downloadRequest.blockchainId) {
         throw new Error("Download request must have a blockchain ID");
       }
@@ -160,7 +160,7 @@ export class FumeDragonsmouthRuntime {
       // Track the promise alongside the request
       this.downloadTasks.set(downloadTask, downloadRequest);
 
-      console.debug(
+      console.log(
         `Scheduling download task for slot ${downloadRequest.slot}`
       );
     }
@@ -170,7 +170,7 @@ export class FumeDragonsmouthRuntime {
     /** Handles the result of a download task. */
     if (downloadResult.kind === "Ok") {
       const completed = downloadResult.completed!;
-      console.debug(
+      console.log(
         `Download completed for slot ${completed.slot}, shard ${completed.shardIdx}, ${completed.totalEventDownloaded} total events`
       );
 
@@ -186,22 +186,22 @@ export class FumeDragonsmouthRuntime {
   }
 
   private async forceCommitOffset(): Promise<void> {
-    console.debug(
-      `Force committing offset ${this.stateMachine.committable_offset}`
+    console.log(
+      `Force committing offset ${this.stateMachine.committableOffset}`
     );
 
     await this.controlPlaneTransmitQueue.put(
-      this.buildCommitOffsetCmd(this.stateMachine.committable_offset)
+      this.buildCommitOffsetCmd(this.stateMachine.committableOffset)
     );
   }
 
   private async commitOffset(): Promise<void> {
     if (
-      this.stateMachine.last_committed_offset <
-      this.stateMachine.committable_offset
+      this.stateMachine.lastCommittedOffset <
+      this.stateMachine.committableOffset
     ) {
-      console.debug(
-        `Committing offset ${this.stateMachine.committable_offset}`
+      console.log(
+        `Committing offset ${this.stateMachine.committableOffset}`
       );
       await this.forceCommitOffset();
     }
@@ -212,7 +212,7 @@ export class FumeDragonsmouthRuntime {
     const commitment = this.subscribeRequest.commitment;
     const slotStatusVec: FumeSlotStatus[] = [];
 
-    let slotStatus: FumeSlotStatus | undefined;
+    let slotStatus: FumeSlotStatus | null;
     while ((slotStatus = this.stateMachine.popNextSlotStatus())) {
       slotStatusVec.push(slotStatus);
     }
@@ -221,7 +221,7 @@ export class FumeDragonsmouthRuntime {
       return;
     }
 
-    console.debug(`Draining ${slotStatusVec.length} slot status`);
+    console.log(`Draining ${slotStatusVec.length} slot status`);
 
     for (const slotStatus of slotStatusVec) {
       const matchedFilters: string[] = [];

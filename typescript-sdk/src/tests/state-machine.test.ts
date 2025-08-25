@@ -37,8 +37,8 @@ describe('FumaroleSM', () => {
       expect(downloadReq).toBeDefined();
       expect(downloadReq?.slot).toBe(1n);
 
-      expect(sm.popSlotToDownload()).toBeUndefined();
-      expect(sm.popNextSlotStatus()).toBeUndefined();
+      expect(sm.popSlotToDownload()).toBeNull();
+      expect(sm.popNextSlotStatus()).toBeNull();
 
       const downloadState = sm.makeSlotDownloadProgress(1n, 0);
       expect(downloadState).toBe(SlotDownloadState.Done);
@@ -60,7 +60,7 @@ describe('FumaroleSM', () => {
       sm.queueBlockchainEvent([event2]);
 
       // It should not cause new slot download request
-      expect(sm.popSlotToDownload()).toBeUndefined();
+      expect(sm.popSlotToDownload()).toBeNull();
 
       const status2 = sm.popNextSlotStatus();
       expect(status2).toBeDefined();
@@ -70,7 +70,7 @@ describe('FumaroleSM', () => {
         sm.markEventAsProcessed(status2.sessionSequence);
       }
 
-      expect(sm.committable_offset).toBe(event2.offset);
+      expect(sm.committableOffset).toBe(event2.offset);
     });
   });
 
@@ -82,13 +82,13 @@ describe('FumaroleSM', () => {
       sm.queueBlockchainEvent([event]);
 
       // Slot status should not be available, since we didn't download it yet
-      expect(sm.popNextSlotStatus()).toBeUndefined();
+      expect(sm.popNextSlotStatus()).toBeNull();
 
       const downloadReq = sm.popSlotToDownload();
       expect(downloadReq).toBeDefined();
       expect(downloadReq?.slot).toBe(1n);
 
-      expect(sm.popSlotToDownload()).toBeUndefined();
+      expect(sm.popSlotToDownload()).toBeNull();
 
       sm.makeSlotDownloadProgress(1n, 0);
 
@@ -100,8 +100,8 @@ describe('FumaroleSM', () => {
       // Putting the same event back should be ignored
       sm.queueBlockchainEvent([event]);
 
-      expect(sm.popSlotToDownload()).toBeUndefined();
-      expect(sm.popNextSlotStatus()).toBeUndefined();
+      expect(sm.popSlotToDownload()).toBeNull();
+      expect(sm.popNextSlotStatus()).toBeNull();
     });
   });
 
@@ -113,13 +113,13 @@ describe('FumaroleSM', () => {
       sm.queueBlockchainEvent([event]);
 
       // Slot status should not be available, since we didn't download it yet
-      expect(sm.popNextSlotStatus()).toBeUndefined();
+      expect(sm.popNextSlotStatus()).toBeNull();
 
       // Use finalized commitment level here
       const downloadReq = sm.popSlotToDownload(CommitmentLevel.FINALIZED);
-      expect(downloadReq).toBeUndefined();
+      expect(downloadReq).toBeNull();
 
-      expect(sm.popSlotToDownload()).toBeUndefined();
+      expect(sm.popSlotToDownload()).toBeNull();
 
       // It should not cause the slot status to be available here even if we have a finalized commitment level filtered out before
       const status = sm.popNextSlotStatus();

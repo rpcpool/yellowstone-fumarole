@@ -161,7 +161,7 @@ export class GrpcDownloadBlockTaskRun {
             }
           } else if (data.blockShardDownloadFinish) {
             // === case: block_shard_download_finish ===
-            console.debug(
+            console.log(
               `Download finished for block ${this.downloadRequest.blockUid.toString()} at slot ${
                 this.downloadRequest.slot
               }`

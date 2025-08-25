@@ -32,6 +32,14 @@ export class AsyncQueue<T> {
     return this.items.shift()!;
   }
 
+  /** Non-blocking shift. Returns undefined if queue is empty. */
+  shift(): T | undefined {
+    if (this.closed && this.items.length === 0) {
+      return undefined;
+    }
+    return this.items.shift();
+  }
+
   isEmpty(): boolean {
     return this.items.length === 0;
   }
