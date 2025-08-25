@@ -282,9 +282,7 @@ class FumaroleClient:
                 while True:
                     update = await dragonsmouth_outlet.get()
                     yield update
-            except asyncio.CancelledError:
-                pass
-            except asyncio.Queue:
+            except (asyncio.CancelledError, asyncio.QueueShutDown):
                 pass
             finally:
                 dragonsmouth_outlet.shutdown()

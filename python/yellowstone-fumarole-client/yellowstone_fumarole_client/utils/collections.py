@@ -20,7 +20,7 @@ class OrderedSet:
 
     def popfirst(self):
         try:
-            self.inner.popitem(last=False)
+            return self.inner.popitem(last=False)[0]
         except KeyError as e:
             raise KeyError(f"{OrderedDict.__name__} is empty") from e
 

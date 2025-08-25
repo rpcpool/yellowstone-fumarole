@@ -373,7 +373,7 @@ class AsyncioFumeDragonsmouthRuntime:
 
             await self._drain_slot_status()
 
-        self.aclose()
+        await self.aclose()
         LOGGER.debug("Fumarole runtime exiting")
 
 
