@@ -16,6 +16,10 @@ The minor version will be incremented upon a breaking change and the patch versi
 
 ### Breaking
 
+## [0.2.1]
+
+- Fixed `OrderedSet.popfirst` + missing `await self.aclose()` in `run` method [PR](https://github.com/rpcpool/yellowstone-fumarole/pull/33) [@Yolley](https://github.com/Yolley)
+
 ## [0.2.0]
 
 ### Features
