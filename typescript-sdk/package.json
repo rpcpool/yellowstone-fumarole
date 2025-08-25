@@ -43,7 +43,9 @@
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.6.3",
+    "@datastructures-js/deque": "^1.0.5",
     "@grpc/grpc-js": "^1.13.4",
+    "@js-sdsl/ordered-set": "^4.4.2",
     "@types/js-yaml": "^4.0.9",
     "js-yaml": "^4.1.0",
     "rxjs": "^7.8.2"

@@ -11,9 +11,15 @@ importers:
       '@bufbuild/protobuf':
         specifier: ^2.6.3
         version: 2.6.3
+      '@datastructures-js/deque':
+        specifier: ^1.0.5
+        version: 1.0.5
       '@grpc/grpc-js':
         specifier: ^1.13.4
         version: 1.13.4
+      '@js-sdsl/ordered-set':
+        specifier: ^4.4.2
+        version: 4.4.2
       '@types/js-yaml':
         specifier: ^4.0.9
         version: 4.0.9
@@ -220,6 +226,9 @@ packages:
   '@bufbuild/protobuf@2.6.3':
     resolution: {integrity: sha512-w/gJKME9mYN7ZoUAmSMAWXk4hkVpxRKvEJCb3dV5g9wwWdxTJJ0ayOJAVcNxtdqaxDyFuC0uz4RSGVacJ030PQ==}
 
+  '@datastructures-js/deque@1.0.5':
+    resolution: {integrity: sha512-ogeIkpcCGnM+LAZYZqXBXn6Nx0a/ikkKDFPoa1MzZWRFyEdfVUNwkHclET/T8jkyNM1dN6NmPDfenNKcKazjjg==}
+
   '@emnapi/core@1.4.5':
     resolution: {integrity: sha512-XsLw1dEOpkSX/WucdqUhPWP7hDxSvZiY+fsUC14h+FtQ2Ifni4znbBt8punRX+Uj2JG/uDb8nEHVKvrVlvdZ5Q==}
 
@@ -347,6 +356,9 @@ packages:
 
   '@js-sdsl/ordered-map@4.4.2':
     resolution: {integrity: sha512-iUKgm52T8HOE/makSxjqoWhe95ZJA1/G1sYsGev2JDKUSS14KAgg1LHb+Ba+IPow0xflbnSkOsZcO08C7w1gYw==}
+
+  '@js-sdsl/ordered-set@4.4.2':
+    resolution: {integrity: sha512-ieYQ8WlBPKYzEo81H3q0DFbd8WtFRXXABb4+vRCF0AO3WWtJZFxYvRGdipUXGrd6tlSySmqhcPuO3J6SCodCxg==}
 
   '@napi-rs/wasm-runtime@0.2.12':
     resolution: {integrity: sha512-ZVWUcfwY4E/yPitQJl481FjFo3K22D6qF0DuFH6Y/nbnE11GY5uguDxZMGXPQ8WQ0128MXQD7TnfHyK4oWoIJQ==}
@@ -1647,6 +1659,8 @@ snapshots:
 
   '@bufbuild/protobuf@2.6.3': {}
 
+  '@datastructures-js/deque@1.0.5': {}
+
   '@emnapi/core@1.4.5':
     dependencies:
       '@emnapi/wasi-threads': 1.0.4
@@ -1888,6 +1902,8 @@ snapshots:
       '@jridgewell/sourcemap-codec': 1.5.5
 
   '@js-sdsl/ordered-map@4.4.2': {}
+
+  '@js-sdsl/ordered-set@4.4.2': {}
 
   '@napi-rs/wasm-runtime@0.2.12':
     dependencies:

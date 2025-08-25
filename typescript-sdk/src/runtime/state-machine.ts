@@ -324,18 +324,20 @@ export class FumaroleSM {
         const blockchainId = blockchainEvent.blockchainId;
         const blockUid = blockchainEvent.blockUid;
 
-        this.blockedSlotStatusUpdate
-          .get(blockchainEvent.slot)!
-          .pushBack(
-            new FumeSlotStatus(
-              sessionSequence,
-              blockchainEvent.offset,
-              blockchainEvent.slot,
-              blockchainEvent.parentSlot,
-              eventCommitmentLevel,
-              blockchainEvent.deadError
-            )
-          );
+        if (!this.blockedSlotStatusUpdate.get(blockchainEvent.slot)) {
+          this.blockedSlotStatusUpdate.set(blockchainEvent.slot, new Deque<FumeSlotStatus>());
+        }
+        // this won't be undefined because if it is then we just created it above
+        this.blockedSlotStatusUpdate.get(blockchainEvent.slot)!.pushBack(
+          new FumeSlotStatus(
+            sessionSequence,
+            blockchainEvent.offset,
+            blockchainEvent.slot,
+            blockchainEvent.parentSlot,
+            eventCommitmentLevel,
+            blockchainEvent.deadError
+          )
+        );
 
         if (!this.inflightSlotShardDownload.has(blockchainEvent.slot)) {
           const downloadRequest = new FumeDownloadRequest(

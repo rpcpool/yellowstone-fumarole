@@ -79,11 +79,9 @@ export interface DragonsmouthAdapterSession {
   /** Queue for sending subscribe requests */
   sink: AsyncQueue<SubscribeRequest>;
   /** Queue for receiving subscription updates */
-  source: AsyncQueue<SubscribeUpdate>;
+  source: AsyncQueue<SubscribeUpdate | Error>;
   /** Handle for tracking the fumarole runtime */
   fumaroleHandle: Promise<void>;
-  /** Method to close and clean up the session */
-  close: () => Promise<void>;
 }
 
 // Constants
