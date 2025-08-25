@@ -142,9 +142,9 @@ class AsyncioFumeDragonsmouthRuntime:
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback):
-        self.close()
+        await self.aclose()
 
-    def close(self):
+    async def aclose(self):
         self.control_plane_tx.shutdown()
         self.dragonsmouth_outlet.shutdown()
         for t, kind in self.inflight_tasks.items():
@@ -373,7 +373,7 @@ class AsyncioFumeDragonsmouthRuntime:
 
             await self._drain_slot_status()
 
-        self.close()
+        await self.aclose()
         LOGGER.debug("Fumarole runtime exiting")
 
 
