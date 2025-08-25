@@ -77,7 +77,7 @@ class FumaroleSubscribeConfig:
     # The interval at which to perform garbage collection on the slot memory.
     gc_interval: int = DEFAULT_GC_INTERVAL
 
-    # The retention period for slot memory in seconds.
+    # How many processed slot numbers to retain in memory to avoid duplication.
     slot_memory_retention: int = DEFAULT_SLOT_MEMORY_RETENTION
 
 @dataclass
@@ -106,7 +106,7 @@ class DragonsmouthAdapterSession:
     # The task handle for the fumarole runtime.
     _fumarole_handle: asyncio.Task
 
-    _sm: FumaroleSM = None
+    _sm: FumaroleSM
 
     async def __aenter__(self):
         """Enter the session context."""
@@ -200,9 +200,7 @@ class FumaroleClient:
                 try:
                     update = await fume_control_plane_q.get()
                     yield update
-                except asyncio.QueueShutDown:
-                    break
-                except asyncio.CancelledError:
+                except (asyncio.CancelledError, asyncio.QueueShutDown):
                     break
 
         fume_control_plane_stream_rx: grpc.aio.StreamStreamCall = self.stub.Subscribe(
