@@ -8,6 +8,7 @@
   "homepage": "https://triton.one",
   "dependencies": {
     "@triton-one/yellowstone-fumarole": "file:../../typescript-sdk",
+    "dotenv": "^17.2.1",
     "yargs": "^17.6.2"
   },
   "scripts": {
