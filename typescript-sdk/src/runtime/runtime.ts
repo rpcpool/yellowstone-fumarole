@@ -15,7 +15,9 @@ import {
   FumeOffset,
   FumeShardIdx,
   FumeSlotStatus,
+  Slot,
 } from "./state-machine";
+import { Runtime } from "inspector/promises";
 
 export class CompletedDownloadBlockTask {
   constructor(
@@ -64,28 +66,34 @@ export abstract class AsyncSlotDownloader {
   ): Promise<DownloadTaskResult>;
 }
 
-type TaskName =
-  | "dragonsmouth_bidi"
-  | "control_plane_rx"
-  | "download_task"
-  | "commit_tick";
-
-
-
 export type Tick = { };
 
-export type ControlPlaneResp = { readonly response: ControlPlaneResp }
+export type ControlPlaneResp = { readonly response: ControlResponse }
 
 export type DownloadTaskCompleted = { readonly result: DownloadTaskResult }
 
 export type SubscribeRequestUpdate = { readonly new_subscribe_request: SubscribeRequest }
 
+export type RuntimeEventKind =
+  | 'tick'
+  | 'subscribe_request_update'
+  | 'download_completed'
+  | 'control_plane_response';
 
-export type RuntimeEvent = 
-  | { _kind: 'tick', value: Tick }
-  | { _kind: 'subscribe_request_update', value: SubscribeRequestUpdate }
-  | { _kind: 'download_completed', value: DownloadTaskCompleted }
-  | { _kind: 'control_plane_response', value: ControlPlaneResp }
+// export type RuntimeEvent = {
+//   _kind: RuntimeEventKind,
+//   tick: Tick | undefined,
+//   subscribe_request_update: SubscribeRequestUpdate | undefined,
+//   download_completed: DownloadTaskCompleted | undefined,
+//   control_plane_response: ControlPlaneResp | undefined
+// }
+
+export type RuntimeEvent =
+  | { _kind: 'tick'; tick: Tick }
+  | { _kind: 'subscribe_request_update'; subscribe_request_update: SubscribeRequestUpdate }
+  | { _kind: 'download_completed'; download_completed: DownloadTaskCompleted }
+  | { _kind: 'control_plane_response'; control_plane_response: ControlPlaneResp };
+
 
 export class FumeDragonsmouthRuntime {
   public stateMachine: FumaroleSM;
@@ -426,11 +434,91 @@ export class FumeDragonsmouthRuntime {
 
 
 
-type RuntimeContext = {
+type FumaroleRuntimeArgs = {
   download_task_observer: Observer<DownloadTaskArgs>,
   control_plane_observer: Observer<ControlCommand>,
-  state: FumaroleSM,
+  dragonsmouth_observer: Observer<SubscribeUpdate>,
+  sm: FumaroleSM,
+  download_task_result_observable: Observable<DownloadTaskResult>,
 }
 
 
+
+type FumaroleRuntimeCtx = {
+  sm: FumaroleSM,
+  commitInterval: number; // in seconds
+  gcInterval: number;
+  maxConcurrentDownload: number;
+  lastCommit: number;
+  inflight_downloads: Map<Slot, FumeDownloadRequest>,
+  subscribeRequest: SubscribeRequest,
+}
+
+
+function onControlPlaneResponse(this: FumaroleRuntimeCtx, resp: ControlResponse) {
+  if (resp.pollHist) {
+    const pollHist = resp.pollHist;
+    console.log(`Received poll history ${pollHist.events.length} events`);
+    this.sm.queueBlockchainEvent(pollHist.events);
+  } else if (resp.commitOffset) {
+    const commitOffset = resp.commitOffset;
+    console.log(`Received commit offset: ${JSON.stringify(commitOffset)}`);
+    this.sm.updateCommittedOffset(commitOffset.offset);
+  } else if (resp.pong) {
+    console.log("Received pong");
+  } else {
+    throw new Error("Unexpected control response");
+  }
+}
+
+function onDownloadCompleted(this: FumaroleRuntimeCtx, result: DownloadTaskResult) {
+  console.log("Download completed:", result);
+  if (result.kind === "Ok") {
+    const completed = result.completed!;
+    console.log(
+      `Download completed for slot ${completed.slot}, shard ${completed.shardIdx}, ${completed.totalEventDownloaded} total events`
+    );
+
+    this.sm.makeSlotDownloadProgress(
+      completed.slot,
+      completed.shardIdx
+    );
+  } else {
+    const slot = result.slot;
+    const err = result.err;
+    throw new Error(`Failed to download slot ${slot}: ${err!.message}`);
+  }
+}
+
+function onSubscribeRequestUpdate(this: FumaroleRuntimeCtx, update: SubscribeRequestUpdate) { 
+  this.subscribeRequest = update.new_subscribe_request;
+}
+
+function runtime_next(this: FumaroleRuntimeCtx, ev: RuntimeEvent) {
+  switch (ev._kind) {
+    case 'tick':
+      return;
+    case 'subscribe_request_update':
+      onSubscribeRequestUpdate.call(this, ev.subscribe_request_update);
+    case 'download_completed':
+      onDownloadCompleted.call(this, ev.download_completed);
+    case 'control_plane_response':
+      onControlPlaneResponse.call(this, ev.control_plane_response);
+  }
+}
+
+
+export function runtimeObserverFactory(args: FumaroleRuntimeArgs): Observer<RuntimeEvent> {
+  const {
+    download_task_observer,
+    control_plane_observer,
+    dragonsmouth_observer,
+    sm,
+    download_task_result_observable,
+  } = args;
+
+  return {
+
+  }
+}
 
