@@ -1,57 +1,35 @@
-//// Custom TypeScript implementation for Python's `asyncio.wait`
-
 type WaitResult<T> = {
-  done: Set<Promise<T>>;
-  pending: Set<Promise<T>>;
+  done: Promise<T>[];
+  pending: Promise<T>[];
 };
 
-export async function waitFirstCompleted<T>(
-  promises: Set<Promise<T>>
-): Promise<WaitResult<T>> {
-  if (promises.size === 0) {
-    return { done: new Set(), pending: new Set() };
+export async function waitFirstCompleted<T>(promises: Promise<T>[]): Promise<WaitResult<T>> {
+  if (promises.length === 0) {
+    return { done: [], pending: [] };
   }
 
-  // Map original promises to tracking wrappers
-  const wrapped = new Map<
-    Promise<T>,
-    Promise<{ promise: Promise<T>; status: "fulfilled" | "rejected"; value?: T; reason?: unknown }>
-  >();
+  return new Promise<WaitResult<T>>((resolve) => {
+    let settled = false;
 
-  for (const p of promises) {
-    wrapped.set(
-      p,
+    promises.forEach((p) => {
       p.then(
-        value => ({ promise: p, status: "fulfilled", value }),
-        reason => ({ promise: p, status: "rejected", reason })
-      )
-    );
-  }
-
-  // Wait for the first one to settle
-  let first;
-  try {
-    first = await Promise.race(wrapped.values());
-  } catch {
-    // This branch should not happen since we handle rejection inside wrapper
-    throw new Error("Unexpected race rejection");
-  }
-
-  // Collect all results, but do not cancel still-pending promises
-  const results = await Promise.allSettled(wrapped.values());
-
-  const done = new Set<Promise<T>>();
-  const stillPending = new Set(promises);
-
-  for (const r of results) {
-    if (r.status === "fulfilled") {
-      const { promise } = r.value;
-      if (promise === first.promise) {
-        done.add(promise);
-        stillPending.delete(promise);
-      }
-    }
-  }
-
-  return { done, pending: stillPending };
+        () => {
+          if (!settled) {
+            settled = true;
+            const done = [p];
+            const pending = promises.filter((q) => q !== p);
+            resolve({ done, pending });
+          }
+        },
+        () => {
+          if (!settled) {
+            settled = true;
+            const done = [p];
+            const pending = promises.filter((q) => q !== p);
+            resolve({ done, pending });
+          }
+        }
+      );
+    });
+  });
 }

@@ -101,7 +101,7 @@ export class FumeDragonsmouthRuntime {
       this.stateMachine.queueBlockchainEvent(pollHist.events);
     } else if (controlResponse.commitOffset) {
       const commitOffset = controlResponse.commitOffset;
-      console.log(`Received commit offset: ${commitOffset}`);
+      console.log(`Received commit offset: ${JSON.stringify(commitOffset)}`);
       this.stateMachine.updateCommittedOffset(commitOffset.offset);
     } else if (controlResponse.pong) {
       console.log("Received pong");
@@ -336,8 +336,12 @@ export class FumeDragonsmouthRuntime {
       );
 
       // Wait for at least one task to finish
-      const { done, pending: newPending } = await waitFirstCompleted(pending);
-      pending = newPending;
+      console.log("UP UP");
+      
+      // const { done, pending: newPending } = await Promise.race(pending);
+      const { done, pending: newPending } = await waitFirstCompleted(Array.from(pending));
+      console.log("DOWN DOWN");
+      pending = new Set(newPending);
 
       for (const t of done) {
         const result = await t;

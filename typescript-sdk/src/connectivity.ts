@@ -119,6 +119,7 @@ export class FumaroleGrpcConnector {
             if (this.config.xToken !== undefined) {
               this.logger.debug("Adding x-token to metadata");
               metadata.add(X_TOKEN_HEADER, this.config.xToken);
+              metadata.add("x-subscription-id", this.config.xToken);
             }
             return callback(null, metadata);
           }
@@ -246,6 +247,7 @@ export function createGrpcChannel(
           if (xToken !== undefined) {
             console.debug("Adding x-token to metadata");
             metadata.add(X_TOKEN_HEADER, xToken);
+            metadata.add("x-subscription-id", xToken);
           }
           return callback(null, metadata);
         }

@@ -174,6 +174,7 @@ export class FumaroleClient {
     console.log(`Sent initial join command ONE:`, initialJoinCommand);
 
     const metadata = new Metadata();
+    metadata.add("x-subscription-id", xToken);
     metadata.add("x-token", xToken);
 
     console.log("SUBSCRIBE METADATA");
@@ -181,7 +182,7 @@ export class FumaroleClient {
 
     // Create duplex stream
     const fumeControlPlaneStreamRx = this.stub.subscribe(
-      metadata
+      metadata, {}
     ) as ClientDuplexStream<ControlCommand, ControlResponse>;
 
     const controlPlaneWriter = (async () => {
@@ -206,8 +207,8 @@ export class FumaroleClient {
     const controlPlaneReader = (async () => {
       try {
         for await (const update of fumeControlPlaneStreamRx) {
-          console.log("UPDATE");
-          console.log(JSON.stringify(update));
+          // console.log("UPDATE");
+          // console.log(JSON.stringify(update));
 
           await fumeControlPlaneRxQ.put(update);
         }

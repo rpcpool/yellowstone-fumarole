@@ -1,4 +1,4 @@
-import { ClientReadableStream, ServiceError, status } from "@grpc/grpc-js";
+import { ClientReadableStream, Metadata, ServiceError, status } from "@grpc/grpc-js";
 import {
   BlockFilters,
   DataResponse,
@@ -8,7 +8,7 @@ import {
 import { SubscribeRequest, SubscribeUpdate } from "../grpc/geyser";
 import { AsyncQueue } from "./async-queue";
 import { FumeDownloadRequest, FumeShardIdx } from "./state-machine";
-
+import bs58 from "bs58";
 // Constants
 const DEFAULT_GC_INTERVAL = 5;
 
@@ -119,12 +119,19 @@ export class GrpcDownloadBlockTaskRun {
 
     try {
       console.log(
-        `Requesting download for block ${this.downloadRequest.blockUid.toString()} at slot ${
+        `Requesting download for block ${bs58.encode(this.downloadRequest.blockUid)} at slot ${
           this.downloadRequest.slot
-        }`
+        } with filters ${JSON.stringify(downloadRequest.blockFilters)}`
       );
 
-      downloadResponse = this.client.downloadBlock(downloadRequest);
+      const metadata = new Metadata();
+      metadata.add("x-token", "7b042cd6-ea1e-46af-b46b-653bdce119f6")
+      metadata.add("x-subscription-id", "091d7d4f-a38d-4a2e-b4f9-91643170ff0e6")
+
+    console.log("DOWNLOAD METADATA");
+    console.log(metadata.getMap());
+
+      downloadResponse = this.client.downloadBlock(downloadRequest, metadata);
     } catch (e: any) {
       console.log(`Download block error ${e}`);
       return {
@@ -140,6 +147,9 @@ export class GrpcDownloadBlockTaskRun {
     return new Promise<DownloadTaskResult>((resolve, reject) => {
       downloadResponse.on("data", async (data: DataResponse) => {
         try {
+          console.log("DATA DATA\n\n");
+          console.log(JSON.stringify(data))
+          console.log("\n\n");
           if (data.update) {
             // === case: update ===
             const update = data.update;
@@ -160,9 +170,10 @@ export class GrpcDownloadBlockTaskRun {
               });
             }
           } else if (data.blockShardDownloadFinish) {
+            
             // === case: block_shard_download_finish ===
             console.log(
-              `Download finished for block ${this.downloadRequest.blockUid.toString()} at slot ${
+              `Download finished for block ${bs58.encode(this.downloadRequest.blockUid)} at slot ${
                 this.downloadRequest.slot
               }`
             );
@@ -192,8 +203,9 @@ export class GrpcDownloadBlockTaskRun {
         reject(this.mapTonicErrorCodeToDownloadBlockError(err));
       });
 
-      downloadResponse.on("end", () => {
-        console.log("stream ended without blockShardDownloadFinish");
+      downloadResponse.on("end", (e: any) => {
+        console.log(`stream ended without blockShardDownloadFinish for block ${bs58.encode(this.downloadRequest.blockUid)} with slot ${this.downloadRequest.slot}`);
+        
         resolve({
           kind: "Err",
           slot: this.downloadRequest.slot,

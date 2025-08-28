@@ -104,6 +104,8 @@ async function main() {
     console.log("Subscribe request:", safeJsonStringify(request));
     console.log("Subscribe config:", safeJsonStringify(subscribeConfig));
 
+    // groupName = "helloworld-1"
+
     console.log(`Starting subscription for group ${groupName}...`);
 
     let subscription: DragonsmouthAdapterSession;
@@ -117,19 +119,24 @@ async function main() {
 
     const { sink, source, fumaroleHandle } = subscription;
 
-    await fumaroleHandle;
+    // await fumaroleHandle;
 
     fumaroleHandle.catch((e) => {
       console.log("caught in fumarole handle");
       console.log(e);
     });
 
-    subscription.sink.put(request);
-
     // Handle fumarole connection closure in background
     fumaroleHandle.then((res) => {
       console.error("Fumarole handle closed:", res);
     });
+
+    // while (true) {
+    // const up = await source.get()
+    // console.log("THE UPDATE");
+    // console.log(up);
+    // }
+    
 
     // Consume async queue
     for await (const event of source) {

@@ -134,6 +134,11 @@ export class FumaroleSM {
   }
 
   updateCommittedOffset(offset: FumeOffset): void {
+    console.log("OFFSET");
+    console.log(offset);
+    console.log("this.LAST_COMMITTED_OFFSET");
+    console.log(this.lastCommittedOffset);
+    
     if (offset >= this.lastCommittedOffset) {
       throw new Error("Offset must be >= last committed offset");
     }
