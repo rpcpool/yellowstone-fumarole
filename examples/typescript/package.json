@@ -10,6 +10,7 @@
     "@triton-one/yellowstone-fumarole": "file:../../typescript-sdk",
     "bs58": "^6.0.0",
     "dotenv": "^17.2.1",
+    "tsx": "^4.20.5",
     "yargs": "^17.6.2"
   },
   "scripts": {

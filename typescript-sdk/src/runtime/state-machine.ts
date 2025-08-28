@@ -2,25 +2,8 @@
 import { OrderedSet } from "@js-sdsl/ordered-set";
 import { BlockchainEvent } from "../grpc/fumarole";
 import { CommitmentLevel } from "../grpc/geyser";
-import { AsyncQueue } from "./async-queue";
 import { BinaryHeap } from "./binary-heap";
 import { Deque } from "@datastructures-js/deque";
-
-// class Queue<T> {
-//   private items: T[] = [];
-
-//   push(item: T): void {
-//     this.items.push(item);
-//   }
-
-//   shift(): T | undefined {
-//     return this.items.shift();
-//   }
-
-//   get length(): number {
-//     return this.items.length;
-//   }
-// }
 
 // Constants
 export const DEFAULT_SLOT_MEMORY_RETENTION = 10000;
@@ -36,14 +19,12 @@ export type FumeSessionSequence = bigint; // Equivalent to u64
 export type Slot = bigint; // From solana_sdk::clock::Slot
 
 // Data structures
-export class FumeDownloadRequest {
-  constructor(
-    public slot: Slot,
-    public blockchainId: FumeBlockchainId,
-    public blockUid: FumeBlockUID,
-    public numShards: FumeNumShards,
-    public commitmentLevel: CommitmentLevel
-  ) {}
+export type FumeDownloadRequest = {
+  slot: Slot,
+  blockchainId: FumeBlockchainId,
+  blockUid: FumeBlockUID,
+  numShards: FumeNumShards,
+  commitmentLevel: CommitmentLevel
 }
 
 export class FumeSlotStatus {
@@ -345,13 +326,13 @@ export class FumaroleSM {
         );
 
         if (!this.inflightSlotShardDownload.has(blockchainEvent.slot)) {
-          const downloadRequest = new FumeDownloadRequest(
-            blockchainEvent.slot,
+          const downloadRequest: FumeDownloadRequest = {
+            slot: blockchainEvent.slot,
             blockchainId,
             blockUid,
-            blockchainEvent.numShards,
-            eventCommitmentLevel
-          );
+            numShards: blockchainEvent.numShards,
+            commitmentLevel: eventCommitmentLevel
+          };
           const downloadProgress = new SlotDownloadProgress(
             blockchainEvent.numShards
           );

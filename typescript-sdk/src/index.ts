@@ -44,10 +44,12 @@ import {
   DEFAULT_SLOT_MEMORY_RETENTION,
   getDefaultFumaroleSubscribeConfig,
 } from "./types";
-import { AsyncQueue } from "./runtime/async-queue";
 import { FumaroleSM } from "./runtime/state-machine";
-import { GrpcSlotDownloader } from "./runtime/grpc-slot-downloader";
-import { FumeDragonsmouthRuntime } from "./runtime/runtime";
+import { downloadSlotObserverFactory, GrpcSlotDownloader } from "./runtime/grpc-slot-downloader";
+import { DownloadTaskArgs, DownloadTaskResult, FumeDragonsmouthRuntime, RuntimeEvent } from "./runtime/runtime";
+import { firstValueFrom, from, Observable, Observer, share, Subject } from "rxjs";
+import { combineHostPort } from "@grpc/grpc-js/build/src/uri-parser";
+import { createDeferred } from "./utils/promise";
 
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
@@ -145,7 +147,7 @@ export class FumaroleClient {
     consumerGroupName: string,
     request: SubscribeRequest,
     xToken: string
-  ): Promise<DragonsmouthAdapterSession> {
+  ): Promise<void> {
     return this.dragonsmouthSubscribeWithConfig(
       consumerGroupName,
       request,
@@ -159,21 +161,15 @@ export class FumaroleClient {
     request: SubscribeRequest,
     config: FumaroleSubscribeConfig,
     xToken: string
-  ): Promise<DragonsmouthAdapterSession> {
-    // Queues
-    const dragonsmouthOutlet = new AsyncQueue<SubscribeUpdate | Error>(
-      config.dataChannelCapacity
-    );
-    const fumeControlPlaneQ = new AsyncQueue<{}>(100); // sink queue
-    const fumeControlPlaneRxQ = new AsyncQueue<{}>(100); // source queue
-
-    // Send initial join command
+  ): Promise<void> {
+   
     const initialJoin: JoinControlPlane = { consumerGroupName };
     const initialJoinCommand: ControlCommand = { initialJoin };
-    await fumeControlPlaneQ.put(initialJoinCommand);
-    console.log(`Sent initial join command ONE:`, initialJoinCommand);
-
+    const controlPlaneCommandSubject = new Subject<ControlCommand>();
+    const fumaroleRuntimeEventSubject = new Subject<RuntimeEvent>();
+    
     const metadata = new Metadata();
+    // TODO remove the x-subscription-id
     metadata.add("x-subscription-id", xToken);
     metadata.add("x-token", xToken);
 
@@ -181,87 +177,81 @@ export class FumaroleClient {
     console.log(metadata.getMap());
 
     // Create duplex stream
-    const fumeControlPlaneStreamRx = this.stub.subscribe(
+    const fumeControlPlaneDuplex = this.stub.subscribe(
       metadata, {}
     ) as ClientDuplexStream<ControlCommand, ControlResponse>;
 
-    const controlPlaneWriter = (async () => {
-      try {
-        while (true) {
-          const update = await fumeControlPlaneQ.get();
-          const ok = fumeControlPlaneStreamRx.write(update);
-          if (!ok) {
-            await new Promise((res) =>
-              fumeControlPlaneStreamRx.once("drain", res)
-            );
+    controlPlaneCommandSubject
+      .subscribe(async (command) => {
+        const defer = createDeferred<void>();
+        fumeControlPlaneDuplex.write(command, (error: any) => {
+          if (error) {
+            defer.reject(error);
+          } else {
+            defer.resolve();
           }
-        }
-      } catch (err) {
-        console.error("Writer error:", err);
-      }
-    })();
+        });
+        await defer.promise;
+      });
 
-
-
-    // Task: read from duplex stream into a queue
-    const controlPlaneReader = (async () => {
-      try {
-        for await (const update of fumeControlPlaneStreamRx) {
-          // console.log("UPDATE");
-          // console.log(JSON.stringify(update));
-
-          await fumeControlPlaneRxQ.put(update);
-        }
-      } catch (err) {
-        console.log("failed to read from duplex stream into a queue");
-        console.log(err);
-
-        // stream ended or error occurred
-      }
-    })();
-
+    const ctrlPlaneResponseObservable: Observable<ControlResponse> = from(fumeControlPlaneDuplex).pipe(share());
     // Wait for initial response from control plane
-    const controlResponse: ControlResponse = await fumeControlPlaneRxQ.get();
+    const controlResponsePromise: Promise<ControlResponse> = firstValueFrom(ctrlPlaneResponseObservable);
+    controlPlaneCommandSubject.next(initialJoinCommand);
+    
+    const controlResponse = await controlResponsePromise;
+
     const init = (controlResponse as ControlResponse).init;
     if (!init)
       throw new Error(`Unexpected initial response: ${controlResponse}`);
     console.log(`Control response:`, controlResponse);
-
+    
     const lastCommittedOffset = init.lastCommittedOffsets[0];
     if (lastCommittedOffset == null)
       throw new Error("No last committed offset");
 
     // Initialize state machine and queues
     const sm = new FumaroleSM(lastCommittedOffset, config.slotMemoryRetention);
-    const subscribeRequestQueue = new AsyncQueue<SubscribeRequest>(100);
 
-    // Connect data plane and create slot downloader
+    const dragonsmouthOutlet = new Subject<SubscribeUpdate>();
+    const downloadTaskSubject = new Subject<DownloadTaskResult>();
+    // // Connect data plane and create slot downloader
     const dataPlaneClient = await this.connector.connect();
-    const grpcSlotDownloader = new GrpcSlotDownloader(dataPlaneClient);
+    const grpcSlotDownloadCtx: GrpcSlotDownloader = {
+      client: dataPlaneClient,
+      client_metadata: metadata,
+      dragonsmouthOutlet: dragonsmouthOutlet,
+      downloadTaskResultObserver: downloadTaskSubject,
+    }
+    const grpcSlotDownloader: Observer<DownloadTaskArgs> = downloadSlotObserverFactory(
+      grpcSlotDownloadCtx
+    )
+
+    
 
     // Create Fume runtime
-    const rt = new FumeDragonsmouthRuntime(
-      sm,
-      grpcSlotDownloader,
-      subscribeRequestQueue,
-      request,
-      consumerGroupName,
-      fumeControlPlaneQ,
-      fumeControlPlaneRxQ,
-      dragonsmouthOutlet,
-      config.commitInterval,
-      config.gcInterval,
-      config.concurrentDownloadLimit
-    );
+    // const rt = new FumeDragonsmouthRuntime(
+    //   sm,
+    //   grpcSlotDownloader,
+    //   subscribeRequestQueue,
+    //   request,
+    //   consumerGroupName,
+    //   fumeControlPlaneQ,
+    //   fumeControlPlaneRxQ,
+    //   dragonsmouthOutlet,
+    //   config.commitInterval,
+    //   config.gcInterval,
+    //   config.concurrentDownloadLimit
+    // );
 
-    const fumaroleHandle = rt.run();
-    console.log(`Fumarole handle created:`, fumaroleHandle);
+    // const fumaroleHandle = rt.run();
+    // console.log(`Fumarole handle created:`, fumaroleHandle);
 
-    return {
-      sink: subscribeRequestQueue,
-      source: dragonsmouthOutlet,
-      fumaroleHandle,
-    };
+    // return {
+    //   sink: subscribeRequestQueue,
+    //   source: dragonsmouthOutlet,
+    //   fumaroleHandle,
+    // };
   }
 
   async listConsumerGroups(): Promise<ListConsumerGroupsResponse> {

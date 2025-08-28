@@ -1,273 +1,130 @@
 import { ClientReadableStream, Metadata, ServiceError, status } from "@grpc/grpc-js";
 import {
-  BlockFilters,
   DataResponse,
   DownloadBlockShard,
   FumaroleClient,
 } from "../grpc/fumarole";
-import { SubscribeRequest, SubscribeUpdate } from "../grpc/geyser";
-import { AsyncQueue } from "./async-queue";
-import { FumeDownloadRequest, FumeShardIdx } from "./state-machine";
-import bs58 from "bs58";
-// Constants
-const DEFAULT_GC_INTERVAL = 5;
+import { SubscribeUpdate } from "../grpc/geyser";
+import { DownloadBlockError, DownloadBlockErrorKind, DownloadTaskArgs, DownloadTaskResult } from "./runtime";
+import { Observer } from "rxjs";
 
-const DEFAULT_SLOT_MEMORY_RETENTION = 10000;
 
-export class CompletedDownloadBlockTask {
-  constructor(
-    public slot: bigint,
-    public blockUid: Uint8Array,
-    public shardIdx: FumeShardIdx,
-    public totalEventDownloaded: number
-  ) {}
-}
-
-export type DownloadBlockErrorKind =
-  | "Disconnected"
-  | "OutletDisconnected"
-  | "BlockShardNotFound"
-  | "FailedDownload"
-  | "Fatal";
-
-export class DownloadBlockError {
-  constructor(public kind: DownloadBlockErrorKind, public message: string) {}
-}
-
-export type DownloadTaskResultKind = "Ok" | "Err";
-
-export class DownloadTaskResult {
-  constructor(
-    public kind: DownloadTaskResultKind,
-    public completed?: CompletedDownloadBlockTask,
-    public slot?: bigint,
-    public err?: DownloadBlockError
-  ) {}
-}
-
-export class DownloadTaskArgs {
-  constructor(
-    public downloadRequest: FumeDownloadRequest,
-    // TODO: figure out a type for this
-    public dragonsmouthOutlet: AsyncQueue<SubscribeUpdate| Error>
-  ) {}
-}
-
-export abstract class AsyncSlotDownloader {
-  abstract runDownload(
-    subscribeRequest: SubscribeRequest,
-    spec: DownloadTaskArgs
-  ): Promise<DownloadTaskResult>;
-}
-
-export class GrpcDownloadBlockTaskRun {
-  public downloadRequest: FumeDownloadRequest;
-  public client: FumaroleClient;
-  public filters?: BlockFilters | null;
-  public dragonsmouthOutlet: AsyncQueue<SubscribeUpdate | Error>;
-
-  constructor(
-    downloadRequest: FumeDownloadRequest,
-    client: FumaroleClient,
-    filters: BlockFilters | null,
-    dragonsmouthOutlet: AsyncQueue<SubscribeUpdate | Error>
-  ) {
-    this.downloadRequest = downloadRequest;
-    this.client = client;
-    this.filters = filters;
-    this.dragonsmouthOutlet = dragonsmouthOutlet;
-  }
-
-  public mapTonicErrorCodeToDownloadBlockError(
+function mapTonicErrorCodeToDownloadBlockError(
     e: ServiceError
-  ): DownloadBlockError {
-    const code = e.code;
+  ): DownloadBlockErrorKind {
+  const code = e.code;
 
-    if (code === status.NOT_FOUND) {
-      return new DownloadBlockError(
-        "BlockShardNotFound",
-        "Block shard not found"
-      );
-    } else if (code === status.UNAVAILABLE) {
-      return new DownloadBlockError("Disconnected", "Disconnected");
-    } else if (
-      code === status.INTERNAL ||
-      code === status.ABORTED ||
-      code === status.DATA_LOSS ||
-      code === status.RESOURCE_EXHAUSTED ||
-      code === status.UNKNOWN ||
-      code === status.CANCELLED ||
-      code === status.DEADLINE_EXCEEDED
-    ) {
-      return new DownloadBlockError("FailedDownload", "Failed download");
-    } else if (code === status.INVALID_ARGUMENT) {
-      throw new Error("Invalid argument");
-    } else {
-      return new DownloadBlockError("Fatal", `Unknown error: ${code}`);
-    }
-  }
-
-  public async run(): Promise<DownloadTaskResult> {
-    const downloadRequest: DownloadBlockShard = {
-      blockchainId: this.downloadRequest.blockchainId,
-      blockUid: this.downloadRequest.blockUid,
-      shardIdx: 0,
-      blockFilters: this.filters === null ? undefined : this.filters,
-    };
-
-    let downloadResponse: ClientReadableStream<DataResponse>;
-
-    try {
-      console.log(
-        `Requesting download for block ${bs58.encode(this.downloadRequest.blockUid)} at slot ${
-          this.downloadRequest.slot
-        } with filters ${JSON.stringify(downloadRequest.blockFilters)}`
-      );
-
-      const metadata = new Metadata();
-      metadata.add("x-token", "7b042cd6-ea1e-46af-b46b-653bdce119f6")
-      metadata.add("x-subscription-id", "091d7d4f-a38d-4a2e-b4f9-91643170ff0e6")
-
-    console.log("DOWNLOAD METADATA");
-    console.log(metadata.getMap());
-
-      downloadResponse = this.client.downloadBlock(downloadRequest, metadata);
-    } catch (e: any) {
-      console.log(`Download block error ${e}`);
-      return {
-        kind: "Err",
-        slot: this.downloadRequest.slot,
-        err: this.mapTonicErrorCodeToDownloadBlockError(e),
-      };
-    }
-
-    let totalEventDownloaded = 0;
-
-    // Wrap the event-driven API in a Promise
-    return new Promise<DownloadTaskResult>((resolve, reject) => {
-      downloadResponse.on("data", async (data: DataResponse) => {
-        try {
-          console.log("DATA DATA\n\n");
-          console.log(JSON.stringify(data))
-          console.log("\n\n");
-          if (data.update) {
-            // === case: update ===
-            const update = data.update;
-            totalEventDownloaded += 1;
-
-            try {
-              await this.dragonsmouthOutlet.put(update);
-            } catch (err: any) {
-              // TODO: figure out a type for this
-              console.error("Dragonsmouth outlet is disconnected");
-              resolve({
-                kind: "Err",
-                slot: this.downloadRequest.slot,
-                err: {
-                  kind: "OutletDisconnected",
-                  message: "Outlet disconnected",
-                },
-              });
-            }
-          } else if (data.blockShardDownloadFinish) {
-            
-            // === case: block_shard_download_finish ===
-            console.log(
-              `Download finished for block ${bs58.encode(this.downloadRequest.blockUid)} at slot ${
-                this.downloadRequest.slot
-              }`
-            );
-            resolve({
-              kind: "Ok",
-              completed: {
-                slot: this.downloadRequest.slot,
-                blockUid: this.downloadRequest.blockUid,
-                shardIdx: 0,
-                totalEventDownloaded,
-              },
-            });
-          } else {
-            // === unexpected ===
-            reject(
-              new Error(`Unexpected DataResponse: ${JSON.stringify(data)}`)
-            );
-          }
-        } catch (err) {
-          reject(err);
-        }
-      });
-
-      // TODO: figure out a type for this
-      downloadResponse.on("error", (err: any) => {
-        console.error("stream error", err);
-        reject(this.mapTonicErrorCodeToDownloadBlockError(err));
-      });
-
-      downloadResponse.on("end", (e: any) => {
-        console.log(`stream ended without blockShardDownloadFinish for block ${bs58.encode(this.downloadRequest.blockUid)} with slot ${this.downloadRequest.slot}`);
-        
-        resolve({
-          kind: "Err",
-          slot: this.downloadRequest.slot,
-          err: {
-            kind: "FailedDownload",
-            message: "Stream ended unexpectedly",
-          },
-        });
-      });
-    });
+  if (code === status.NOT_FOUND) {
+    return "BlockShardNotFound";
+  } else if (code === status.UNAVAILABLE) {
+    return "Disconnected";
+  } else if (
+    code === status.INTERNAL ||
+    code === status.ABORTED ||
+    code === status.DATA_LOSS ||
+    code === status.RESOURCE_EXHAUSTED ||
+    code === status.UNKNOWN ||
+    code === status.CANCELLED ||
+    code === status.DEADLINE_EXCEEDED
+  ) {
+    return "FailedDownload";
+  } else if (code === status.INVALID_ARGUMENT) {
+    return "Fatal";
+  } else {
+    return "Fatal";
   }
 }
 
-export class GrpcSlotDownloader extends AsyncSlotDownloader {
-  public fumaroleClient: FumaroleClient;
 
-  constructor(fumaroleClient: FumaroleClient) {
-    super();
-    this.fumaroleClient = fumaroleClient;
-  }
+/**
+ * gRPC slot downloader context.
+ */
+export type GrpcSlotDownloader = {
+  /**
+   * The gRPC client for downloading slots.
+   */
+  client: FumaroleClient,
+  /**
+   * The metadata for the gRPC client.
+   */
+  client_metadata: Metadata,
+  /**
+   * The outlet for dragonsmouth updates.
+   */
+  dragonsmouthOutlet: Observer<SubscribeUpdate>,
+  /**
+   * Observer to send download task results too.
+   */
+  downloadTaskResultObserver: Observer<DownloadTaskResult>,
+}
 
-  public async runDownload(
-    subscribeRequest: SubscribeRequest,
-    spec: DownloadTaskArgs
-  ): Promise<DownloadTaskResult> {
-    const downloadTask = new GrpcDownloadBlockTaskRun(
-      spec.downloadRequest,
-      this.fumaroleClient,
-      {
-        accounts: subscribeRequest.accounts,
-        transactions: subscribeRequest.transactions,
-        entries: subscribeRequest.entry,
-        blocksMeta: subscribeRequest.blocksMeta,
+
+function do_download(
+  this: GrpcSlotDownloader,
+  args: DownloadTaskArgs
+) {
+  const blockFilters = {
+    accounts: args.subscribeRequest.accounts,
+    transactions: args.subscribeRequest.transactions,
+    entries: args.subscribeRequest.entry,
+    blocksMeta: args.subscribeRequest.blocksMeta,
+  };
+  const request: DownloadBlockShard = {
+    blockchainId: args.downloadRequest.blockchainId,
+    blockUid: args.downloadRequest.blockUid,
+    shardIdx: 0,
+    blockFilters: blockFilters,
+  };
+  const downloadResponse: ClientReadableStream<DataResponse> = this.client.downloadBlock(request, this.client_metadata);
+  let totalEventDownloaded = 0;
+  downloadResponse.on("data", (data: DataResponse) => {
+    if (data.update) {
+      totalEventDownloaded++;
+      this.dragonsmouthOutlet.next(data.update);
+    } else if (data.blockShardDownloadFinish) {
+      this.downloadTaskResultObserver.next({
+        kind: "Ok",
+        completed: {
+          slot: args.downloadRequest.slot,
+          blockUid: args.downloadRequest.blockUid,
+          shardIdx: 0,
+          totalEventDownloaded,
+        },
+      });
+    }
+  });
+
+  downloadResponse.on("error", (err: any) => {
+    const result: DownloadTaskResult = {
+      kind: 'Err',
+      err: {
+        kind: mapTonicErrorCodeToDownloadBlockError(err),
+        message: err,
       },
-      spec.dragonsmouthOutlet
-    );
-
-    console.log(`Running download task for slot ${spec.downloadRequest.slot}`);
-
-    return await downloadTask.run();
-  }
+      slot: args.downloadRequest.slot,
+    };
+    this.downloadTaskResultObserver.next(result);
+  });
 }
 
-export class DownloadTaskRunnerCommand {
-  kind: string;
-  subscribeRequest?: SubscribeRequest;
+/**
+ * Creates an observer for downloading slots.
+ * 
+ * @param ctx The gRPC slot downloader context.
+ * @returns An observer for download task arguments.
+ */
+export function downloadSlotObserverFactory(
+  ctx: GrpcSlotDownloader,
+): Observer<DownloadTaskArgs> {
 
-  private constructor(kind: string, subscribeRequest?: SubscribeRequest) {
-    this.kind = kind;
-    this.subscribeRequest = subscribeRequest;
-  }
-
-  static UpdateSubscribeRequest(subscribeRequest: SubscribeRequest): DownloadTaskRunnerCommand {
-    return new DownloadTaskRunnerCommand("UpdateSubscribeRequest", subscribeRequest);
-  }
+  const download_fn = do_download.bind(ctx);
+  return {
+    next: (args: DownloadTaskArgs) => {
+      download_fn(args);
+    },
+    error: (err: Error) => {
+      console.error(err);
+    },
+    complete: () => { }
+  };
 }
-
-export class DownloadTaskRunnerChannels {
-  constructor(
-    public downloadTaskQueueTx: AsyncQueue<{}>,
-    public cncTx: AsyncQueue<{}>,
-    public downloadResultRx: AsyncQueue<{}>
-  ) {}
-}
-

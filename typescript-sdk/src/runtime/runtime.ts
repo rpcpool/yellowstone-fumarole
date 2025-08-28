@@ -1,3 +1,4 @@
+import { interval, Observable, Observer, Subject, Subscriber } from "rxjs";
 import {
   ControlCommand,
   ControlResponse,
@@ -8,20 +9,60 @@ import {
   SubscribeRequest,
   SubscribeUpdate,
 } from "../grpc/geyser";
-import { Interval } from "../utils/interval";
-import { AsyncQueue } from "./async-queue";
-import {
-  AsyncSlotDownloader,
-  DownloadTaskArgs,
-  DownloadTaskResult,
-} from "./grpc-slot-downloader";
 import {
   FumaroleSM,
   FumeDownloadRequest,
   FumeOffset,
+  FumeShardIdx,
   FumeSlotStatus,
 } from "./state-machine";
-import { waitFirstCompleted } from "./wait-first-completed";
+
+export class CompletedDownloadBlockTask {
+  constructor(
+    public slot: bigint,
+    public blockUid: Uint8Array,
+    public shardIdx: FumeShardIdx,
+    public totalEventDownloaded: number
+  ) {}
+}
+
+export type DownloadBlockErrorKind =
+  | "Disconnected"
+  | "OutletDisconnected"
+  | "BlockShardNotFound"
+  | "FailedDownload"
+  | "Fatal";
+
+
+export type DownloadBlockError = {
+  kind: DownloadBlockErrorKind,
+  message: any
+}
+
+
+export type DownloadTaskResultKind = "Ok" | "Err";
+
+export class DownloadTaskResult {
+  constructor(
+    public kind: DownloadTaskResultKind,
+    public completed?: CompletedDownloadBlockTask,
+    public slot?: bigint,
+    public err?: DownloadBlockError
+  ) {}
+}
+
+export type DownloadTaskArgs = {
+  // todo: should be renamed slotDownloadInfo
+  downloadRequest: FumeDownloadRequest,
+  subscribeRequest: SubscribeRequest,
+}
+
+export abstract class AsyncSlotDownloader {
+  abstract runDownload(
+    subscribeRequest: SubscribeRequest,
+    spec: DownloadTaskArgs
+  ): Promise<DownloadTaskResult>;
+}
 
 type TaskName =
   | "dragonsmouth_bidi"
@@ -29,48 +70,57 @@ type TaskName =
   | "download_task"
   | "commit_tick";
 
+
+
+export type Tick = { };
+
+export type ControlPlaneResp = { readonly response: ControlPlaneResp }
+
+export type DownloadTaskCompleted = { readonly result: DownloadTaskResult }
+
+export type SubscribeRequestUpdate = { readonly new_subscribe_request: SubscribeRequest }
+
+
+export type RuntimeEvent = 
+  | { _kind: 'tick', value: Tick }
+  | { _kind: 'subscribe_request_update', value: SubscribeRequestUpdate }
+  | { _kind: 'download_completed', value: DownloadTaskCompleted }
+  | { _kind: 'control_plane_response', value: ControlPlaneResp }
+
 export class FumeDragonsmouthRuntime {
   public stateMachine: FumaroleSM;
   public slotDownloader: AsyncSlotDownloader;
-  public subscribeRequestUpdateQueue: AsyncQueue<{}>;
   public subscribeRequest: SubscribeRequest;
   public consumerGroupName: string;
-  public controlPlaneTransmitQueue: AsyncQueue<{}>;
-  public controlPlaneReceiveQueue: AsyncQueue<{}>;
-  public dragonsmouthOutlet: AsyncQueue<SubscribeUpdate | Error>;
+  public fumaroleEventBus: Observable<RuntimeEvent>;
+  public dragonsmouthOutlet: Observer<SubscribeUpdate | Error>;
   public commitInterval: number; // in seconds
   public gcInterval: number;
   public maxConcurrentDownload: number;
   public downloadTasks: Map<Promise<DownloadTaskResult>, FumeDownloadRequest>;
-  public innerRuntimeChannel: AsyncQueue<{}>;
   public lastCommit: number;
 
   constructor(
     stateMachine: FumaroleSM,
     slotDownloader: AsyncSlotDownloader,
-    subscribeRequestUpdateQueue: AsyncQueue<{}>,
     subscribeRequest: SubscribeRequest,
     consumerGroupName: string,
-    controlPlaneTransmitQueue: AsyncQueue<{}>,
-    controlPlaneReceiveQueue: AsyncQueue<{}>,
-    dragonsmouthOutlet: AsyncQueue<SubscribeUpdate | Error>,
+    fumaroleEventBus: Observable<RuntimeEvent>,
+    dragonsmouthOutlet: Observer<SubscribeUpdate | Error>,
     commitInterval: number,
     gcInterval: number,
     maxConcurrentDownload: number = 10
   ) {
     this.stateMachine = stateMachine;
     this.slotDownloader = slotDownloader;
-    this.subscribeRequestUpdateQueue = subscribeRequestUpdateQueue;
     this.subscribeRequest = subscribeRequest;
     this.consumerGroupName = consumerGroupName;
-    this.controlPlaneTransmitQueue = controlPlaneTransmitQueue;
-    this.controlPlaneReceiveQueue = controlPlaneReceiveQueue;
+    this.fumaroleEventBus = fumaroleEventBus;
     this.dragonsmouthOutlet = dragonsmouthOutlet;
     this.commitInterval = commitInterval;
     this.gcInterval = gcInterval;
     this.maxConcurrentDownload = maxConcurrentDownload;
     this.downloadTasks = new Map();
-    this.innerRuntimeChannel = new AsyncQueue<{}>();
     this.lastCommit = Date.now() / 1000; // seconds since epoch; to match python syntax
   }
 
@@ -120,7 +170,7 @@ export class FumeDragonsmouthRuntime {
       const cmd = this.buildPollHistoryCmd(
         this.stateMachine.committableOffset
       );
-      await this.controlPlaneTransmitQueue.put(cmd);
+      // await this.controlPlaneObserver.next(cmd);
     }
   }
 
@@ -148,7 +198,7 @@ export class FumeDragonsmouthRuntime {
 
       const downloadTaskArgs: DownloadTaskArgs = {
         downloadRequest,
-        dragonsmouthOutlet: this.dragonsmouthOutlet,
+        subscribeRequest: this.subscribeRequest,
       };
 
       // In TS, calling async fn returns a Promise (like create_task)
@@ -190,9 +240,9 @@ export class FumeDragonsmouthRuntime {
       `Force committing offset ${this.stateMachine.committableOffset}`
     );
 
-    await this.controlPlaneTransmitQueue.put(
-      this.buildCommitOffsetCmd(this.stateMachine.committableOffset)
-    );
+    // await this.controlPlaneObserver.next(
+    //   this.buildCommitOffsetCmd(this.stateMachine.committableOffset)
+    // );
   }
 
   private async commitOffset(): Promise<void> {
@@ -252,7 +302,7 @@ export class FumeDragonsmouthRuntime {
         };
 
         try {
-          await this.dragonsmouthOutlet.put(update);
+          this.dragonsmouthOutlet.next(update);
         } catch (err) {
           // TODO make proper error types
           if (err === "Queue full") {
@@ -270,7 +320,7 @@ export class FumeDragonsmouthRuntime {
     result: ControlResponse | Error
   ): Promise<boolean> {
     if (result instanceof Error) {
-      await this.dragonsmouthOutlet.put(result);
+      await this.dragonsmouthOutlet.next(result);
       return false;
     }
 
@@ -285,111 +335,102 @@ export class FumeDragonsmouthRuntime {
   public async run() {
     console.log("Fumarole runtime starting...");
 
-    await this.controlPlaneTransmitQueue.put(
-      this.buildPollHistoryCmd(undefined)
-    );
-    console.log("Initial poll history command sent");
+    const mainBus = new Subject<RuntimeEvent>();
 
-    await this.forceCommitOffset();
-    console.log("Initial commit offset command sent");
+    const commitTick = interval(this.commitInterval).forEach(() => {
+      mainBus.next({ _kind: 'tick', value: {} });
+    });
 
-    let ticks = 0;
-    let pending = new Set<Promise<any>>();
-    let taskMap = new Map<Promise<any>, TaskName>();
+    // while (pending.size > 0) {
+    //   ticks += 1;
+    //   console.log("Runtime loop tick");
 
-    // Initial tasks
-    const task1 = this.subscribeRequestUpdateQueue.get();
-    taskMap.set(task1, "dragonsmouth_bidi");
-    pending.add(task1);
+    //   if (ticks % this.gcInterval === 0) {
+    //     console.log("Running garbage collection");
+    //     this.stateMachine.gc();
+    //     ticks = 0;
+    //   }
 
-    const task2 = this.controlPlaneReceiveQueue.get();
-    taskMap.set(task2, "control_plane_rx");
-    pending.add(task2);
+    //   console.log("Polling history if needed");
+    //   await this.pollHistoryIfNeeded();
 
-    const task3 = new Interval(this.commitInterval).tick();
-    taskMap.set(task3, "commit_tick");
-    pending.add(task3);
+    //   console.log("Scheduling download tasks if any");
+    //   this.scheduleDownloadTaskIfAny();
+    //   for (const [t] of this.downloadTasks.entries()) {
+    //     pending.add(t);
+    //     taskMap.set(t, "download_task");
+    //   }
 
-    while (pending.size > 0) {
-      ticks += 1;
-      console.log("Runtime loop tick");
+    //   const downloadTaskInflight = this.downloadTasks.size;
+    //   console.log(
+    //     `Current download tasks in flight: ${downloadTaskInflight} / ${this.maxConcurrentDownload}`
+    //   );
 
-      if (ticks % this.gcInterval === 0) {
-        console.log("Running garbage collection");
-        this.stateMachine.gc();
-        ticks = 0;
-      }
+    //   // Wait for at least one task to finish
+    //   console.log("UP UP");
+    //   // const { done, pending: newPending } = await Promise.race(pending);
+    //   const { done, pending: newPending } = await waitFirstCompleted(Array.from(pending));
+    //   console.log("DOWN DOWN");
+    //   pending = new Set(newPending);
 
-      console.log("Polling history if needed");
-      await this.pollHistoryIfNeeded();
+    //   for (const t of done) {
+    //     const result = await t;
+    //     const name = taskMap.get(t)!;
+    //     taskMap.delete(t);
 
-      console.log("Scheduling download tasks if any");
-      this.scheduleDownloadTaskIfAny();
-      for (const [t] of this.downloadTasks.entries()) {
-        pending.add(t);
-        taskMap.set(t, "download_task");
-      }
+    //     switch (name) {
+    //       case "dragonsmouth_bidi":
+    //         console.log("Dragonsmouth subscribe request received");
+    //         this.handleNewSubscribeRequest(result);
+    //         const newTask1 = this.subscribeRequestUpdateQueue.get();
+    //         taskMap.set(newTask1, "dragonsmouth_bidi");
+    //         pending.add(newTask1);
+    //         break;
 
-      const downloadTaskInflight = this.downloadTasks.size;
-      console.log(
-        `Current download tasks in flight: ${downloadTaskInflight} / ${this.maxConcurrentDownload}`
-      );
+    //       case "control_plane_rx":
+    //         console.log("Control plane response received");
+    //         if (!(await this.handleControlPlaneResp(result))) {
+    //           console.log("Control plane error");
+    //           return;
+    //         }
+    //         const newTask2 = this.controlPlaneReceiveQueue.get();
+    //         taskMap.set(newTask2, "control_plane_rx");
+    //         pending.add(newTask2);
+    //         break;
 
-      // Wait for at least one task to finish
-      console.log("UP UP");
-      
-      // const { done, pending: newPending } = await Promise.race(pending);
-      const { done, pending: newPending } = await waitFirstCompleted(Array.from(pending));
-      console.log("DOWN DOWN");
-      pending = new Set(newPending);
+    //       case "download_task":
+    //         console.log("Download task result received");
+    //         this.downloadTasks.delete(t);
+    //         this.handleDownloadResult(result);
+    //         break;
 
-      for (const t of done) {
-        const result = await t;
-        const name = taskMap.get(t)!;
-        taskMap.delete(t);
+    //       case "commit_tick":
+    //         console.log("Commit tick reached");
+    //         await this.commitOffset();
+    //         const newTask3 = new Interval(this.commitInterval).tick();
+    //         taskMap.set(newTask3, "commit_tick");
+    //         pending.add(newTask3);
+    //         break;
 
-        switch (name) {
-          case "dragonsmouth_bidi":
-            console.log("Dragonsmouth subscribe request received");
-            this.handleNewSubscribeRequest(result);
-            const newTask1 = this.subscribeRequestUpdateQueue.get();
-            taskMap.set(newTask1, "dragonsmouth_bidi");
-            pending.add(newTask1);
-            break;
+    //       default:
+    //         throw new Error(`Unexpected task name: ${name}`);
+    //     }
+    //   }
 
-          case "control_plane_rx":
-            console.log("Control plane response received");
-            if (!(await this.handleControlPlaneResp(result))) {
-              console.log("Control plane error");
-              return;
-            }
-            const newTask2 = this.controlPlaneReceiveQueue.get();
-            taskMap.set(newTask2, "control_plane_rx");
-            pending.add(newTask2);
-            break;
-
-          case "download_task":
-            console.log("Download task result received");
-            this.downloadTasks.delete(t);
-            this.handleDownloadResult(result);
-            break;
-
-          case "commit_tick":
-            console.log("Commit tick reached");
-            await this.commitOffset();
-            const newTask3 = new Interval(this.commitInterval).tick();
-            taskMap.set(newTask3, "commit_tick");
-            pending.add(newTask3);
-            break;
-
-          default:
-            throw new Error(`Unexpected task name: ${name}`);
-        }
-      }
-
-      await this.drainSlotStatus();
-    }
+    //   await this.drainSlotStatus();
+    // }
 
     console.log("Fumarole runtime exiting");
   }
 }
+
+
+
+type RuntimeContext = {
+  download_task_observer: Observer<DownloadTaskArgs>,
+  control_plane_observer: Observer<ControlCommand>,
+  state: FumaroleSM,
+}
+
+
+

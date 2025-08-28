@@ -1,6 +1,6 @@
 import { SubscribeRequest, SubscribeUpdate } from "../grpc/geyser";
 import { ControlCommand, ControlResponse } from "../grpc/fumarole";
-import { AsyncQueue } from "../runtime/async-queue";
+import { Observable, ObservedValueOf, Observer } from "rxjs";
 
 export interface FumaroleSubscribeConfig {
   concurrentDownloadLimit: number;
@@ -77,11 +77,9 @@ export function getDefaultFumaroleSubscribeConfig(): FumaroleSubscribeConfig {
 
 export interface DragonsmouthAdapterSession {
   /** Queue for sending subscribe requests */
-  sink: AsyncQueue<SubscribeRequest>;
+  sink: Observer<SubscribeRequest>;
   /** Queue for receiving subscription updates */
-  source: AsyncQueue<SubscribeUpdate | Error>;
-  /** Handle for tracking the fumarole runtime */
-  fumaroleHandle: Promise<void>;
+  source: Observable<SubscribeUpdate | Error>;
 }
 
 // Constants
