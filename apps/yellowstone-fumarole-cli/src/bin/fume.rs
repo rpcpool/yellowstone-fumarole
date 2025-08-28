@@ -1,10 +1,7 @@
-#[cfg(not(target_env = "msvc"))]
-use tikv_jemallocator::Jemalloc;
 use {
     clap::Parser,
-    futures::{FutureExt, future::BoxFuture},
-    solana_pubkey::{ParsePubkeyError, Pubkey},
-    solana_signature::Signature,
+    futures::{future::BoxFuture, FutureExt},
+    solana_pubkey::Pubkey,
     std::{
         collections::{HashMap, HashSet},
         env,

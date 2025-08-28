@@ -1,300 +1,492 @@
-/**
- * @fileoverview Fumarole TypeScript SDK for streaming Solana account and transaction data
- *
- * Fumarole provides:
- * - High availability through multi-node data collection
- * - Persistent storage of historical state
- * - Horizontal scalability via consumer groups
- *
- * @see https://github.com/rpcpool/yellowstone-fumarole
- */
 import {
-  ChannelCredentials,
-  credentials,
-  ChannelOptions,
   Metadata,
+  ServiceError,
+  MetadataValue,
+  status,
+  ClientDuplexStream,
 } from "@grpc/grpc-js";
+import { FumaroleConfig } from "./config/config";
+import { FumaroleClient as GrpcClient } from "./grpc/fumarole";
+import { FumaroleGrpcConnector } from "./connectivity";
+
+const X_TOKEN_HEADER = "x-token";
 import {
+  VersionRequest,
+  VersionResponse,
+  ControlResponse,
+  JoinControlPlane,
+  ControlCommand,
+  ListConsumerGroupsRequest,
+  ListConsumerGroupsResponse,
+  GetConsumerGroupInfoRequest,
   ConsumerGroupInfo,
-  CreateStaticConsumerGroupRequest,
-  CreateStaticConsumerGroupResponse,
   DeleteConsumerGroupRequest,
   DeleteConsumerGroupResponse,
-  FumaroleClient,
-  GetConsumerGroupInfoRequest,
-  GetOldestSlotRequest,
-  GetOldestSlotResponse,
-  GetSlotLagInfoRequest,
-  GetSlotLagInfoResponse,
-  ListAvailableCommitmentLevelsRequest,
-  ListAvailableCommitmentLevelsResponse,
-  ListConsumerGroupsResponse,
-  SubscribeRequest,
+  CreateConsumerGroupRequest,
+  CreateConsumerGroupResponse,
+  InitialOffsetPolicy,
 } from "./grpc/fumarole";
+import {
+  SubscribeRequest,
+  SubscribeUpdate,
+  CommitmentLevel,
+} from "./grpc/geyser";
+import type {
+  DragonsmouthAdapterSession,
+  FumaroleSubscribeConfig,
+} from "./types";
+import {
+  DEFAULT_DRAGONSMOUTH_CAPACITY,
+  DEFAULT_COMMIT_INTERVAL,
+  DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT,
+  DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
+  DEFAULT_GC_INTERVAL,
+  DEFAULT_SLOT_MEMORY_RETENTION,
+  getDefaultFumaroleSubscribeConfig,
+} from "./types";
+import { AsyncQueue } from "./runtime/async-queue";
+import { FumaroleSM } from "./runtime/state-machine";
+import { GrpcSlotDownloader } from "./runtime/grpc-slot-downloader";
+import { FumeDragonsmouthRuntime } from "./runtime/runtime";
 
-export type FumaroleSubscribeRequest = SubscribeRequest;
-
-/**
- * Configuration options for Fumarole subscription
- * @example
- * ```typescript
- * const stream = await client.subscribe({ compression: "gzip" });
- * ```
- */
-export type SubscribeConfig = {
-  /** Enable gzip compression for reduced bandwidth usage */
-  compression?: "gzip";
+(BigInt.prototype as any).toJSON = function () {
+  return this.toString();
 };
 
-/**
- * Main client for interacting with the Fumarole service
- */
-export default class Client {
-  _client: FumaroleClient;
-  _insecureXToken: string | undefined;
+export class FumaroleClient {
+  private static readonly logger = console;
+  private readonly connector: FumaroleGrpcConnector;
+  private readonly stub: GrpcClient;
 
-  /**
-   * Creates a new Fumarole client instance
-   *
-   * @param endpoint - The Fumarole service endpoint URL
-   * @param xToken - Authentication token provided by Triton
-   * @param channelOptions - Additional gRPC channel options
-   */
-  constructor(
-    endpoint: string,
-    xToken: string | undefined,
-    channelOptions: ChannelOptions | undefined
-  ) {
-    let creds: ChannelCredentials;
-
-    const endpointURL = new URL(endpoint);
-    let port = endpointURL.port;
-    if (!port) {
-      switch (endpointURL.protocol) {
-        case "https:":
-          port = "443";
-          break;
-        case "http:":
-          port = "80";
-          break;
-      }
-    }
-
-    // Check if we need to use TLS.
-    if (endpointURL.protocol.startsWith("https:")) {
-      creds = credentials.combineChannelCredentials(
-        credentials.createSsl(),
-        credentials.createFromMetadataGenerator((_params, callback) => {
-          const metadata = new Metadata();
-          if (xToken !== undefined) {
-            metadata.add("x-token", xToken);
-          }
-          return callback(null, metadata);
-        })
-      );
-    } else {
-      creds = ChannelCredentials.createInsecure();
-      if (xToken !== undefined) {
-        this._insecureXToken = xToken;
-      }
-    }
-
-    this._client = new FumaroleClient(
-      `${endpointURL.hostname}:${port}`,
-      creds,
-      channelOptions
+  private static safeStringify(obj: unknown): string {
+    return JSON.stringify(obj, (_, v) =>
+      typeof v === "bigint" ? v.toString() : v
     );
   }
 
-  private _getInsecureMetadata(): Metadata {
+  constructor(connector: FumaroleGrpcConnector, stub: GrpcClient) {
+    this.connector = connector;
+    this.stub = stub;
+  }
+
+  static async connect(config: FumaroleConfig): Promise<FumaroleClient> {
+    const endpoint = config.endpoint;
+    const connector = new FumaroleGrpcConnector(config, endpoint);
+
+    FumaroleClient.logger.debug(`Connecting to ${endpoint}`);
+    FumaroleClient.logger.debug(
+      "Connection config:",
+      FumaroleClient.safeStringify({
+        endpoint: config.endpoint,
+        xToken: config.xToken ? "***" : "none",
+        maxDecodingMessageSizeBytes: config.maxDecodingMessageSizeBytes,
+      })
+    );
+
+    const client = await connector.connect();
+    FumaroleClient.logger.debug(`Connected to ${endpoint}, testing stub...`);
+
+    // Wait for client to be ready
+    await new Promise((resolve, reject) => {
+      const deadline = new Date().getTime() + 5000; // 5 second timeout
+      client.waitForReady(deadline, (error) => {
+        if (error) {
+          FumaroleClient.logger.error(
+            "Client failed to become ready:",
+            FumaroleClient.safeStringify(error)
+          );
+          reject(error);
+        } else {
+          FumaroleClient.logger.debug("Client is ready");
+          resolve(undefined);
+        }
+      });
+    });
+
+    // Verify client methods
+    if (!client || typeof client.listConsumerGroups !== "function") {
+      const methods = client
+        ? Object.getOwnPropertyNames(Object.getPrototypeOf(client))
+        : [];
+      FumaroleClient.logger.error(
+        "Available methods:",
+        FumaroleClient.safeStringify(methods)
+      );
+      throw new Error("gRPC client or listConsumerGroups method not available");
+    }
+
+    FumaroleClient.logger.debug("gRPC client initialized successfully");
+    return new FumaroleClient(connector, client);
+  }
+
+  async version(): Promise<VersionResponse> {
+    FumaroleClient.logger.debug("Sending version request");
+    const request = {} as VersionRequest;
+    return new Promise((resolve, reject) => {
+      this.stub.version(request, (error, response) => {
+        if (error) {
+          FumaroleClient.logger.error(
+            "Version request failed:",
+            FumaroleClient.safeStringify(error)
+          );
+          reject(error);
+        } else {
+          FumaroleClient.logger.debug(
+            "Version response:",
+            FumaroleClient.safeStringify(response)
+          );
+          resolve(response);
+        }
+      });
+    });
+  }
+
+  async dragonsmouthSubscribe(
+    consumerGroupName: string,
+    request: SubscribeRequest,
+    xToken: string
+  ): Promise<DragonsmouthAdapterSession> {
+    return this.dragonsmouthSubscribeWithConfig(
+      consumerGroupName,
+      request,
+      getDefaultFumaroleSubscribeConfig(),
+      xToken
+    );
+  }
+
+  public async dragonsmouthSubscribeWithConfig(
+    consumerGroupName: string,
+    request: SubscribeRequest,
+    config: FumaroleSubscribeConfig,
+    xToken: string
+  ): Promise<DragonsmouthAdapterSession> {
+    // Queues
+    const dragonsmouthOutlet = new AsyncQueue<SubscribeUpdate | Error>(
+      config.dataChannelCapacity
+    );
+    const fumeControlPlaneQ = new AsyncQueue<{}>(100); // sink queue
+    const fumeControlPlaneRxQ = new AsyncQueue<{}>(100); // source queue
+
+    // Send initial join command
+    const initialJoin: JoinControlPlane = { consumerGroupName };
+    const initialJoinCommand: ControlCommand = { initialJoin };
+    await fumeControlPlaneQ.put(initialJoinCommand);
+    console.log(`Sent initial join command ONE:`, initialJoinCommand);
+
     const metadata = new Metadata();
-    if (this._insecureXToken) {
-      metadata.add("x-token", this._insecureXToken);
-    }
-    return metadata;
-  }
+    metadata.add("x-subscription-id", xToken);
+    metadata.add("x-token", xToken);
 
-  /**
-   * Creates a new static consumer group for horizontal scaling
-   *
-   * @example
-   * ```typescript
-   * const group = await client.createStaticConsumerGroup({
-   *   commitmentLevel: CommitmentLevel.CONFIRMED,
-   *   consumerGroupLabel: "my-group",
-   *   eventSubscriptionPolicy: EventSubscriptionPolicy.BOTH,
-   *   initialOffsetPolicy: InitialOffsetPolicy.LATEST,
-   * });
-   * ```
-   */
-  async createStaticConsumerGroup(
-    request: CreateStaticConsumerGroupRequest
-  ): Promise<CreateStaticConsumerGroupResponse> {
-    return await new Promise((resolve, reject) => {
-      this._client.createStaticConsumerGroup(request, (error, response) => {
-        if (error === null || error === undefined) {
-          resolve(response);
-        } else {
-          reject(error);
-        }
-      });
-    });
-  }
+    console.log("SUBSCRIBE METADATA");
+    console.log(metadata.getMap());
 
-  /**
-   * Lists all available consumer groups
-   *
-   * @param request - List request parameters
-   * @returns Promise resolving to list of consumer groups
-   */
-  async listConsumerGroups(
-    request: ListAvailableCommitmentLevelsRequest
-  ): Promise<ListConsumerGroupsResponse> {
-    return await new Promise((resolve, reject) => {
-      this._client.listConsumerGroups(request, (error, response) => {
-        if (error === null || error === undefined) {
-          resolve(response);
-        } else {
-          reject(error);
-        }
-      });
-    });
-  }
+    // Create duplex stream
+    const fumeControlPlaneStreamRx = this.stub.subscribe(
+      metadata, {}
+    ) as ClientDuplexStream<ControlCommand, ControlResponse>;
 
-  /**
-   * Gets detailed information about a specific consumer group
-   *
-   * @param request - Consumer group info request
-   * @returns Promise resolving to consumer group details
-   */
-  async getConsumerGroupInfo(
-    request: GetConsumerGroupInfoRequest
-  ): Promise<ConsumerGroupInfo> {
-    return await new Promise((resolve, reject) => {
-      this._client.getConsumerGroupInfo(request, (error, response) => {
-        if (error === null || error === undefined) {
-          resolve(response);
-        } else {
-          reject(error);
+    const controlPlaneWriter = (async () => {
+      try {
+        while (true) {
+          const update = await fumeControlPlaneQ.get();
+          const ok = fumeControlPlaneStreamRx.write(update);
+          if (!ok) {
+            await new Promise((res) =>
+              fumeControlPlaneStreamRx.once("drain", res)
+            );
+          }
         }
-      });
-    });
-  }
-
-  /**
-   * Deletes an existing consumer group
-   *
-   * @param request - Delete request parameters
-   * @returns Promise resolving when deletion is complete
-   */
-  async deleteConsumerGroup(
-    request: DeleteConsumerGroupRequest
-  ): Promise<DeleteConsumerGroupResponse> {
-    return await new Promise((resolve, reject) => {
-      this._client.deleteConsumerGroup(request, (error, response) => {
-        if (error === null || error === undefined) {
-          resolve(response);
-        } else {
-          reject(error);
-        }
-      });
-    });
-  }
-
-  /**
-   * Gets information about slot lag for a subscription
-   *
-   * @param request - Slot lag info request
-   * @returns Promise resolving to slot lag details
-   */
-  async getSlotLagInfo(
-    request: GetSlotLagInfoRequest
-  ): Promise<GetSlotLagInfoResponse> {
-    return await new Promise<GetSlotLagInfoResponse>((resolve, reject) => {
-      this._client.getSlotLagInfo(request, (error, response) => {
-        if (error === null || error === undefined) {
-          resolve(response);
-        } else {
-          reject(error);
-        }
-      });
-    });
-  }
-
-  /**
-   * Gets the oldest available slot in the persistence store
-   *
-   * @param request - Oldest slot request parameters
-   * @returns Promise resolving to oldest slot information
-   */
-  async getOldestSlot(
-    request: GetOldestSlotRequest
-  ): Promise<GetOldestSlotResponse> {
-    return await new Promise((resolve, reject) => {
-      this._client.getOldestSlot(request, (error, response) => {
-        if (error === null || error === undefined) {
-          resolve(response);
-        } else {
-          reject(error);
-        }
-      });
-    });
-  }
-
-  /**
-   * Lists available commitment levels for subscriptions
-   *
-   * @param request - List commitment levels request
-   * @returns Promise resolving to available commitment levels
-   */
-  async listAvailableCommitmentLevels(
-    request: ListAvailableCommitmentLevelsRequest
-  ): Promise<ListAvailableCommitmentLevelsResponse> {
-    return await new Promise((resolve, reject) => {
-      this._client.listAvailableCommitmentLevels(request, (error, response) => {
-        if (error === null || error === undefined) {
-          resolve(response);
-        } else {
-          reject(error);
-        }
-      });
-    });
-  }
-
-  /**
-   * Subscribes to account and transaction updates
-   *
-   * @example
-   * ```typescript
-   * const stream = await client.subscribe({ compression: "gzip" });
-   *
-   * stream.on('data', (data) => console.log(data));
-   * stream.write({
-   *   accounts: {
-   *     tokenKeg: {
-   *       account: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
-   *       filters: [],
-   *       owner: ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
-   *     }
-   *   },
-   *   consumerGroupLabel: "my-group"
-   * });
-   * ```
-   */
-  async subscribe(config?: SubscribeConfig) {
-    const options: any = {};
-    if (config) {
-      if (config.compression) {
-        switch (config.compression) {
-          case "gzip":
-            options["grpc.default_compression_algorithm"] = 2; // set compression to: gzip
-            break;
-          default:
-            options["grpc.default_compression_algorithm"] = 0; // set compression to: none
-            break;
-        }
+      } catch (err) {
+        console.error("Writer error:", err);
       }
+    })();
+
+
+
+    // Task: read from duplex stream into a queue
+    const controlPlaneReader = (async () => {
+      try {
+        for await (const update of fumeControlPlaneStreamRx) {
+          // console.log("UPDATE");
+          // console.log(JSON.stringify(update));
+
+          await fumeControlPlaneRxQ.put(update);
+        }
+      } catch (err) {
+        console.log("failed to read from duplex stream into a queue");
+        console.log(err);
+
+        // stream ended or error occurred
+      }
+    })();
+
+    // Wait for initial response from control plane
+    const controlResponse: ControlResponse = await fumeControlPlaneRxQ.get();
+    const init = (controlResponse as ControlResponse).init;
+    if (!init)
+      throw new Error(`Unexpected initial response: ${controlResponse}`);
+    console.log(`Control response:`, controlResponse);
+
+    const lastCommittedOffset = init.lastCommittedOffsets[0];
+    if (lastCommittedOffset == null)
+      throw new Error("No last committed offset");
+
+    // Initialize state machine and queues
+    const sm = new FumaroleSM(lastCommittedOffset, config.slotMemoryRetention);
+    const subscribeRequestQueue = new AsyncQueue<SubscribeRequest>(100);
+
+    // Connect data plane and create slot downloader
+    const dataPlaneClient = await this.connector.connect();
+    const grpcSlotDownloader = new GrpcSlotDownloader(dataPlaneClient);
+
+    // Create Fume runtime
+    const rt = new FumeDragonsmouthRuntime(
+      sm,
+      grpcSlotDownloader,
+      subscribeRequestQueue,
+      request,
+      consumerGroupName,
+      fumeControlPlaneQ,
+      fumeControlPlaneRxQ,
+      dragonsmouthOutlet,
+      config.commitInterval,
+      config.gcInterval,
+      config.concurrentDownloadLimit
+    );
+
+    const fumaroleHandle = rt.run();
+    console.log(`Fumarole handle created:`, fumaroleHandle);
+
+    return {
+      sink: subscribeRequestQueue,
+      source: dragonsmouthOutlet,
+      fumaroleHandle,
+    };
+  }
+
+  async listConsumerGroups(): Promise<ListConsumerGroupsResponse> {
+    if (!this.stub) {
+      throw new Error("gRPC stub not initialized");
     }
-    return await this._client.subscribe(this._getInsecureMetadata(), options);
+    if (!this.stub.listConsumerGroups) {
+      throw new Error("listConsumerGroups method not available on stub");
+    }
+
+    FumaroleClient.logger.debug("Preparing listConsumerGroups request");
+    const request = {} as ListConsumerGroupsRequest;
+    const metadata = new Metadata();
+
+    return new Promise((resolve, reject) => {
+      let hasResponded = false;
+      const timeout = setTimeout(() => {
+        if (!hasResponded) {
+          FumaroleClient.logger.error("ListConsumerGroups timeout after 30s");
+          if (call) {
+            try {
+              call.cancel();
+            } catch (e) {
+              FumaroleClient.logger.error("Error cancelling call:", e);
+            }
+          }
+          reject(new Error("gRPC call timed out after 30 seconds"));
+        }
+      }, 30000); // 30 second timeout
+
+      let call: any;
+      try {
+        FumaroleClient.logger.debug("Starting gRPC listConsumerGroups call");
+        call = this.stub.listConsumerGroups(
+          request,
+          metadata,
+          {
+            deadline: Date.now() + 30000, // 30 second deadline
+          },
+          (
+            error: ServiceError | null,
+            response: ListConsumerGroupsResponse
+          ) => {
+            hasResponded = true;
+            clearTimeout(timeout);
+
+            if (error) {
+              const errorDetails = {
+                code: error.code,
+                details: error.details,
+                metadata: error.metadata?.getMap(),
+                stack: error.stack,
+                message: error.message,
+                name: error.name,
+              };
+              FumaroleClient.logger.error(
+                "ListConsumerGroups error:",
+                errorDetails
+              );
+              reject(error);
+            } else {
+              FumaroleClient.logger.debug(
+                "ListConsumerGroups success - Response:",
+                FumaroleClient.safeStringify(response)
+              );
+              resolve(response);
+            }
+          }
+        );
+
+        // Monitor call state
+        if (call) {
+          call.on("metadata", (metadata: Metadata) => {
+            FumaroleClient.logger.debug(
+              "Received metadata:",
+              metadata.getMap()
+            );
+          });
+
+          call.on("status", (status: any) => {
+            FumaroleClient.logger.debug("Call status:", status);
+          });
+
+          call.on("error", (error: Error) => {
+            FumaroleClient.logger.error("Call stream error:", error);
+            if (!hasResponded) {
+              hasResponded = true;
+              clearTimeout(timeout);
+              reject(error);
+            }
+          });
+        } else {
+          FumaroleClient.logger.error("Failed to create gRPC call object");
+          hasResponded = true;
+          clearTimeout(timeout);
+          reject(new Error("Failed to create gRPC call"));
+        }
+      } catch (setupError) {
+        hasResponded = true;
+        clearTimeout(timeout);
+        FumaroleClient.logger.error("Error setting up gRPC call:", setupError);
+        reject(setupError);
+      }
+    });
+  }
+
+  async getConsumerGroupInfo(
+    consumerGroupName: string
+  ): Promise<ConsumerGroupInfo | null> {
+    FumaroleClient.logger.debug(
+      "Sending getConsumerGroupInfo request:",
+      consumerGroupName
+    );
+    const request = { consumerGroupName } as GetConsumerGroupInfoRequest;
+    return new Promise((resolve, reject) => {
+      this.stub.getConsumerGroupInfo(
+        request,
+        (error: ServiceError | null, response: ConsumerGroupInfo) => {
+          if (error) {
+            if (error.code === 14) {
+              // grpc.status.NOT_FOUND
+              FumaroleClient.logger.debug(
+                "Consumer group not found:",
+                consumerGroupName
+              );
+              resolve(null);
+            } else {
+              FumaroleClient.logger.error("GetConsumerGroupInfo error:", error);
+              reject(error);
+            }
+          } else {
+            FumaroleClient.logger.debug(
+              "GetConsumerGroupInfo response:",
+              response
+            );
+            resolve(response);
+          }
+        }
+      );
+    });
+  }
+
+  async deleteConsumerGroup(
+    consumerGroupName: string
+  ): Promise<DeleteConsumerGroupResponse> {
+    FumaroleClient.logger.debug(
+      "Sending deleteConsumerGroup request:",
+      consumerGroupName
+    );
+    const request = { consumerGroupName } as DeleteConsumerGroupRequest;
+    return new Promise((resolve, reject) => {
+      this.stub.deleteConsumerGroup(
+        request,
+        (error: ServiceError | null, response: DeleteConsumerGroupResponse) => {
+          if (error) {
+            FumaroleClient.logger.error("DeleteConsumerGroup error:", error);
+            reject(error);
+          } else {
+            FumaroleClient.logger.debug(
+              "DeleteConsumerGroup response:",
+              response
+            );
+            resolve(response);
+          }
+        }
+      );
+    });
+  }
+
+  async deleteAllConsumerGroups(): Promise<void> {
+    const response = await this.listConsumerGroups();
+    const deletePromises = response.consumerGroups.map((group) =>
+      this.deleteConsumerGroup(group.consumerGroupName)
+    );
+
+    const results = await Promise.all(deletePromises);
+
+    // Check for any failures
+    const failures = results.filter((result) => !result.success);
+    if (failures.length > 0) {
+      throw new Error(
+        `Failed to delete some consumer groups: ${FumaroleClient.safeStringify(
+          failures
+        )}`
+      );
+    }
+  }
+
+  async createConsumerGroup(
+    request: CreateConsumerGroupRequest
+  ): Promise<CreateConsumerGroupResponse> {
+    FumaroleClient.logger.debug(
+      "Sending createConsumerGroup request:",
+      request
+    );
+    return new Promise((resolve, reject) => {
+      this.stub.createConsumerGroup(
+        request,
+        (error: ServiceError | null, response: CreateConsumerGroupResponse) => {
+          if (error) {
+            FumaroleClient.logger.error("CreateConsumerGroup error:", error);
+            reject(error);
+          } else {
+            FumaroleClient.logger.debug(
+              "CreateConsumerGroup response:",
+              response
+            );
+            resolve(response);
+          }
+        }
+      );
+    });
   }
 }
+
+export {
+  FumaroleConfig,
+  InitialOffsetPolicy,
+  CommitmentLevel,
+  SubscribeRequest,
+  SubscribeUpdate,
+  DEFAULT_DRAGONSMOUTH_CAPACITY,
+  DEFAULT_COMMIT_INTERVAL,
+  DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT,
+  DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
+};
+
+export type { DragonsmouthAdapterSession, FumaroleSubscribeConfig };

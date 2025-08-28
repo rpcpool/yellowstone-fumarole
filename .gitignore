@@ -17,3 +17,8 @@ target
 node_modules
 dist
 *.txt
+
+.vscode
+yellowstone-grpc
+
+.env
