@@ -186,23 +186,31 @@ export class FumaroleClient {
         });
         await defer.promise;
       });
-
-    const ctrlPlaneResponseObservable: Observable<ControlResponse> = makeObservable(fumeControlPlaneDuplex);
-    // Wait for initial response from control plane
-    const controlResponsePromise: Promise<ControlResponse> = firstValueFrom(ctrlPlaneResponseObservable);
-    controlPlaneCommandSubject.next(initialJoinCommand);
     
-    const controlResponse = await controlResponsePromise;
+    const waitInitCtrlMsg: Promise<ControlResponse> = new Promise((resolve, reject) => {
+      fumeControlPlaneDuplex.once("data", (msg: ControlResponse) => {
+        console.log("Received initial control response:", msg);
+        resolve(msg);
+      });
+      fumeControlPlaneDuplex.once("error", (err: any) => {
+        reject(err);
+      });
+    });
 
+    
+    controlPlaneCommandSubject.next(initialJoinCommand);
+    const controlResponse = await waitInitCtrlMsg;
+   
     const init = (controlResponse as ControlResponse).init;
     if (!init)
       throw new Error(`Unexpected initial response: ${controlResponse}`);
     console.log(`Control response:`, controlResponse);
-    await firstValueFrom(ctrlPlaneResponseObservable);
     const lastCommittedOffset = init.lastCommittedOffsets[0];
     if (lastCommittedOffset == null)
       throw new Error("No last committed offset");
 
+    const ctrlPlaneResponseObservable: Observable<ControlResponse> = makeObservable(fumeControlPlaneDuplex);
+    const controlResponsePromise: Promise<ControlResponse> = firstValueFrom(ctrlPlaneResponseObservable);
     // Initialize state machine and queues
     const sm = new FumaroleSM(lastCommittedOffset, config.slotMemoryRetention);
 

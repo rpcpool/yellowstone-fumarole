@@ -95,7 +95,7 @@ async function main() {
 
     const subscribeConfig = {
       concurrentDownloadLimit: 10,
-      commitInterval: 5000,
+      commitInterval: 1000,
       maxFailedSlotDownloadAttempt: 3,
       slotMemoryRetention: 1000,
       gcInterval: 1000,

@@ -616,6 +616,8 @@ function pollHistoryIfNeeded(
     };
     console.debug("Polling history");
     this.controlPlaneObserver.next(cmd);
+  } else {
+    console.debug("no need to poll history");
   }
 }
 
@@ -678,7 +680,7 @@ function runtime_observer(this: FumaroleRuntimeCtx, ev: RuntimeEvent) {
     case 'tick':
       console.debug("Received tick event");
       commitOffsetIfRequired.call(this);
-      return;
+      break;
     case 'subscribe_request_update':
       onSubscribeRequestUpdate.call(this, ev.subscribe_request_update);
       break;

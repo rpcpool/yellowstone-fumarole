@@ -115,14 +115,7 @@ export class FumaroleSM {
   }
 
   updateCommittedOffset(offset: FumeOffset): void {
-    console.log("OFFSET");
-    console.log(offset);
-    console.log("this.LAST_COMMITTED_OFFSET");
-    console.log(this.lastCommittedOffset);
-    
-    if (offset >= this.lastCommittedOffset) {
-      throw new Error("Offset must be >= last committed offset");
-    }
+    console.assert(offset >= this.lastCommittedOffset, "Offset must be >= last committed offset");
     this.lastCommittedOffset = offset;
   }
 
@@ -351,7 +344,7 @@ export class FumaroleSM {
     const fumeOffset = this.sequenceToOffset.get(eventSeqNumber);
     this.sequenceToOffset.delete(eventSeqNumber);
 
-    if (fumeOffset === undefined) {
+    if (fumeOffset === undefined || fumeOffset === null) {
       throw new Error("Event sequence number not found");
     }
 

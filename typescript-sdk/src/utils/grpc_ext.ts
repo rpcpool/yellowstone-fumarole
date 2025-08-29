@@ -18,6 +18,7 @@ export function makeObservable<T>(clientReadableStream: ClientReadableStream<T>)
         });
 
         return () => {
+            console.debug("teardown clientReadStream subscription");
             clientReadableStream.cancel();
         };
     }).pipe(share());
