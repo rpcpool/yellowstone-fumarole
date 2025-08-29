@@ -56,13 +56,7 @@ async function main() {
     const request: SubscribeRequest = {
       commitment: CommitmentLevel.CONFIRMED,
       accounts: { },
-      transactions: {
-        test: {
-          accountInclude: [],
-          accountExclude: [],
-          accountRequired: [],
-        },
-      },
+      transactions: {},
       slots: {
         test: {}
       },

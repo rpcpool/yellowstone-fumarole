@@ -539,6 +539,10 @@ function onDownloadCompleted(this: FumaroleRuntimeCtx, result: DownloadTaskResul
       completed.slot,
       completed.shardIdx
     );
+
+    if (!this.inflightDownloads.delete(completed.slot)) {
+      LOGGER.warn(`Completed download for unknown slot ${completed.slot}`);
+    }
   } else {
     const slot = result.slot;
     const err = result.err;
@@ -626,14 +630,11 @@ function pollHistoryIfNeeded(
     const cmd = {
       pollHist: {
         shardId: 0,
-        limit: undefined,
       },
     };
-    LOGGER.debug("Polling history");
+    LOGGER.debug("Polling history,", this.sm.unprocessedBlockchainEvent.size());
     this.controlPlaneObserver.next(cmd);
     this.pollHistInflightFlag = true;
-  } else {
-    LOGGER.debug("no need to poll history");
   }
 }
 
@@ -645,6 +646,7 @@ function drainSlotStatusIfAny(
 
   let slotStatus: FumeSlotStatus | null;
   while ((slotStatus = this.sm.popNextSlotStatus())) {
+    LOGGER.debug(`popping slot status: ${slotStatus.slot}`);
     slotStatusVec.push(slotStatus);
   }
 
@@ -707,9 +709,9 @@ function runtime_observer(this: FumaroleRuntimeCtx, ev: RuntimeEvent) {
       onControlPlaneResponse.call(this, ev.control_plane_response);
       break;
   }
-  scheduleDownloadTaskIfAny.call(this);
   pollHistoryIfNeeded.call(this);
   drainSlotStatusIfAny.call(this);
+  scheduleDownloadTaskIfAny.call(this);
 
   if (this.currentTick % this.gcInterval === 0) {
     this.sm.gc();
