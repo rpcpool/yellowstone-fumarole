@@ -45,7 +45,7 @@ import {
 } from "./types";
 import { FumaroleSM } from "./runtime/state-machine";
 import { downloadSlotObserverFactory, GrpcSlotDownloader } from "./runtime/grpc-slot-downloader";
-import { DownloadTaskArgs, DownloadTaskResult, fumaroleObservable, FumaroleRuntimeArgs, RuntimeEvent } from "./runtime/runtime";
+import { DownloadTaskArgs, DownloadTaskResult, fumaroleObservable, FumaroleRuntimeArgs, RuntimeEvent } from "./runtime/reactive_runtime";
 import { firstValueFrom, from, Observable, Observer, share, Subject } from "rxjs";
 import { createDeferred } from "./utils/promise";
 import { makeObservable } from "./utils/grpc_ext";
@@ -140,24 +140,39 @@ export class FumaroleClient {
     });
   }
 
+  /**
+   * Establish a Dragonsouth-like consumption stream from a persistent subscriber.
+   * 
+   * @param persistentSubscriberName The name of the persistent subscriber to connect to.
+   * @param request the initial `SubscribeRequest` to use.
+   * @returns an observable that emits updates from the subscriber.
+   */
   async dragonsmouthSubscribe(
-    consumerGroupName: string,
+    persistentSubscriberName: string,
     request: SubscribeRequest,
   ): Promise<Observable<SubscribeUpdate>> {
     return this.dragonsmouthSubscribeWithConfig(
-      consumerGroupName,
+      persistentSubscriberName,
       request,
       getDefaultFumaroleSubscribeConfig(),
     );
   }
 
+  /**
+   * Establish a Dragonsouth-like consumption stream from a persistent subscriber.
+   * 
+   * @param persistentSubscriberName The name of the persistent subscriber to connect to.
+   * @param initialSubscribeRequest The initial `SubscribeRequest` to use.
+   * @param config An instance of `FumaroleSubscribeConfig` configuration options for the subscription.
+   * @returns an observable that emits updates from the subscriber.
+   */
   public async dragonsmouthSubscribeWithConfig(
-    consumerGroupName: string,
+    persistentSubscriberName: string,
     initialSubscribeRequest: SubscribeRequest,
     config: FumaroleSubscribeConfig,
   ): Promise<Observable<SubscribeUpdate>> {
-   
-    const initialJoin: JoinControlPlane = { consumerGroupName };
+
+    const initialJoin: JoinControlPlane = { consumerGroupName: persistentSubscriberName };
     const initialJoinCommand: ControlCommand = { initialJoin };
     const controlPlaneCommandSubject = new Subject<ControlCommand>();
     const fumaroleRuntimeEventSubject = new Subject<RuntimeEvent>();

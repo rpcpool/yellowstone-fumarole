@@ -5,7 +5,7 @@ import {
   FumaroleClient,
 } from "../grpc/fumarole";
 import { SubscribeUpdate } from "../grpc/geyser";
-import { DownloadBlockErrorKind, DownloadTaskArgs, DownloadTaskResult } from "./runtime";
+import { DownloadBlockErrorKind, DownloadTaskArgs, DownloadTaskResult } from "./reactive_runtime";
 import { Observer } from "rxjs";
 import { LOGGER } from "../logging";
 
