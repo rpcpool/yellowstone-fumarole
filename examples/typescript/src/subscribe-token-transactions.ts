@@ -55,19 +55,16 @@ async function main() {
 
     const request: SubscribeRequest = {
       commitment: CommitmentLevel.CONFIRMED,
-      accounts: {},
+      accounts: { },
       transactions: {
-        tokenFilter: {
-          accountInclude: [TOKEN_ADDRESS],
+        test: {
+          accountInclude: [],
           accountExclude: [],
-          accountRequired: [TOKEN_ADDRESS],
+          accountRequired: [],
         },
       },
       slots: {
-        slotFilter: {
-          filterByCommitment: true,
-          interslotUpdates: true,
-        },
+        test: {}
       },
       transactionsStatus: {},
       blocks: {},
@@ -96,7 +93,7 @@ async function main() {
     }
 
     const subscribeConfig = {
-      concurrentDownloadLimit: 10,
+      concurrentDownloadLimit: 1,
       commitInterval: 1000,
       maxFailedSlotDownloadAttempt: 3,
       slotMemoryRetention: 1000,
@@ -115,9 +112,14 @@ async function main() {
       request,
       subscribeConfig,
     );
+    console.log("Subscription started. Listening for updates...");
+    await observable.forEach((next) => {
 
-    observable.subscribe((next) => {
-      console.log("Received update:", safeJsonStringify(next));
+      if(next.transaction) {
+        console.log(`Received transaction update, slot: ${next.transaction.slot}`);
+      } else if (next.slot) {
+        console.log(`Received slot update, slot: ${next.slot.slot}`);
+      }
     });
 
     // console.log("Subscription started. Listening for updates...");

@@ -4,6 +4,7 @@ import { BlockchainEvent } from "../grpc/fumarole";
 import { CommitmentLevel } from "../grpc/geyser";
 import { BinaryHeap } from "./binary-heap";
 import { Deque } from "@datastructures-js/deque";
+import { LOGGER } from "../logging";
 
 // Constants
 export const DEFAULT_SLOT_MEMORY_RETENTION = 10000;
@@ -373,9 +374,10 @@ export class FumaroleSM {
   }
 
   needNewBlockchainEvents(): boolean {
-    return (
-      this.slotStatusUpdateQueue.size() === 0 &&
+    const MINIMUM_UNPROCESSED_BLOCKCHAIN_EVENT = 10;
+    return this.unprocessedBlockchainEvent.size() < MINIMUM_UNPROCESSED_BLOCKCHAIN_EVENT || (
+      this.slotStatusUpdateQueue.size() === 0 ||
       this.blockedSlotStatusUpdate.size === 0
-    );
+    )
   }
 }

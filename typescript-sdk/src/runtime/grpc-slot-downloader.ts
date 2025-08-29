@@ -5,8 +5,9 @@ import {
   FumaroleClient,
 } from "../grpc/fumarole";
 import { SubscribeUpdate } from "../grpc/geyser";
-import { DownloadBlockError, DownloadBlockErrorKind, DownloadTaskArgs, DownloadTaskResult } from "./runtime";
+import { DownloadBlockErrorKind, DownloadTaskArgs, DownloadTaskResult } from "./runtime";
 import { Observer } from "rxjs";
+import { LOGGER } from "../logging";
 
 
 function mapTonicErrorCodeToDownloadBlockError(
@@ -69,7 +70,7 @@ function do_download(
     entries: args.subscribeRequest.entry,
     blocksMeta: args.subscribeRequest.blocksMeta,
   };
-
+  LOGGER.info(`Starting download for block ${JSON.stringify(blockFilters)}`);
   const request: DownloadBlockShard = {
     blockchainId: args.downloadRequest.blockchainId,
     blockUid: args.downloadRequest.blockUid,
@@ -83,6 +84,7 @@ function do_download(
       totalEventDownloaded++;
       this.dragonsmouthOutlet.next(data.update);
     } else if (data.blockShardDownloadFinish) {
+      LOGGER.info(`Finished download for slot ${args.downloadRequest.slot}, total events downloaded: ${totalEventDownloaded}`);
       this.downloadTaskResultObserver.next({
         kind: "Ok",
         completed: {
@@ -124,7 +126,7 @@ export function downloadSlotObserverFactory(
       download_fn(args);
     },
     error: (err: Error) => {
-      console.error(err);
+      LOGGER.error(err);
     },
     complete: () => { }
   };

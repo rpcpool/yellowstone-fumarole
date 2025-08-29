@@ -161,11 +161,7 @@ export class FumaroleClient {
     const initialJoinCommand: ControlCommand = { initialJoin };
     const controlPlaneCommandSubject = new Subject<ControlCommand>();
     const fumaroleRuntimeEventSubject = new Subject<RuntimeEvent>();
-    
     const metadata = new Metadata();
-
-    LOGGER.debug("SUBSCRIBE METADATA");
-    LOGGER.debug(metadata.getMap());
 
     // Create duplex stream
     const fumeControlPlaneDuplex = this.stub.subscribe(
@@ -187,7 +183,6 @@ export class FumaroleClient {
     
     const waitInitCtrlMsg: Promise<ControlResponse> = new Promise((resolve, reject) => {
       fumeControlPlaneDuplex.once("data", (msg: ControlResponse) => {
-        LOGGER.debug("Received initial control response:", msg);
         resolve(msg);
       });
       fumeControlPlaneDuplex.once("error", (err: any) => {
@@ -195,7 +190,6 @@ export class FumaroleClient {
       });
     });
 
-    
     controlPlaneCommandSubject.next(initialJoinCommand);
     const controlResponse = await waitInitCtrlMsg;
    
@@ -203,6 +197,7 @@ export class FumaroleClient {
     if (!init)
       throw new Error(`Unexpected initial response: ${controlResponse}`);
     LOGGER.debug(`Control response:`, controlResponse);
+
     const lastCommittedOffset = init.lastCommittedOffsets[0];
     if (lastCommittedOffset == null)
       throw new Error("No last committed offset");
@@ -229,6 +224,7 @@ export class FumaroleClient {
       downloadTaskObserver: grpcSlotDownloader,
       downloadTaskResultObservable: downloadTaskResultSubject.asObservable(),
       controlPlaneObserver: controlPlaneCommandSubject,
+      dragonsmouthOutlet,
       controlPlaneResponseObservable: ctrlPlaneResponseObservable,
       sm,
       commitIntervalMillis: config.commitInterval,

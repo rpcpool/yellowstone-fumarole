@@ -437,6 +437,7 @@ export type FumaroleRuntimeArgs = {
   downloadTaskObserver: Observer<DownloadTaskArgs>,
   downloadTaskResultObservable: Observable<DownloadTaskResult>,
   controlPlaneObserver: Observer<ControlCommand>,
+  dragonsmouthOutlet: Subject<SubscribeUpdate>,
   controlPlaneResponseObservable: Observable<ControlResponse>,
   sm: FumaroleSM,
   commitIntervalMillis: number,
@@ -497,18 +498,26 @@ type FumaroleRuntimeCtx = {
   /**
    * Flag indicating whether a poll history request is in flight.
    */
-  pollHistInFlightFlag: boolean,
+  pollHistInflightFlag: boolean,
+
+  /**
+   * Flag indicating whether a commit offset request is in flight.
+   */
+  commitOffsetInflightFlag: boolean
 }
 
 
 function onControlPlaneResponse(this: FumaroleRuntimeCtx, resp: ControlResponse) {
   if (resp.pollHist) {
-    this.pollHistInFlightFlag = false;
+    this.pollHistInflightFlag = false;
     const pollHist = resp.pollHist;
-    LOGGER.debug(`Received poll history ${pollHist.events.length} events`);
+    if (pollHist.events.length > 0) {
+      LOGGER.debug(`Received poll history ${pollHist.events.length} events`);
+    }
     this.sm.queueBlockchainEvent(pollHist.events);
   } else if (resp.commitOffset) {
     const commitOffset = resp.commitOffset;
+    this.commitOffsetInflightFlag = false;
     LOGGER.debug(`Received commit offset: ${JSON.stringify(commitOffset)}`);
     this.sm.updateCommittedOffset(commitOffset.offset);
   } else if (resp.pong) {
@@ -540,7 +549,9 @@ function onDownloadCompleted(this: FumaroleRuntimeCtx, result: DownloadTaskResul
 function commitOffsetIfRequired(
   this: FumaroleRuntimeCtx
 ) {
-  LOGGER.debug("Checking if commit is required");
+  if (this.commitOffsetInflightFlag) {
+    return;
+  }
   if (this.sm.lastCommittedOffset < this.sm.committableOffset) {
     LOGGER.debug(
       `Committing offset ${this.sm.committableOffset}`
@@ -553,6 +564,7 @@ function commitOffsetIfRequired(
         }
       }
     )
+    this.commitOffsetInflightFlag = true;
   }
   this.lastCommit = Date.now();
 }
@@ -563,8 +575,6 @@ function onSubscribeRequestUpdate(this: FumaroleRuntimeCtx, update: SubscribeReq
   this.subscribeRequest = update.new_subscribe_request;
 }
 
-
-
 function ctxCommitmentLevel(ctx: FumaroleRuntimeCtx): CommitmentLevel {
   return ctx.subscribeRequest.commitment ?? CommitmentLevel.PROCESSED
 }
@@ -573,22 +583,18 @@ function scheduleDownloadTaskIfAny(
   this: FumaroleRuntimeCtx,
 ) {
   while (true) {
-    LOGGER.debug("Checking for download tasks to schedule");
-
     if (this.inflightDownloads.size >= this.maxConcurrentDownload) {
       break;
     }
 
-    LOGGER.debug("Popping slot to download");
     const downloadRequest = this.sm.popSlotToDownload(
       ctxCommitmentLevel(this)
     );
+
     if (!downloadRequest) {
-      LOGGER.debug("No download request available");
       break;
     }
 
-    LOGGER.debug(`Download request for slot ${downloadRequest.slot} popped`);
     if (!downloadRequest.blockchainId) {
       throw new Error("Download request must have a blockchain ID");
     }
@@ -612,7 +618,7 @@ function scheduleDownloadTaskIfAny(
 function pollHistoryIfNeeded(
   this: FumaroleRuntimeCtx
 ) {
-  if (this.pollHistInFlightFlag) {
+  if (this.pollHistInflightFlag) {
     return;
   }
   // Poll the history if the state machine needs new events.
@@ -625,7 +631,7 @@ function pollHistoryIfNeeded(
     };
     LOGGER.debug("Polling history");
     this.controlPlaneObserver.next(cmd);
-    this.pollHistInFlightFlag = true;
+    this.pollHistInflightFlag = true;
   } else {
     LOGGER.debug("no need to poll history");
   }
@@ -646,7 +652,7 @@ function drainSlotStatusIfAny(
     return;
   }
 
-  LOGGER.info(`Draining ${slotStatusVec.length} slot status`);
+  LOGGER.debug(`Draining ${slotStatusVec.length} slot status`);
 
   for (const slotStatus of slotStatusVec) {
     const matchedFilters: string[] = [];
@@ -721,6 +727,7 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
     downloadTaskObserver,
     controlPlaneObserver,
     downloadTaskResultObservable,
+    dragonsmouthOutlet,
     controlPlaneResponseObservable,
     commitIntervalMillis,
     sm,
@@ -730,8 +737,6 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
 
   // Defer all the stitching to wait at least one subscription otherwise we could lose event.
   return defer(() => {
-    const outlet = new Subject<SubscribeUpdate>();
-
     // Main bus will handle all runtime events
     const fumaroleMainBus = new Subject<RuntimeEvent>();
 
@@ -770,14 +775,15 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
       subscribeRequest: initialSubscribeRequest,
       controlPlaneObserver,
       downloadTaskObserver,
-      dragonsmouthOutlet: outlet,
-      pollHistInFlightFlag: false,
+      dragonsmouthOutlet,
+      pollHistInflightFlag: false,
+      commitOffsetInflightFlag: false,
     }; 
 
     const runtimeObserver = runtime_observer.bind(ctx);
 
     fumaroleMainBus.subscribe(runtimeObserver);
     LOGGER.debug("Plugged runtime observer");
-    return outlet.asObservable();
+    return dragonsmouthOutlet.asObservable();
   });
 }
