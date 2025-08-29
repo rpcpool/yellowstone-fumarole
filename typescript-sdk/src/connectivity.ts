@@ -2,10 +2,10 @@ import {
   ChannelCredentials,
   credentials,
   Metadata,
-  Client,
   ServiceError,
 } from "@grpc/grpc-js";
 import { FumaroleClient } from "./grpc/fumarole";
+import { LOGGER } from "./logging";
 
 export const X_TOKEN_HEADER = "x-token";
 
@@ -14,22 +14,11 @@ interface FumaroleConfig {
   xMetadata?: Record<string, string>;
 }
 
-// Simple logger implementation
-class Logger {
-  constructor(private prefix: string) {}
-
-  debug(message: string) {
-    console.debug(`[${this.prefix}] ${message}`);
-  }
-}
-
 export class FumaroleGrpcConnector {
-  private readonly logger: Logger;
   private readonly config: FumaroleConfig;
   private readonly endpoint: string;
 
   constructor(config: FumaroleConfig, endpoint: string) {
-    this.logger = new Logger("FumaroleGrpcConnector");
     this.config = config;
     this.endpoint = endpoint;
   }
@@ -47,7 +36,7 @@ export class FumaroleGrpcConnector {
   async connect(
     grpcOptions: { [key: string]: any }[] = []
   ): Promise<FumaroleClient> {
-    this.logger.debug(`Connecting to endpoint: ${this.endpoint}`);
+    LOGGER.debug(`Connecting to endpoint: ${this.endpoint}`);
 
     const defaultOptions: { [key: string]: any } = {
       "grpc.max_receive_message_length": 111111110,
@@ -81,7 +70,7 @@ export class FumaroleGrpcConnector {
     // Add additional options
     grpcOptions.forEach((opt) => {
       Object.entries(opt).forEach(([key, value]) => {
-        this.logger.debug(`Setting channel option: ${key} = ${value}`);
+        LOGGER.debug(`Setting channel option: ${key} = ${value}`);
         channelOptions[key] = value;
       });
     });
@@ -90,7 +79,7 @@ export class FumaroleGrpcConnector {
 
     try {
       const endpointURL = new URL(this.endpoint);
-      this.logger.debug(
+      LOGGER.debug(
         `Parsed URL - protocol: ${endpointURL.protocol}, hostname: ${endpointURL.hostname}, port: ${endpointURL.port}`
       );
 
@@ -104,20 +93,20 @@ export class FumaroleGrpcConnector {
             port = "80";
             break;
         }
-        this.logger.debug(`No port specified, using default port: ${port}`);
+        LOGGER.debug(`No port specified, using default port: ${port}`);
       }
 
       // Check if we need to use TLS.
       if (endpointURL.protocol === "https:") {
-        this.logger.debug("HTTPS detected, setting up SSL credentials");
+        LOGGER.debug("HTTPS detected, setting up SSL credentials");
         const sslCreds = credentials.createSsl();
-        this.logger.debug("SSL credentials created");
+        LOGGER.debug("SSL credentials created");
 
         const callCreds = credentials.createFromMetadataGenerator(
           (_params, callback) => {
             const metadata = new Metadata();
             if (this.config.xToken !== undefined) {
-              this.logger.debug("Adding x-token to metadata");
+              LOGGER.debug("Adding x-token to metadata");
               metadata.add(X_TOKEN_HEADER, this.config.xToken);
               // TODO remove this
               metadata.add("x-subscription-id", this.config.xToken);
@@ -125,20 +114,20 @@ export class FumaroleGrpcConnector {
             return callback(null, metadata);
           }
         );
-        this.logger.debug("Call credentials created");
+        LOGGER.debug("Call credentials created");
 
         channelCredentials = credentials.combineChannelCredentials(
           sslCreds,
           callCreds
         );
-        this.logger.debug("Using secure channel with x-token authentication");
+        LOGGER.debug("Using secure channel with x-token authentication");
       } else {
         channelCredentials = credentials.createInsecure();
-        this.logger.debug("Using insecure channel without authentication");
+        LOGGER.debug("Using insecure channel without authentication");
       }
 
       const finalEndpoint = `${endpointURL.hostname}:${port}`;
-      this.logger.debug(`Creating gRPC client with endpoint: ${finalEndpoint}`);
+      LOGGER.debug(`Creating gRPC client with endpoint: ${finalEndpoint}`);
 
       const client = new FumaroleClient(
         finalEndpoint,
@@ -146,37 +135,37 @@ export class FumaroleGrpcConnector {
         channelOptions
       );
 
-      this.logger.debug(`gRPC client created, waiting for ready state...`);
+      LOGGER.debug(`gRPC client created, waiting for ready state...`);
 
       // Wait for the client to be ready with a longer timeout
       await new Promise((resolve, reject) => {
         const deadline = new Date().getTime() + 30000; // 30 second timeout
         client.waitForReady(deadline, (error) => {
           if (error) {
-            this.logger.debug(
+            LOGGER.debug(
               `Client failed to become ready: ${error.message}`
             );
             const grpcError = error as ServiceError;
             if (grpcError.code !== undefined)
-              this.logger.debug(`Error code: ${grpcError.code}`);
+              LOGGER.debug(`Error code: ${grpcError.code}`);
             if (grpcError.details)
-              this.logger.debug(`Error details: ${grpcError.details}`);
+              LOGGER.debug(`Error details: ${grpcError.details}`);
             if (grpcError.metadata)
-              this.logger.debug(`Error metadata: ${grpcError.metadata}`);
+              LOGGER.debug(`Error metadata: ${grpcError.metadata}`);
             reject(error);
           } else {
-            this.logger.debug(`Client is ready`);
+            LOGGER.debug(`Client is ready`);
             resolve(undefined);
           }
         });
       });
 
-      this.logger.debug(
+      LOGGER.debug(
         `gRPC client created successfully for ${finalEndpoint}`
       );
       return client;
     } catch (error) {
-      this.logger.debug(
+      LOGGER.debug(
         `Error during connection setup: ${
           error instanceof Error ? error.message : String(error)
         }`

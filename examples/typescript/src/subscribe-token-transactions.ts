@@ -3,14 +3,16 @@ import dotenv from "dotenv";
 import {
   FumaroleClient,
   SubscribeRequest,
-  DragonsmouthAdapterSession,
   CommitmentLevel,
   InitialOffsetPolicy,
   SubscribeUpdate,
+  setDefaultLogger
 } from "@triton-one/yellowstone-fumarole";
 import { Observable } from "rxjs";
 
 dotenv.config();
+
+setDefaultLogger();
 
 // stringify bigint in json
 function safeJsonStringify(obj: unknown): string {

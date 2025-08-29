@@ -69,6 +69,7 @@ function do_download(
     entries: args.subscribeRequest.entry,
     blocksMeta: args.subscribeRequest.blocksMeta,
   };
+
   const request: DownloadBlockShard = {
     blockchainId: args.downloadRequest.blockchainId,
     blockUid: args.downloadRequest.blockUid,

@@ -8,7 +8,7 @@ import {
 import { FumaroleConfig } from "./config/config";
 import { FumaroleClient as GrpcClient } from "./grpc/fumarole";
 import { FumaroleGrpcConnector } from "./connectivity";
-
+import { LOGGER, setCustomLogger, setDefaultLogger } from "./logging";
 const X_TOKEN_HEADER = "x-token";
 import {
   VersionRequest,
@@ -53,9 +53,7 @@ import { makeObservable } from "./utils/grpc_ext";
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
 };
-
 export class FumaroleClient {
-  private static readonly logger = console;
   private readonly connector: FumaroleGrpcConnector;
   private readonly stub: GrpcClient;
 
@@ -74,8 +72,8 @@ export class FumaroleClient {
     const endpoint = config.endpoint;
     const connector = new FumaroleGrpcConnector(config, endpoint);
 
-    FumaroleClient.logger.debug(`Connecting to ${endpoint}`);
-    FumaroleClient.logger.debug(
+    LOGGER.debug(`Connecting to ${endpoint}`);
+    LOGGER.debug(
       "Connection config:",
       FumaroleClient.safeStringify({
         endpoint: config.endpoint,
@@ -85,20 +83,20 @@ export class FumaroleClient {
     );
 
     const client = await connector.connect();
-    FumaroleClient.logger.debug(`Connected to ${endpoint}, testing stub...`);
+    LOGGER.debug(`Connected to ${endpoint}, testing stub...`);
 
     // Wait for client to be ready
     await new Promise((resolve, reject) => {
       const deadline = new Date().getTime() + 5000; // 5 second timeout
       client.waitForReady(deadline, (error) => {
         if (error) {
-          FumaroleClient.logger.error(
+          LOGGER.error(
             "Client failed to become ready:",
             FumaroleClient.safeStringify(error)
           );
           reject(error);
         } else {
-          FumaroleClient.logger.debug("Client is ready");
+          LOGGER.debug("Client is ready");
           resolve(undefined);
         }
       });
@@ -109,30 +107,30 @@ export class FumaroleClient {
       const methods = client
         ? Object.getOwnPropertyNames(Object.getPrototypeOf(client))
         : [];
-      FumaroleClient.logger.error(
+      LOGGER.error(
         "Available methods:",
         FumaroleClient.safeStringify(methods)
       );
       throw new Error("gRPC client or listConsumerGroups method not available");
     }
 
-    FumaroleClient.logger.debug("gRPC client initialized successfully");
+    LOGGER.debug("gRPC client initialized successfully");
     return new FumaroleClient(connector, client);
   }
 
   async version(): Promise<VersionResponse> {
-    FumaroleClient.logger.debug("Sending version request");
+    LOGGER.debug("Sending version request");
     const request = {} as VersionRequest;
     return new Promise((resolve, reject) => {
       this.stub.version(request, (error, response) => {
         if (error) {
-          FumaroleClient.logger.error(
+          LOGGER.error(
             "Version request failed:",
             FumaroleClient.safeStringify(error)
           );
           reject(error);
         } else {
-          FumaroleClient.logger.debug(
+          LOGGER.debug(
             "Version response:",
             FumaroleClient.safeStringify(response)
           );
@@ -166,8 +164,8 @@ export class FumaroleClient {
     
     const metadata = new Metadata();
 
-    console.log("SUBSCRIBE METADATA");
-    console.log(metadata.getMap());
+    LOGGER.debug("SUBSCRIBE METADATA");
+    LOGGER.debug(metadata.getMap());
 
     // Create duplex stream
     const fumeControlPlaneDuplex = this.stub.subscribe(
@@ -189,7 +187,7 @@ export class FumaroleClient {
     
     const waitInitCtrlMsg: Promise<ControlResponse> = new Promise((resolve, reject) => {
       fumeControlPlaneDuplex.once("data", (msg: ControlResponse) => {
-        console.log("Received initial control response:", msg);
+        LOGGER.debug("Received initial control response:", msg);
         resolve(msg);
       });
       fumeControlPlaneDuplex.once("error", (err: any) => {
@@ -204,7 +202,7 @@ export class FumaroleClient {
     const init = (controlResponse as ControlResponse).init;
     if (!init)
       throw new Error(`Unexpected initial response: ${controlResponse}`);
-    console.log(`Control response:`, controlResponse);
+    LOGGER.debug(`Control response:`, controlResponse);
     const lastCommittedOffset = init.lastCommittedOffsets[0];
     if (lastCommittedOffset == null)
       throw new Error("No last committed offset");
@@ -249,7 +247,7 @@ export class FumaroleClient {
       throw new Error("listConsumerGroups method not available on stub");
     }
 
-    FumaroleClient.logger.debug("Preparing listConsumerGroups request");
+    LOGGER.debug("Preparing listConsumerGroups request");
     const request = {} as ListConsumerGroupsRequest;
     const metadata = new Metadata();
 
@@ -257,12 +255,12 @@ export class FumaroleClient {
       let hasResponded = false;
       const timeout = setTimeout(() => {
         if (!hasResponded) {
-          FumaroleClient.logger.error("ListConsumerGroups timeout after 30s");
+          LOGGER.error("ListConsumerGroups timeout after 30s");
           if (call) {
             try {
               call.cancel();
             } catch (e) {
-              FumaroleClient.logger.error("Error cancelling call:", e);
+              LOGGER.error("Error cancelling call:", e);
             }
           }
           reject(new Error("gRPC call timed out after 30 seconds"));
@@ -271,7 +269,7 @@ export class FumaroleClient {
 
       let call: any;
       try {
-        FumaroleClient.logger.debug("Starting gRPC listConsumerGroups call");
+        LOGGER.debug("Starting gRPC listConsumerGroups call");
         call = this.stub.listConsumerGroups(
           request,
           metadata,
@@ -294,13 +292,13 @@ export class FumaroleClient {
                 message: error.message,
                 name: error.name,
               };
-              FumaroleClient.logger.error(
+              LOGGER.error(
                 "ListConsumerGroups error:",
                 errorDetails
               );
               reject(error);
             } else {
-              FumaroleClient.logger.debug(
+              LOGGER.debug(
                 "ListConsumerGroups success - Response:",
                 FumaroleClient.safeStringify(response)
               );
@@ -312,18 +310,18 @@ export class FumaroleClient {
         // Monitor call state
         if (call) {
           call.on("metadata", (metadata: Metadata) => {
-            FumaroleClient.logger.debug(
+            LOGGER.debug(
               "Received metadata:",
               metadata.getMap()
             );
           });
 
           call.on("status", (status: any) => {
-            FumaroleClient.logger.debug("Call status:", status);
+            LOGGER.debug("Call status:", status);
           });
 
           call.on("error", (error: Error) => {
-            FumaroleClient.logger.error("Call stream error:", error);
+            LOGGER.error("Call stream error:", error);
             if (!hasResponded) {
               hasResponded = true;
               clearTimeout(timeout);
@@ -331,7 +329,7 @@ export class FumaroleClient {
             }
           });
         } else {
-          FumaroleClient.logger.error("Failed to create gRPC call object");
+          LOGGER.error("Failed to create gRPC call object");
           hasResponded = true;
           clearTimeout(timeout);
           reject(new Error("Failed to create gRPC call"));
@@ -339,7 +337,7 @@ export class FumaroleClient {
       } catch (setupError) {
         hasResponded = true;
         clearTimeout(timeout);
-        FumaroleClient.logger.error("Error setting up gRPC call:", setupError);
+        LOGGER.error("Error setting up gRPC call:", setupError);
         reject(setupError);
       }
     });
@@ -348,7 +346,7 @@ export class FumaroleClient {
   async getConsumerGroupInfo(
     consumerGroupName: string
   ): Promise<ConsumerGroupInfo | null> {
-    FumaroleClient.logger.debug(
+    LOGGER.debug(
       "Sending getConsumerGroupInfo request:",
       consumerGroupName
     );
@@ -360,17 +358,17 @@ export class FumaroleClient {
           if (error) {
             if (error.code === 14) {
               // grpc.status.NOT_FOUND
-              FumaroleClient.logger.debug(
+              LOGGER.debug(
                 "Consumer group not found:",
                 consumerGroupName
               );
               resolve(null);
             } else {
-              FumaroleClient.logger.error("GetConsumerGroupInfo error:", error);
+              LOGGER.error("GetConsumerGroupInfo error:", error);
               reject(error);
             }
           } else {
-            FumaroleClient.logger.debug(
+            LOGGER.debug(
               "GetConsumerGroupInfo response:",
               response
             );
@@ -384,7 +382,7 @@ export class FumaroleClient {
   async deleteConsumerGroup(
     consumerGroupName: string
   ): Promise<DeleteConsumerGroupResponse> {
-    FumaroleClient.logger.debug(
+    LOGGER.debug(
       "Sending deleteConsumerGroup request:",
       consumerGroupName
     );
@@ -394,10 +392,10 @@ export class FumaroleClient {
         request,
         (error: ServiceError | null, response: DeleteConsumerGroupResponse) => {
           if (error) {
-            FumaroleClient.logger.error("DeleteConsumerGroup error:", error);
+            LOGGER.error("DeleteConsumerGroup error:", error);
             reject(error);
           } else {
-            FumaroleClient.logger.debug(
+            LOGGER.debug(
               "DeleteConsumerGroup response:",
               response
             );
@@ -430,7 +428,7 @@ export class FumaroleClient {
   async createConsumerGroup(
     request: CreateConsumerGroupRequest
   ): Promise<CreateConsumerGroupResponse> {
-    FumaroleClient.logger.debug(
+    LOGGER.debug(
       "Sending createConsumerGroup request:",
       request
     );
@@ -439,10 +437,10 @@ export class FumaroleClient {
         request,
         (error: ServiceError | null, response: CreateConsumerGroupResponse) => {
           if (error) {
-            FumaroleClient.logger.error("CreateConsumerGroup error:", error);
+            LOGGER.error("CreateConsumerGroup error:", error);
             reject(error);
           } else {
-            FumaroleClient.logger.debug(
+            LOGGER.debug(
               "CreateConsumerGroup response:",
               response
             );
@@ -463,6 +461,8 @@ export {
   DEFAULT_COMMIT_INTERVAL,
   DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT,
   DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
+  setCustomLogger,
+  setDefaultLogger,
 };
 
 export type { DragonsmouthAdapterSession, FumaroleSubscribeConfig };

@@ -18,6 +18,7 @@ import {
   Slot,
 } from "./state-machine";
 import { Runtime } from "inspector/promises";
+import { LOGGER } from "../logging";
 
 export class CompletedDownloadBlockTask {
   constructor(
@@ -155,14 +156,14 @@ export type RuntimeEvent =
 //     // Determine which oneof field is set
 //     if (controlResponse.pollHist) {
 //       const pollHist = controlResponse.pollHist;
-//       console.log(`Received poll history ${pollHist.events.length} events`);
+//       LOGGER.debug(`Received poll history ${pollHist.events.length} events`);
 //       this.stateMachine.queueBlockchainEvent(pollHist.events);
 //     } else if (controlResponse.commitOffset) {
 //       const commitOffset = controlResponse.commitOffset;
-//       console.log(`Received commit offset: ${JSON.stringify(commitOffset)}`);
+//       LOGGER.debug(`Received commit offset: ${JSON.stringify(commitOffset)}`);
 //       this.stateMachine.updateCommittedOffset(commitOffset.offset);
 //     } else if (controlResponse.pong) {
-//       console.log("Received pong");
+//       LOGGER.debug("Received pong");
 //     } else {
 //       throw new Error("Unexpected control response");
 //     }
@@ -184,22 +185,22 @@ export type RuntimeEvent =
 
 //   private scheduleDownloadTaskIfAny(): void {
 //     while (true) {
-//       console.log("Checking for download tasks to schedule");
+//       LOGGER.debug("Checking for download tasks to schedule");
 
 //       if (this.downloadTasks.size >= this.maxConcurrentDownload) {
 //         break;
 //       }
 
-//       console.log("Popping slot to download");
+//       LOGGER.debug("Popping slot to download");
 //       const downloadRequest = this.stateMachine.popSlotToDownload(
 //         this.commitmentLevel
 //       );
 //       if (!downloadRequest) {
-//         console.log("No download request available");
+//         LOGGER.debug("No download request available");
 //         break;
 //       }
 
-//       console.log(`Download request for slot ${downloadRequest.slot} popped`);
+//       LOGGER.debug(`Download request for slot ${downloadRequest.slot} popped`);
 //       if (!downloadRequest.blockchainId) {
 //         throw new Error("Download request must have a blockchain ID");
 //       }
@@ -218,7 +219,7 @@ export type RuntimeEvent =
 //       // Track the promise alongside the request
 //       this.downloadTasks.set(downloadTask, downloadRequest);
 
-//       console.log(
+//       LOGGER.debug(
 //         `Scheduling download task for slot ${downloadRequest.slot}`
 //       );
 //     }
@@ -228,7 +229,7 @@ export type RuntimeEvent =
 //     /** Handles the result of a download task. */
 //     if (downloadResult.kind === "Ok") {
 //       const completed = downloadResult.completed!;
-//       console.log(
+//       LOGGER.debug(
 //         `Download completed for slot ${completed.slot}, shard ${completed.shardIdx}, ${completed.totalEventDownloaded} total events`
 //       );
 
@@ -244,7 +245,7 @@ export type RuntimeEvent =
 //   }
 
 //   private async forceCommitOffset(): Promise<void> {
-//     console.log(
+//     LOGGER.debug(
 //       `Force committing offset ${this.stateMachine.committableOffset}`
 //     );
 
@@ -258,7 +259,7 @@ export type RuntimeEvent =
 //       this.stateMachine.lastCommittedOffset <
 //       this.stateMachine.committableOffset
 //     ) {
-//       console.log(
+//       LOGGER.debug(
 //         `Committing offset ${this.stateMachine.committableOffset}`
 //       );
 //       await this.forceCommitOffset();
@@ -279,7 +280,7 @@ export type RuntimeEvent =
 //       return;
 //     }
 
-//     console.log(`Draining ${slotStatusVec.length} slot status`);
+//     LOGGER.debug(`Draining ${slotStatusVec.length} slot status`);
 
 //     for (const slotStatus of slotStatusVec) {
 //       const matchedFilters: string[] = [];
@@ -341,24 +342,24 @@ export type RuntimeEvent =
 //   }
 
 //   public async run() {
-//     console.log("Fumarole runtime starting...");
+//     LOGGER.debug("Fumarole runtime starting...");
 
 //     const mainBus = new Subject<RuntimeEvent>();
 
 //     // while (pending.size > 0) {
 //     //   ticks += 1;
-//     //   console.log("Runtime loop tick");
+//     //   LOGGER.debug("Runtime loop tick");
 
 //     //   if (ticks % this.gcInterval === 0) {
-//     //     console.log("Running garbage collection");
+//     //     LOGGER.debug("Running garbage collection");
 //     //     this.stateMachine.gc();
 //     //     ticks = 0;
 //     //   }
 
-//     //   console.log("Polling history if needed");
+//     //   LOGGER.debug("Polling history if needed");
 //     //   await this.pollHistoryIfNeeded();
 
-//     //   console.log("Scheduling download tasks if any");
+//     //   LOGGER.debug("Scheduling download tasks if any");
 //     //   this.scheduleDownloadTaskIfAny();
 //     //   for (const [t] of this.downloadTasks.entries()) {
 //     //     pending.add(t);
@@ -366,15 +367,15 @@ export type RuntimeEvent =
 //     //   }
 
 //     //   const downloadTaskInflight = this.downloadTasks.size;
-//     //   console.log(
+//     //   LOGGER.debug(
 //     //     `Current download tasks in flight: ${downloadTaskInflight} / ${this.maxConcurrentDownload}`
 //     //   );
 
 //     //   // Wait for at least one task to finish
-//     //   console.log("UP UP");
+//     //   LOGGER.debug("UP UP");
 //     //   // const { done, pending: newPending } = await Promise.race(pending);
 //     //   const { done, pending: newPending } = await waitFirstCompleted(Array.from(pending));
-//     //   console.log("DOWN DOWN");
+//     //   LOGGER.debug("DOWN DOWN");
 //     //   pending = new Set(newPending);
 
 //     //   for (const t of done) {
@@ -384,7 +385,7 @@ export type RuntimeEvent =
 
 //     //     switch (name) {
 //     //       case "dragonsmouth_bidi":
-//     //         console.log("Dragonsmouth subscribe request received");
+//     //         LOGGER.debug("Dragonsmouth subscribe request received");
 //     //         this.handleNewSubscribeRequest(result);
 //     //         const newTask1 = this.subscribeRequestUpdateQueue.get();
 //     //         taskMap.set(newTask1, "dragonsmouth_bidi");
@@ -392,9 +393,9 @@ export type RuntimeEvent =
 //     //         break;
 
 //     //       case "control_plane_rx":
-//     //         console.log("Control plane response received");
+//     //         LOGGER.debug("Control plane response received");
 //     //         if (!(await this.handleControlPlaneResp(result))) {
-//     //           console.log("Control plane error");
+//     //           LOGGER.debug("Control plane error");
 //     //           return;
 //     //         }
 //     //         const newTask2 = this.controlPlaneReceiveQueue.get();
@@ -403,13 +404,13 @@ export type RuntimeEvent =
 //     //         break;
 
 //     //       case "download_task":
-//     //         console.log("Download task result received");
+//     //         LOGGER.debug("Download task result received");
 //     //         this.downloadTasks.delete(t);
 //     //         this.handleDownloadResult(result);
 //     //         break;
 
 //     //       case "commit_tick":
-//     //         console.log("Commit tick reached");
+//     //         LOGGER.debug("Commit tick reached");
 //     //         await this.commitOffset();
 //     //         const newTask3 = new Interval(this.commitInterval).tick();
 //     //         taskMap.set(newTask3, "commit_tick");
@@ -424,7 +425,7 @@ export type RuntimeEvent =
 //     //   await this.drainSlotStatus();
 //     // }
 
-//     console.log("Fumarole runtime exiting");
+//     LOGGER.debug("Fumarole runtime exiting");
 //   }
 // }
 
@@ -492,31 +493,36 @@ type FumaroleRuntimeCtx = {
    * Observer for dragonsmouth subscribe updates.
    */
   dragonsmouthOutlet: Observer<SubscribeUpdate>,
+
+  /**
+   * Flag indicating whether a poll history request is in flight.
+   */
+  pollHistInFlightFlag: boolean,
 }
 
 
 function onControlPlaneResponse(this: FumaroleRuntimeCtx, resp: ControlResponse) {
-  console.debug("recv control plane resp");
   if (resp.pollHist) {
+    this.pollHistInFlightFlag = false;
     const pollHist = resp.pollHist;
-    console.log(`Received poll history ${pollHist.events.length} events`);
+    LOGGER.debug(`Received poll history ${pollHist.events.length} events`);
     this.sm.queueBlockchainEvent(pollHist.events);
   } else if (resp.commitOffset) {
     const commitOffset = resp.commitOffset;
-    console.log(`Received commit offset: ${JSON.stringify(commitOffset)}`);
+    LOGGER.debug(`Received commit offset: ${JSON.stringify(commitOffset)}`);
     this.sm.updateCommittedOffset(commitOffset.offset);
   } else if (resp.pong) {
-    console.log("Received pong");
+    LOGGER.debug("Received pong");
   } else {
     throw new Error("Unexpected control response");
   }
 }
 
 function onDownloadCompleted(this: FumaroleRuntimeCtx, result: DownloadTaskResult) {
-  console.log("Download completed:", result);
+  LOGGER.debug("Download completed:", result);
   if (result.kind === "Ok") {
     const completed = result.completed!;
-    console.log(
+    LOGGER.debug(
       `Download completed for slot ${completed.slot}, shard ${completed.shardIdx}, ${completed.totalEventDownloaded} total events`
     );
 
@@ -534,9 +540,9 @@ function onDownloadCompleted(this: FumaroleRuntimeCtx, result: DownloadTaskResul
 function commitOffsetIfRequired(
   this: FumaroleRuntimeCtx
 ) {
-  console.debug("Checking if commit is required");
+  LOGGER.debug("Checking if commit is required");
   if (this.sm.lastCommittedOffset < this.sm.committableOffset) {
-    console.log(
+    LOGGER.debug(
       `Committing offset ${this.sm.committableOffset}`
     );
     this.controlPlaneObserver.next(
@@ -553,7 +559,7 @@ function commitOffsetIfRequired(
 
 
 function onSubscribeRequestUpdate(this: FumaroleRuntimeCtx, update: SubscribeRequestUpdate) {
-  console.debug("New subscribe request update");
+  LOGGER.debug("New subscribe request update");
   this.subscribeRequest = update.new_subscribe_request;
 }
 
@@ -567,22 +573,22 @@ function scheduleDownloadTaskIfAny(
   this: FumaroleRuntimeCtx,
 ) {
   while (true) {
-    console.log("Checking for download tasks to schedule");
+    LOGGER.debug("Checking for download tasks to schedule");
 
     if (this.inflightDownloads.size >= this.maxConcurrentDownload) {
       break;
     }
 
-    console.log("Popping slot to download");
+    LOGGER.debug("Popping slot to download");
     const downloadRequest = this.sm.popSlotToDownload(
       ctxCommitmentLevel(this)
     );
     if (!downloadRequest) {
-      console.log("No download request available");
+      LOGGER.debug("No download request available");
       break;
     }
 
-    console.log(`Download request for slot ${downloadRequest.slot} popped`);
+    LOGGER.debug(`Download request for slot ${downloadRequest.slot} popped`);
     if (!downloadRequest.blockchainId) {
       throw new Error("Download request must have a blockchain ID");
     }
@@ -597,7 +603,7 @@ function scheduleDownloadTaskIfAny(
 
     this.downloadTaskObserver.next(downloadTaskArgs);
 
-    console.log(
+    LOGGER.debug(
       `Scheduling download task for slot ${downloadRequest.slot}`
     );
   }
@@ -606,6 +612,9 @@ function scheduleDownloadTaskIfAny(
 function pollHistoryIfNeeded(
   this: FumaroleRuntimeCtx
 ) {
+  if (this.pollHistInFlightFlag) {
+    return;
+  }
   // Poll the history if the state machine needs new events.
   if (this.sm.needNewBlockchainEvents()) {
     const cmd = {
@@ -614,10 +623,11 @@ function pollHistoryIfNeeded(
         limit: undefined,
       },
     };
-    console.debug("Polling history");
+    LOGGER.debug("Polling history");
     this.controlPlaneObserver.next(cmd);
+    this.pollHistInFlightFlag = true;
   } else {
-    console.debug("no need to poll history");
+    LOGGER.debug("no need to poll history");
   }
 }
 
@@ -636,7 +646,7 @@ function drainSlotStatusIfAny(
     return;
   }
 
-  console.log(`Draining ${slotStatusVec.length} slot status`);
+  LOGGER.info(`Draining ${slotStatusVec.length} slot status`);
 
   for (const slotStatus of slotStatusVec) {
     const matchedFilters: string[] = [];
@@ -678,7 +688,7 @@ function runtime_observer(this: FumaroleRuntimeCtx, ev: RuntimeEvent) {
 
   switch (ev._kind) {
     case 'tick':
-      console.debug("Received tick event");
+      LOGGER.debug("Received tick event");
       commitOffsetIfRequired.call(this);
       break;
     case 'subscribe_request_update':
@@ -733,7 +743,7 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
       })
     )
     .subscribe(fumaroleMainBus);
-    console.debug("Plugged download task result");
+    LOGGER.debug("Plugged download task result");
 
     // Plug ticker
     interval(commitIntervalMillis).pipe(
@@ -741,14 +751,14 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
         return { _kind: 'tick' } as RuntimeEvent;
       })
     ).subscribe(fumaroleMainBus);
-    console.debug("Plugged ticker");
+    LOGGER.debug("Plugged ticker");
 
     // Plug control plane response
     controlPlaneResponseObservable
       .subscribe((response) => {
         fumaroleMainBus.next({ _kind: 'control_plane_response', control_plane_response: response });
       });
-    console.debug("Plugged control plane response");
+    LOGGER.debug("Plugged control plane response");
 
     const ctx: FumaroleRuntimeCtx = {
       currentTick: 0,
@@ -761,13 +771,13 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
       controlPlaneObserver,
       downloadTaskObserver,
       dragonsmouthOutlet: outlet,
-    };  
+      pollHistInFlightFlag: false,
+    }; 
 
     const runtimeObserver = runtime_observer.bind(ctx);
 
     fumaroleMainBus.subscribe(runtimeObserver);
-    console.debug("Plugged runtime observer");
-
+    LOGGER.debug("Plugged runtime observer");
     return outlet.asObservable();
   });
 }
