@@ -119,6 +119,7 @@ export class FumaroleGrpcConnector {
             if (this.config.xToken !== undefined) {
               this.logger.debug("Adding x-token to metadata");
               metadata.add(X_TOKEN_HEADER, this.config.xToken);
+              // TODO remove this
               metadata.add("x-subscription-id", this.config.xToken);
             }
             return callback(null, metadata);
@@ -182,105 +183,5 @@ export class FumaroleGrpcConnector {
       );
       throw error;
     }
-  }
-}
-
-// Helper function to create a gRPC channel (for backward compatibility)
-export function createGrpcChannel(
-  endpoint: string,
-  xToken?: string,
-  compression?: any,
-  ...grpcOptions: { [key: string]: any }[]
-): Client {
-  console.debug(`Creating gRPC channel for endpoint: ${endpoint}`);
-
-  const defaultOptions: { [key: string]: any } = {
-    "grpc.max_receive_message_length": 111111110,
-    "grpc.keepalive_time_ms": 10000,
-    "grpc.keepalive_timeout_ms": 5000,
-    "grpc.http2.min_time_between_pings_ms": 10000,
-    "grpc.keepalive_permit_without_calls": 1,
-  };
-
-  const channelOptions: { [key: string]: any } = {
-    ...defaultOptions,
-  };
-
-  // Add additional options
-  grpcOptions.forEach((opt) => {
-    Object.entries(opt).forEach(([key, value]) => {
-      console.debug(`Setting channel option: ${key} = ${value}`);
-      channelOptions[key] = value;
-    });
-  });
-
-  try {
-    const endpointURL = new URL(endpoint);
-    console.debug(
-      `Parsed URL - protocol: ${endpointURL.protocol}, hostname: ${endpointURL.hostname}, port: ${endpointURL.port}`
-    );
-
-    let port = endpointURL.port;
-    if (port === "") {
-      switch (endpointURL.protocol) {
-        case "https:":
-          port = "443";
-          break;
-        case "http:":
-          port = "80";
-          break;
-      }
-      console.debug(`No port specified, using default port: ${port}`);
-    }
-
-    let channelCredentials: ChannelCredentials;
-
-    // Check if we need to use TLS.
-    if (endpointURL.protocol === "https:") {
-      console.debug("HTTPS detected, setting up SSL credentials");
-      const sslCreds = credentials.createSsl();
-      console.debug("SSL credentials created");
-
-      const callCreds = credentials.createFromMetadataGenerator(
-        (_params, callback) => {
-          const metadata = new Metadata();
-          if (xToken !== undefined) {
-            console.debug("Adding x-token to metadata");
-            metadata.add(X_TOKEN_HEADER, xToken);
-            metadata.add("x-subscription-id", xToken);
-          }
-          return callback(null, metadata);
-        }
-      );
-      console.debug("Call credentials created");
-
-      channelCredentials = credentials.combineChannelCredentials(
-        sslCreds,
-        callCreds
-      );
-      console.debug("Combined credentials created for secure channel");
-    } else {
-      channelCredentials = credentials.createInsecure();
-      console.debug("Using insecure channel without authentication");
-    }
-
-    const finalEndpoint = `${endpointURL.hostname}:${port}`;
-    console.debug(`Creating gRPC client with endpoint: ${finalEndpoint}`);
-
-    const client = new Client(
-      finalEndpoint,
-      channelCredentials,
-      channelOptions
-    );
-
-    console.debug("gRPC client created successfully");
-    return client;
-  } catch (error) {
-    console.debug(
-      `Error creating gRPC channel: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
-    throw error;
   }
 }

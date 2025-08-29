@@ -46,9 +46,8 @@ import {
 } from "./types";
 import { FumaroleSM } from "./runtime/state-machine";
 import { downloadSlotObserverFactory, GrpcSlotDownloader } from "./runtime/grpc-slot-downloader";
-import { DownloadTaskArgs, DownloadTaskResult, FumeDragonsmouthRuntime, RuntimeEvent } from "./runtime/runtime";
+import { DownloadTaskArgs, DownloadTaskResult, fumaroleObservable, FumaroleRuntimeArgs, RuntimeEvent } from "./runtime/runtime";
 import { firstValueFrom, from, Observable, Observer, share, Subject } from "rxjs";
-import { combineHostPort } from "@grpc/grpc-js/build/src/uri-parser";
 import { createDeferred } from "./utils/promise";
 
 (BigInt.prototype as any).toJSON = function () {
@@ -146,22 +145,19 @@ export class FumaroleClient {
   async dragonsmouthSubscribe(
     consumerGroupName: string,
     request: SubscribeRequest,
-    xToken: string
-  ): Promise<void> {
+  ): Promise<Observable<SubscribeUpdate>> {
     return this.dragonsmouthSubscribeWithConfig(
       consumerGroupName,
       request,
       getDefaultFumaroleSubscribeConfig(),
-      xToken
     );
   }
 
   public async dragonsmouthSubscribeWithConfig(
     consumerGroupName: string,
-    request: SubscribeRequest,
+    initialSubscribeRequest: SubscribeRequest,
     config: FumaroleSubscribeConfig,
-    xToken: string
-  ): Promise<void> {
+  ): Promise<Observable<SubscribeUpdate>> {
    
     const initialJoin: JoinControlPlane = { consumerGroupName };
     const initialJoinCommand: ControlCommand = { initialJoin };
@@ -169,9 +165,6 @@ export class FumaroleClient {
     const fumaroleRuntimeEventSubject = new Subject<RuntimeEvent>();
     
     const metadata = new Metadata();
-    // TODO remove the x-subscription-id
-    metadata.add("x-subscription-id", xToken);
-    metadata.add("x-token", xToken);
 
     console.log("SUBSCRIBE METADATA");
     console.log(metadata.getMap());
@@ -214,44 +207,32 @@ export class FumaroleClient {
     const sm = new FumaroleSM(lastCommittedOffset, config.slotMemoryRetention);
 
     const dragonsmouthOutlet = new Subject<SubscribeUpdate>();
-    const downloadTaskSubject = new Subject<DownloadTaskResult>();
+    const downloadTaskResultSubject = new Subject<DownloadTaskResult>();
     // // Connect data plane and create slot downloader
     const dataPlaneClient = await this.connector.connect();
     const grpcSlotDownloadCtx: GrpcSlotDownloader = {
       client: dataPlaneClient,
       client_metadata: metadata,
       dragonsmouthOutlet: dragonsmouthOutlet,
-      downloadTaskResultObserver: downloadTaskSubject,
+      downloadTaskResultObserver: downloadTaskResultSubject,
     }
     const grpcSlotDownloader: Observer<DownloadTaskArgs> = downloadSlotObserverFactory(
       grpcSlotDownloadCtx
     )
-
     
 
-    // Create Fume runtime
-    // const rt = new FumeDragonsmouthRuntime(
-    //   sm,
-    //   grpcSlotDownloader,
-    //   subscribeRequestQueue,
-    //   request,
-    //   consumerGroupName,
-    //   fumeControlPlaneQ,
-    //   fumeControlPlaneRxQ,
-    //   dragonsmouthOutlet,
-    //   config.commitInterval,
-    //   config.gcInterval,
-    //   config.concurrentDownloadLimit
-    // );
+    const runtimeArgs: FumaroleRuntimeArgs = {
+      downloadTaskObserver: grpcSlotDownloader,
+      downloadTaskResultObservable: downloadTaskResultSubject.asObservable(),
+      controlPlaneObserver: controlPlaneCommandSubject,
+      controlPlaneResponseObservable: ctrlPlaneResponseObservable,
+      sm,
+      commitIntervalMillis: config.commitInterval,
+      maxConcurrentDownload: config.concurrentDownloadLimit,
+      initialSubscribeRequest,
+    }
 
-    // const fumaroleHandle = rt.run();
-    // console.log(`Fumarole handle created:`, fumaroleHandle);
-
-    // return {
-    //   sink: subscribeRequestQueue,
-    //   source: dragonsmouthOutlet,
-    //   fumaroleHandle,
-    // };
+    return fumaroleObservable(runtimeArgs)
   }
 
   async listConsumerGroups(): Promise<ListConsumerGroupsResponse> {

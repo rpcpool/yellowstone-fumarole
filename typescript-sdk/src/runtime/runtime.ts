@@ -1,4 +1,4 @@
-import { interval, Observable, Observer, Subject, Subscriber } from "rxjs";
+import { defer, interval, map, Observable, Observer, Subject, Subscriber } from "rxjs";
 import {
   ControlCommand,
   ControlResponse,
@@ -58,7 +58,7 @@ export type DownloadTaskArgs = {
   downloadRequest: FumeDownloadRequest,
   subscribeRequest: SubscribeRequest,
 }
-
+DownloadTaskResult
 export abstract class AsyncSlotDownloader {
   abstract runDownload(
     subscribeRequest: SubscribeRequest,
@@ -91,367 +91,407 @@ export type RuntimeEventKind =
 export type RuntimeEvent =
   | { _kind: 'tick'; tick: Tick }
   | { _kind: 'subscribe_request_update'; subscribe_request_update: SubscribeRequestUpdate }
-  | { _kind: 'download_completed'; download_completed: DownloadTaskCompleted }
-  | { _kind: 'control_plane_response'; control_plane_response: ControlPlaneResp };
+  | { _kind: 'download_completed'; download_completed: DownloadTaskResult }
+  | { _kind: 'control_plane_response'; control_plane_response: ControlResponse };
 
 
-export class FumeDragonsmouthRuntime {
-  public stateMachine: FumaroleSM;
-  public slotDownloader: AsyncSlotDownloader;
-  public subscribeRequest: SubscribeRequest;
-  public consumerGroupName: string;
-  public fumaroleEventBus: Observable<RuntimeEvent>;
-  public dragonsmouthOutlet: Observer<SubscribeUpdate | Error>;
-  public commitInterval: number; // in seconds
-  public gcInterval: number;
-  public maxConcurrentDownload: number;
-  public downloadTasks: Map<Promise<DownloadTaskResult>, FumeDownloadRequest>;
-  public lastCommit: number;
+// export class FumeDragonsmouthRuntime {
+//   public stateMachine: FumaroleSM;
+//   public slotDownloader: AsyncSlotDownloader;
+//   public subscribeRequest: SubscribeRequest;
+//   public consumerGroupName: string;
+//   public fumaroleEventBus: Observable<RuntimeEvent>;
+//   public dragonsmouthOutlet: Observer<SubscribeUpdate | Error>;
+//   public commitInterval: number; // in seconds
+//   public gcInterval: number;
+//   public maxConcurrentDownload: number;
+//   public downloadTasks: Map<Promise<DownloadTaskResult>, FumeDownloadRequest>;
+//   public lastCommit: number;
 
-  constructor(
-    stateMachine: FumaroleSM,
-    slotDownloader: AsyncSlotDownloader,
-    subscribeRequest: SubscribeRequest,
-    consumerGroupName: string,
-    fumaroleEventBus: Observable<RuntimeEvent>,
-    dragonsmouthOutlet: Observer<SubscribeUpdate | Error>,
-    commitInterval: number,
-    gcInterval: number,
-    maxConcurrentDownload: number = 10
-  ) {
-    this.stateMachine = stateMachine;
-    this.slotDownloader = slotDownloader;
-    this.subscribeRequest = subscribeRequest;
-    this.consumerGroupName = consumerGroupName;
-    this.fumaroleEventBus = fumaroleEventBus;
-    this.dragonsmouthOutlet = dragonsmouthOutlet;
-    this.commitInterval = commitInterval;
-    this.gcInterval = gcInterval;
-    this.maxConcurrentDownload = maxConcurrentDownload;
-    this.downloadTasks = new Map();
-    this.lastCommit = Date.now() / 1000; // seconds since epoch; to match python syntax
-  }
+//   constructor(
+//     stateMachine: FumaroleSM,
+//     slotDownloader: AsyncSlotDownloader,
+//     subscribeRequest: SubscribeRequest,
+//     consumerGroupName: string,
+//     fumaroleEventBus: Observable<RuntimeEvent>,
+//     dragonsmouthOutlet: Observer<SubscribeUpdate | Error>,
+//     commitInterval: number,
+//     gcInterval: number,
+//     maxConcurrentDownload: number = 10
+//   ) {
+//     this.stateMachine = stateMachine;
+//     this.slotDownloader = slotDownloader;
+//     this.subscribeRequest = subscribeRequest;
+//     this.consumerGroupName = consumerGroupName;
+//     this.fumaroleEventBus = fumaroleEventBus;
+//     this.dragonsmouthOutlet = dragonsmouthOutlet;
+//     this.commitInterval = commitInterval;
+//     this.gcInterval = gcInterval;
+//     this.maxConcurrentDownload = maxConcurrentDownload;
+//     this.downloadTasks = new Map();
+//     this.lastCommit = Date.now() / 1000; // seconds since epoch; to match python syntax
+//   }
 
-  private buildPollHistoryCmd(fromOffset?: FumeOffset): ControlCommand {
-    // Build a command to poll the blockchain history
-    return {
-      pollHist: {
-        shardId: 0,
-        limit: undefined,
-      },
-    };
-  }
+//   private buildPollHistoryCmd(fromOffset?: FumeOffset): ControlCommand {
+//     // Build a command to poll the blockchain history
+//     return {
+//       pollHist: {
+//         shardId: 0,
+//         limit: undefined,
+//       },
+//     };
+//   }
 
-  private buildCommitOffsetCmd(offset: FumeOffset): ControlCommand {
-    return {
-      commitOffset: {
-        offset,
-        shardId: 0,
-      },
-    };
-  }
+//   private buildCommitOffsetCmd(offset: FumeOffset): ControlCommand {
+//     return {
+//       commitOffset: {
+//         offset,
+//         shardId: 0,
+//       },
+//     };
+//   }
 
-  private handleControlResponse(controlResponse: ControlResponse): void {
-    // Determine which oneof field is set
-    if (controlResponse.pollHist) {
-      const pollHist = controlResponse.pollHist;
-      console.log(`Received poll history ${pollHist.events.length} events`);
-      this.stateMachine.queueBlockchainEvent(pollHist.events);
-    } else if (controlResponse.commitOffset) {
-      const commitOffset = controlResponse.commitOffset;
-      console.log(`Received commit offset: ${JSON.stringify(commitOffset)}`);
-      this.stateMachine.updateCommittedOffset(commitOffset.offset);
-    } else if (controlResponse.pong) {
-      console.log("Received pong");
-    } else {
-      throw new Error("Unexpected control response");
-    }
-  }
+//   private handleControlResponse(controlResponse: ControlResponse): void {
+//     // Determine which oneof field is set
+//     if (controlResponse.pollHist) {
+//       const pollHist = controlResponse.pollHist;
+//       console.log(`Received poll history ${pollHist.events.length} events`);
+//       this.stateMachine.queueBlockchainEvent(pollHist.events);
+//     } else if (controlResponse.commitOffset) {
+//       const commitOffset = controlResponse.commitOffset;
+//       console.log(`Received commit offset: ${JSON.stringify(commitOffset)}`);
+//       this.stateMachine.updateCommittedOffset(commitOffset.offset);
+//     } else if (controlResponse.pong) {
+//       console.log("Received pong");
+//     } else {
+//       throw new Error("Unexpected control response");
+//     }
+//   }
 
-  public get commitmentLevel(): CommitmentLevel | undefined {
-    return this.subscribeRequest.commitment;
-  }
+//   public get commitmentLevel(): CommitmentLevel | undefined {
+//     return this.subscribeRequest.commitment;
+//   }
 
-  public async pollHistoryIfNeeded(): Promise<void> {
-    // Poll the history if the state machine needs new events.
-    if (this.stateMachine.needNewBlockchainEvents()) {
-      const cmd = this.buildPollHistoryCmd(
-        this.stateMachine.committableOffset
-      );
-      // await this.controlPlaneObserver.next(cmd);
-    }
-  }
+//   public async pollHistoryIfNeeded(): Promise<void> {
+//     // Poll the history if the state machine needs new events.
+//     if (this.stateMachine.needNewBlockchainEvents()) {
+//       const cmd = this.buildPollHistoryCmd(
+//         this.stateMachine.committableOffset
+//       );
+//       // await this.controlPlaneObserver.next(cmd);
+//     }
+//   }
 
-  private scheduleDownloadTaskIfAny(): void {
-    while (true) {
-      console.log("Checking for download tasks to schedule");
+//   private scheduleDownloadTaskIfAny(): void {
+//     while (true) {
+//       console.log("Checking for download tasks to schedule");
 
-      if (this.downloadTasks.size >= this.maxConcurrentDownload) {
-        break;
-      }
+//       if (this.downloadTasks.size >= this.maxConcurrentDownload) {
+//         break;
+//       }
 
-      console.log("Popping slot to download");
-      const downloadRequest = this.stateMachine.popSlotToDownload(
-        this.commitmentLevel
-      );
-      if (!downloadRequest) {
-        console.log("No download request available");
-        break;
-      }
+//       console.log("Popping slot to download");
+//       const downloadRequest = this.stateMachine.popSlotToDownload(
+//         this.commitmentLevel
+//       );
+//       if (!downloadRequest) {
+//         console.log("No download request available");
+//         break;
+//       }
 
-      console.log(`Download request for slot ${downloadRequest.slot} popped`);
-      if (!downloadRequest.blockchainId) {
-        throw new Error("Download request must have a blockchain ID");
-      }
+//       console.log(`Download request for slot ${downloadRequest.slot} popped`);
+//       if (!downloadRequest.blockchainId) {
+//         throw new Error("Download request must have a blockchain ID");
+//       }
 
-      const downloadTaskArgs: DownloadTaskArgs = {
-        downloadRequest,
-        subscribeRequest: this.subscribeRequest,
-      };
+//       const downloadTaskArgs: DownloadTaskArgs = {
+//         downloadRequest,
+//         subscribeRequest: this.subscribeRequest,
+//       };
 
-      // In TS, calling async fn returns a Promise (like create_task)
-      const downloadTask = this.slotDownloader.runDownload(
-        this.subscribeRequest,
-        downloadTaskArgs
-      );
+//       // In TS, calling async fn returns a Promise (like create_task)
+//       const downloadTask = this.slotDownloader.runDownload(
+//         this.subscribeRequest,
+//         downloadTaskArgs
+//       );
 
-      // Track the promise alongside the request
-      this.downloadTasks.set(downloadTask, downloadRequest);
+//       // Track the promise alongside the request
+//       this.downloadTasks.set(downloadTask, downloadRequest);
 
-      console.log(
-        `Scheduling download task for slot ${downloadRequest.slot}`
-      );
-    }
-  }
+//       console.log(
+//         `Scheduling download task for slot ${downloadRequest.slot}`
+//       );
+//     }
+//   }
 
-  private handleDownloadResult(downloadResult: DownloadTaskResult): void {
-    /** Handles the result of a download task. */
-    if (downloadResult.kind === "Ok") {
-      const completed = downloadResult.completed!;
-      console.log(
-        `Download completed for slot ${completed.slot}, shard ${completed.shardIdx}, ${completed.totalEventDownloaded} total events`
-      );
+//   private handleDownloadResult(downloadResult: DownloadTaskResult): void {
+//     /** Handles the result of a download task. */
+//     if (downloadResult.kind === "Ok") {
+//       const completed = downloadResult.completed!;
+//       console.log(
+//         `Download completed for slot ${completed.slot}, shard ${completed.shardIdx}, ${completed.totalEventDownloaded} total events`
+//       );
 
-      this.stateMachine.makeSlotDownloadProgress(
-        completed.slot,
-        completed.shardIdx
-      );
-    } else {
-      const slot = downloadResult.slot;
-      const err = downloadResult.err;
-      throw new Error(`Failed to download slot ${slot}: ${err!.message}`);
-    }
-  }
+//       this.stateMachine.makeSlotDownloadProgress(
+//         completed.slot,
+//         completed.shardIdx
+//       );
+//     } else {
+//       const slot = downloadResult.slot;
+//       const err = downloadResult.err;
+//       throw new Error(`Failed to download slot ${slot}: ${err!.message}`);
+//     }
+//   }
 
-  private async forceCommitOffset(): Promise<void> {
-    console.log(
-      `Force committing offset ${this.stateMachine.committableOffset}`
-    );
+//   private async forceCommitOffset(): Promise<void> {
+//     console.log(
+//       `Force committing offset ${this.stateMachine.committableOffset}`
+//     );
 
-    // await this.controlPlaneObserver.next(
-    //   this.buildCommitOffsetCmd(this.stateMachine.committableOffset)
-    // );
-  }
+//     // await this.controlPlaneObserver.next(
+//     //   this.buildCommitOffsetCmd(this.stateMachine.committableOffset)
+//     // );
+//   }
 
-  private async commitOffset(): Promise<void> {
-    if (
-      this.stateMachine.lastCommittedOffset <
-      this.stateMachine.committableOffset
-    ) {
-      console.log(
-        `Committing offset ${this.stateMachine.committableOffset}`
-      );
-      await this.forceCommitOffset();
-    }
-    this.lastCommit = Date.now() / 1000; // seconds since epoch; to match python syntax
-  }
+//   private async commitOffset(): Promise<void> {
+//     if (
+//       this.stateMachine.lastCommittedOffset <
+//       this.stateMachine.committableOffset
+//     ) {
+//       console.log(
+//         `Committing offset ${this.stateMachine.committableOffset}`
+//       );
+//       await this.forceCommitOffset();
+//     }
+//     this.lastCommit = Date.now() / 1000; // seconds since epoch; to match python syntax
+//   }
 
-  private async drainSlotStatus(): Promise<void> {
-    const commitment = this.subscribeRequest.commitment;
-    const slotStatusVec: FumeSlotStatus[] = [];
+//   private async drainSlotStatus(): Promise<void> {
+//     const commitment = this.subscribeRequest.commitment;
+//     const slotStatusVec: FumeSlotStatus[] = [];
 
-    let slotStatus: FumeSlotStatus | null;
-    while ((slotStatus = this.stateMachine.popNextSlotStatus())) {
-      slotStatusVec.push(slotStatus);
-    }
+//     let slotStatus: FumeSlotStatus | null;
+//     while ((slotStatus = this.stateMachine.popNextSlotStatus())) {
+//       slotStatusVec.push(slotStatus);
+//     }
 
-    if (slotStatusVec.length === 0) {
-      return;
-    }
+//     if (slotStatusVec.length === 0) {
+//       return;
+//     }
 
-    console.log(`Draining ${slotStatusVec.length} slot status`);
+//     console.log(`Draining ${slotStatusVec.length} slot status`);
 
-    for (const slotStatus of slotStatusVec) {
-      const matchedFilters: string[] = [];
+//     for (const slotStatus of slotStatusVec) {
+//       const matchedFilters: string[] = [];
 
-      for (const [filterName, filter] of Object.entries(
-        this.subscribeRequest.slots
-      )) {
-        if (
-          filter.filterByCommitment &&
-          slotStatus.commitmentLevel === commitment
-        ) {
-          matchedFilters.push(filterName);
-        } else if (!filter.filterByCommitment) {
-          matchedFilters.push(filterName);
-        }
-      }
+//       for (const [filterName, filter] of Object.entries(
+//         this.subscribeRequest.slots
+//       )) {
+//         if (
+//           filter.filterByCommitment &&
+//           slotStatus.commitmentLevel === commitment
+//         ) {
+//           matchedFilters.push(filterName);
+//         } else if (!filter.filterByCommitment) {
+//           matchedFilters.push(filterName);
+//         }
+//       }
 
-      if (matchedFilters.length > 0) {
-        const update: SubscribeUpdate = {
-          filters: matchedFilters,
-          createdAt: undefined,
-          slot: {
-            slot: slotStatus.slot,
-            parent: slotStatus.parentSlot,
-            status: slotStatus.commitmentLevel as number as SlotStatus,
-            deadError: slotStatus.deadError,
-          },
-        };
+//       if (matchedFilters.length > 0) {
+//         const update: SubscribeUpdate = {
+//           filters: matchedFilters,
+//           createdAt: undefined,
+//           slot: {
+//             slot: slotStatus.slot,
+//             parent: slotStatus.parentSlot,
+//             status: slotStatus.commitmentLevel as number as SlotStatus,
+//             deadError: slotStatus.deadError,
+//           },
+//         };
 
-        try {
-          this.dragonsmouthOutlet.next(update);
-        } catch (err) {
-          // TODO make proper error types
-          if (err === "Queue full") {
-            return;
-          }
-          throw err;
-        }
-      }
+//         try {
+//           this.dragonsmouthOutlet.next(update);
+//         } catch (err) {
+//           // TODO make proper error types
+//           if (err === "Queue full") {
+//             return;
+//           }
+//           throw err;
+//         }
+//       }
 
-      this.stateMachine.markEventAsProcessed(slotStatus.sessionSequence);
-    }
-  }
+//       this.stateMachine.markEventAsProcessed(slotStatus.sessionSequence);
+//     }
+//   }
 
-  private async handleControlPlaneResp(
-    result: ControlResponse | Error
-  ): Promise<boolean> {
-    if (result instanceof Error) {
-      await this.dragonsmouthOutlet.next(result);
-      return false;
-    }
+//   private async handleControlPlaneResp(
+//     result: ControlResponse | Error
+//   ): Promise<boolean> {
+//     if (result instanceof Error) {
+//       await this.dragonsmouthOutlet.next(result);
+//       return false;
+//     }
 
-    this.handleControlResponse(result);
-    return true;
-  }
+//     this.handleControlResponse(result);
+//     return true;
+//   }
 
-  public handleNewSubscribeRequest(subscribeRequest: SubscribeRequest) {
-    this.subscribeRequest = subscribeRequest;
-  }
+//   public handleNewSubscribeRequest(subscribeRequest: SubscribeRequest) {
+//     this.subscribeRequest = subscribeRequest;
+//   }
 
-  public async run() {
-    console.log("Fumarole runtime starting...");
+//   public async run() {
+//     console.log("Fumarole runtime starting...");
 
-    const mainBus = new Subject<RuntimeEvent>();
+//     const mainBus = new Subject<RuntimeEvent>();
 
-    const commitTick = interval(this.commitInterval).forEach(() => {
-      mainBus.next({ _kind: 'tick', value: {} });
-    });
+//     // while (pending.size > 0) {
+//     //   ticks += 1;
+//     //   console.log("Runtime loop tick");
 
-    // while (pending.size > 0) {
-    //   ticks += 1;
-    //   console.log("Runtime loop tick");
+//     //   if (ticks % this.gcInterval === 0) {
+//     //     console.log("Running garbage collection");
+//     //     this.stateMachine.gc();
+//     //     ticks = 0;
+//     //   }
 
-    //   if (ticks % this.gcInterval === 0) {
-    //     console.log("Running garbage collection");
-    //     this.stateMachine.gc();
-    //     ticks = 0;
-    //   }
+//     //   console.log("Polling history if needed");
+//     //   await this.pollHistoryIfNeeded();
 
-    //   console.log("Polling history if needed");
-    //   await this.pollHistoryIfNeeded();
+//     //   console.log("Scheduling download tasks if any");
+//     //   this.scheduleDownloadTaskIfAny();
+//     //   for (const [t] of this.downloadTasks.entries()) {
+//     //     pending.add(t);
+//     //     taskMap.set(t, "download_task");
+//     //   }
 
-    //   console.log("Scheduling download tasks if any");
-    //   this.scheduleDownloadTaskIfAny();
-    //   for (const [t] of this.downloadTasks.entries()) {
-    //     pending.add(t);
-    //     taskMap.set(t, "download_task");
-    //   }
+//     //   const downloadTaskInflight = this.downloadTasks.size;
+//     //   console.log(
+//     //     `Current download tasks in flight: ${downloadTaskInflight} / ${this.maxConcurrentDownload}`
+//     //   );
 
-    //   const downloadTaskInflight = this.downloadTasks.size;
-    //   console.log(
-    //     `Current download tasks in flight: ${downloadTaskInflight} / ${this.maxConcurrentDownload}`
-    //   );
+//     //   // Wait for at least one task to finish
+//     //   console.log("UP UP");
+//     //   // const { done, pending: newPending } = await Promise.race(pending);
+//     //   const { done, pending: newPending } = await waitFirstCompleted(Array.from(pending));
+//     //   console.log("DOWN DOWN");
+//     //   pending = new Set(newPending);
 
-    //   // Wait for at least one task to finish
-    //   console.log("UP UP");
-    //   // const { done, pending: newPending } = await Promise.race(pending);
-    //   const { done, pending: newPending } = await waitFirstCompleted(Array.from(pending));
-    //   console.log("DOWN DOWN");
-    //   pending = new Set(newPending);
+//     //   for (const t of done) {
+//     //     const result = await t;
+//     //     const name = taskMap.get(t)!;
+//     //     taskMap.delete(t);
 
-    //   for (const t of done) {
-    //     const result = await t;
-    //     const name = taskMap.get(t)!;
-    //     taskMap.delete(t);
+//     //     switch (name) {
+//     //       case "dragonsmouth_bidi":
+//     //         console.log("Dragonsmouth subscribe request received");
+//     //         this.handleNewSubscribeRequest(result);
+//     //         const newTask1 = this.subscribeRequestUpdateQueue.get();
+//     //         taskMap.set(newTask1, "dragonsmouth_bidi");
+//     //         pending.add(newTask1);
+//     //         break;
 
-    //     switch (name) {
-    //       case "dragonsmouth_bidi":
-    //         console.log("Dragonsmouth subscribe request received");
-    //         this.handleNewSubscribeRequest(result);
-    //         const newTask1 = this.subscribeRequestUpdateQueue.get();
-    //         taskMap.set(newTask1, "dragonsmouth_bidi");
-    //         pending.add(newTask1);
-    //         break;
+//     //       case "control_plane_rx":
+//     //         console.log("Control plane response received");
+//     //         if (!(await this.handleControlPlaneResp(result))) {
+//     //           console.log("Control plane error");
+//     //           return;
+//     //         }
+//     //         const newTask2 = this.controlPlaneReceiveQueue.get();
+//     //         taskMap.set(newTask2, "control_plane_rx");
+//     //         pending.add(newTask2);
+//     //         break;
 
-    //       case "control_plane_rx":
-    //         console.log("Control plane response received");
-    //         if (!(await this.handleControlPlaneResp(result))) {
-    //           console.log("Control plane error");
-    //           return;
-    //         }
-    //         const newTask2 = this.controlPlaneReceiveQueue.get();
-    //         taskMap.set(newTask2, "control_plane_rx");
-    //         pending.add(newTask2);
-    //         break;
+//     //       case "download_task":
+//     //         console.log("Download task result received");
+//     //         this.downloadTasks.delete(t);
+//     //         this.handleDownloadResult(result);
+//     //         break;
 
-    //       case "download_task":
-    //         console.log("Download task result received");
-    //         this.downloadTasks.delete(t);
-    //         this.handleDownloadResult(result);
-    //         break;
+//     //       case "commit_tick":
+//     //         console.log("Commit tick reached");
+//     //         await this.commitOffset();
+//     //         const newTask3 = new Interval(this.commitInterval).tick();
+//     //         taskMap.set(newTask3, "commit_tick");
+//     //         pending.add(newTask3);
+//     //         break;
 
-    //       case "commit_tick":
-    //         console.log("Commit tick reached");
-    //         await this.commitOffset();
-    //         const newTask3 = new Interval(this.commitInterval).tick();
-    //         taskMap.set(newTask3, "commit_tick");
-    //         pending.add(newTask3);
-    //         break;
+//     //       default:
+//     //         throw new Error(`Unexpected task name: ${name}`);
+//     //     }
+//     //   }
 
-    //       default:
-    //         throw new Error(`Unexpected task name: ${name}`);
-    //     }
-    //   }
+//     //   await this.drainSlotStatus();
+//     // }
 
-    //   await this.drainSlotStatus();
-    // }
-
-    console.log("Fumarole runtime exiting");
-  }
-}
+//     console.log("Fumarole runtime exiting");
+//   }
+// }
 
 
-
-type FumaroleRuntimeArgs = {
-  download_task_observer: Observer<DownloadTaskArgs>,
-  control_plane_observer: Observer<ControlCommand>,
-  dragonsmouth_observer: Observer<SubscribeUpdate>,
+/**
+ * Arguments for creating a Fumarole runtime.
+ */
+export type FumaroleRuntimeArgs = {
+  downloadTaskObserver: Observer<DownloadTaskArgs>,
+  downloadTaskResultObservable: Observable<DownloadTaskResult>,
+  controlPlaneObserver: Observer<ControlCommand>,
+  controlPlaneResponseObservable: Observable<ControlResponse>,
   sm: FumaroleSM,
-  download_task_result_observable: Observable<DownloadTaskResult>,
+  commitIntervalMillis: number,
+  maxConcurrentDownload: number
+  initialSubscribeRequest: SubscribeRequest,
 }
 
 
-
+/**
+ * Execution context for the Fumarole runtime.
+ */
 type FumaroleRuntimeCtx = {
+  /**
+   * Current tick count for the runtime.
+   */
+  currentTick: number,
+  /**
+   * State machine for managing the runtime's state.
+   */
   sm: FumaroleSM,
-  commitInterval: number; // in seconds
+  /**
+   * How many loop-tick interval before running runtime's GC routine.
+   */
   gcInterval: number;
+  /**
+   * Maximum number of concurrent in-flight download tasks
+   * 
+   * `inflight_downloads` should never exceed this number
+   */
   maxConcurrentDownload: number;
+  /**
+   * Time since epoch in milliseconds since last commit attempt has been made.
+   */
   lastCommit: number;
-  inflight_downloads: Map<Slot, FumeDownloadRequest>,
+  /**
+   * In-flight download requests
+   */
+  inflightDownloads: Map<Slot, DownloadTaskArgs>,
+  /**
+   * Current subscribe request to apply during slot download.
+   */
   subscribeRequest: SubscribeRequest,
+  /**
+   * Observer for control plane commands.
+   */
+  controlPlaneObserver: Observer<ControlCommand>,
+
+  /**
+   * Observer for download task results.
+   */
+  downloadTaskObserver: Observer<DownloadTaskArgs>
+
+  /**
+   * Observer for dragonsmouth subscribe updates.
+   */
+  dragonsmouthOutlet: Observer<SubscribeUpdate>,
 }
 
 
@@ -490,35 +530,243 @@ function onDownloadCompleted(this: FumaroleRuntimeCtx, result: DownloadTaskResul
   }
 }
 
+function commitOffsetIfRequired(
+  this: FumaroleRuntimeCtx
+) {
+  if (this.sm.lastCommittedOffset < this.sm.committableOffset) {
+    console.log(
+      `Committing offset ${this.sm.committableOffset}`
+    );
+    this.controlPlaneObserver.next(
+      {
+        commitOffset: {
+          offset: this.sm.committableOffset,
+          shardId: 0,
+        }
+      }
+    )
+  }
+  this.lastCommit = Date.now();
+}
+
+
 function onSubscribeRequestUpdate(this: FumaroleRuntimeCtx, update: SubscribeRequestUpdate) { 
   this.subscribeRequest = update.new_subscribe_request;
 }
 
-function runtime_next(this: FumaroleRuntimeCtx, ev: RuntimeEvent) {
+
+
+function ctxCommitmentLevel(ctx: FumaroleRuntimeCtx): CommitmentLevel {
+  return ctx.subscribeRequest.commitment ?? CommitmentLevel.PROCESSED
+}
+
+function scheduleDownloadTaskIfAny(
+  this: FumaroleRuntimeCtx,
+) {
+  while (true) {
+    console.log("Checking for download tasks to schedule");
+
+    if (this.inflightDownloads.size >= this.maxConcurrentDownload) {
+      break;
+    }
+
+    console.log("Popping slot to download");
+    const downloadRequest = this.sm.popSlotToDownload(
+      ctxCommitmentLevel(this)
+    );
+    if (!downloadRequest) {
+      console.log("No download request available");
+      break;
+    }
+
+    console.log(`Download request for slot ${downloadRequest.slot} popped`);
+    if (!downloadRequest.blockchainId) {
+      throw new Error("Download request must have a blockchain ID");
+    }
+
+    const downloadTaskArgs: DownloadTaskArgs = {
+      downloadRequest,
+      subscribeRequest: this.subscribeRequest,
+    };
+
+    // Track the promise alongside the request
+    this.inflightDownloads.set(downloadRequest.slot, downloadTaskArgs);
+
+    this.downloadTaskObserver.next(downloadTaskArgs);
+
+    console.log(
+      `Scheduling download task for slot ${downloadRequest.slot}`
+    );
+  }
+}
+
+function pollHistoryIfNeeded(
+  this: FumaroleRuntimeCtx
+) {
+  // Poll the history if the state machine needs new events.
+  if (this.sm.needNewBlockchainEvents()) {
+    const cmd = {
+      pollHist: {
+        shardId: 0,
+        limit: undefined,
+      },
+    };
+    this.controlPlaneObserver.next(cmd);
+  }
+}
+
+function drainSlotStatusIfAny(
+  this: FumaroleRuntimeCtx
+) {
+  const commitment = ctxCommitmentLevel(this);
+  const slotStatusVec: FumeSlotStatus[] = [];
+
+  let slotStatus: FumeSlotStatus | null;
+  while ((slotStatus = this.sm.popNextSlotStatus())) {
+    slotStatusVec.push(slotStatus);
+  }
+
+  if (slotStatusVec.length === 0) {
+    return;
+  }
+
+  console.log(`Draining ${slotStatusVec.length} slot status`);
+
+  for (const slotStatus of slotStatusVec) {
+    const matchedFilters: string[] = [];
+
+    for (const [filterName, filter] of Object.entries(
+      this.subscribeRequest.slots
+    )) {
+      if (
+        filter.filterByCommitment &&
+        slotStatus.commitmentLevel === commitment
+      ) {
+        matchedFilters.push(filterName);
+      } else if (!filter.filterByCommitment) {
+        matchedFilters.push(filterName);
+      }
+    }
+
+    if (matchedFilters.length > 0) {
+      const update: SubscribeUpdate = {
+        filters: matchedFilters,
+        createdAt: undefined,
+        slot: {
+          slot: slotStatus.slot,
+          parent: slotStatus.parentSlot,
+          status: slotStatus.commitmentLevel as number as SlotStatus,
+          deadError: slotStatus.deadError,
+        },
+      };
+
+      try {
+        this.dragonsmouthOutlet.next(update);
+      } catch (err) {
+        // TODO make proper error types
+        if (err === "Queue full") {
+          return;
+        }
+        throw err;
+      }
+    }
+
+    this.sm.markEventAsProcessed(slotStatus.sessionSequence);
+  }
+
+}
+
+function runtime_observer(this: FumaroleRuntimeCtx, ev: RuntimeEvent) {
+  this.currentTick += 1;
+
   switch (ev._kind) {
     case 'tick':
+      commitOffsetIfRequired.call(this);
       return;
     case 'subscribe_request_update':
       onSubscribeRequestUpdate.call(this, ev.subscribe_request_update);
+      break;
     case 'download_completed':
       onDownloadCompleted.call(this, ev.download_completed);
+      break;
     case 'control_plane_response':
       onControlPlaneResponse.call(this, ev.control_plane_response);
+      break;
   }
-}
+  scheduleDownloadTaskIfAny.call(this);
+  pollHistoryIfNeeded.call(this);
+  drainSlotStatusIfAny.call(this);
 
+  if (this.currentTick % this.gcInterval === 0) {
+    this.sm.gc();
+  }
+} 
 
-export function runtimeObserverFactory(args: FumaroleRuntimeArgs): Observer<RuntimeEvent> {
+/**
+ * Creates an observable for the fumarole runtime.
+ * 
+ * @param args The arguments for the fumarole runtime.
+ * @returns An observable that emits subscribe updates.
+ */
+export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<SubscribeUpdate> {
   const {
-    download_task_observer,
-    control_plane_observer,
-    dragonsmouth_observer,
+    downloadTaskObserver,
+    controlPlaneObserver,
+    downloadTaskResultObservable,
+    controlPlaneResponseObservable,
+    commitIntervalMillis,
     sm,
-    download_task_result_observable,
+    maxConcurrentDownload,
+    initialSubscribeRequest,
   } = args;
 
-  return {
+  // Defer all the stitching to wait at least one subscription otherwise we could lose event.
+  return defer(() => {
+    const outlet = new Subject<SubscribeUpdate>();
 
-  }
+    // Main bus will handle all runtime events
+    const fumaroleMainBus = new Subject<RuntimeEvent>();
+
+    // Plug download task result to the main bus
+    downloadTaskResultObservable
+    .pipe(
+      map((result) => {
+        return { _kind: 'download_completed', download_completed: result } as RuntimeEvent;
+      })
+    )
+    .subscribe(fumaroleMainBus);
+
+    // Plug ticker
+    interval(commitIntervalMillis).pipe(
+      map((_) => {
+        return { _kind: 'tick' } as RuntimeEvent;
+      })
+    ).subscribe(fumaroleMainBus);
+
+    // Plug control plane response
+    controlPlaneResponseObservable
+      .subscribe((response) => {
+        fumaroleMainBus.next({ _kind: 'control_plane_response', control_plane_response: response });
+      });
+
+
+    const ctx: FumaroleRuntimeCtx = {
+      currentTick: 0,
+      sm,
+      gcInterval: 1000,
+      maxConcurrentDownload,
+      lastCommit: Date.now(),
+      inflightDownloads: new Map(),
+      subscribeRequest: initialSubscribeRequest,
+      controlPlaneObserver,
+      downloadTaskObserver,
+      dragonsmouthOutlet: outlet,
+    };  
+
+    const runtimeObserver = runtime_observer.bind(ctx);
+
+    fumaroleMainBus.subscribe(runtimeObserver);
+
+    return outlet.asObservable();
+  });
 }
-

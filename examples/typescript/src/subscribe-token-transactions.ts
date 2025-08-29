@@ -108,23 +108,24 @@ async function main() {
 
     console.log(`Starting subscription for group ${groupName}...`);
 
-    let subscription: DragonsmouthAdapterSession;
-
-    subscription = await client.dragonsmouthSubscribeWithConfig(
+    const session = await client.dragonsmouthSubscribeWithConfig(
       groupName,
       request,
       subscribeConfig,
-      FUMAROLE_X_TOKEN
     );
 
-    const { sink, source, fumaroleHandle } = subscription;
+    session.startWith(async (next) => {
 
-    // await fumaroleHandle;
+    })
 
-    fumaroleHandle.catch((e) => {
-      console.log("caught in fumarole handle");
-      console.log(e);
-    });
+    // const { sink, source, fumaroleHandle } = subscription;
+
+    // // await fumaroleHandle;
+
+    // fumaroleHandle.catch((e) => {
+    //   console.log("caught in fumarole handle");
+    //   console.log(e);
+    // });
 
     // Handle fumarole connection closure in background
     fumaroleHandle.then((res) => {
