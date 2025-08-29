@@ -376,7 +376,7 @@ export class FumaroleSM {
   needNewBlockchainEvents(): boolean {
     const MINIMUM_UNPROCESSED_BLOCKCHAIN_EVENT = 10;
     return this.unprocessedBlockchainEvent.size() < MINIMUM_UNPROCESSED_BLOCKCHAIN_EVENT || (
-      this.slotStatusUpdateQueue.size() === 0 ||
+      this.slotStatusUpdateQueue.size() === 0 &&
       this.blockedSlotStatusUpdate.size === 0
     )
   }
