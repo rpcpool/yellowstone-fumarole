@@ -496,6 +496,7 @@ type FumaroleRuntimeCtx = {
 
 
 function onControlPlaneResponse(this: FumaroleRuntimeCtx, resp: ControlResponse) {
+  console.debug("recv control plane resp");
   if (resp.pollHist) {
     const pollHist = resp.pollHist;
     console.log(`Received poll history ${pollHist.events.length} events`);
@@ -533,6 +534,7 @@ function onDownloadCompleted(this: FumaroleRuntimeCtx, result: DownloadTaskResul
 function commitOffsetIfRequired(
   this: FumaroleRuntimeCtx
 ) {
+  console.debug("Checking if commit is required");
   if (this.sm.lastCommittedOffset < this.sm.committableOffset) {
     console.log(
       `Committing offset ${this.sm.committableOffset}`
@@ -550,7 +552,8 @@ function commitOffsetIfRequired(
 }
 
 
-function onSubscribeRequestUpdate(this: FumaroleRuntimeCtx, update: SubscribeRequestUpdate) { 
+function onSubscribeRequestUpdate(this: FumaroleRuntimeCtx, update: SubscribeRequestUpdate) {
+  console.debug("New subscribe request update");
   this.subscribeRequest = update.new_subscribe_request;
 }
 
@@ -611,6 +614,7 @@ function pollHistoryIfNeeded(
         limit: undefined,
       },
     };
+    console.debug("Polling history");
     this.controlPlaneObserver.next(cmd);
   }
 }
@@ -659,16 +663,7 @@ function drainSlotStatusIfAny(
           deadError: slotStatus.deadError,
         },
       };
-
-      try {
-        this.dragonsmouthOutlet.next(update);
-      } catch (err) {
-        // TODO make proper error types
-        if (err === "Queue full") {
-          return;
-        }
-        throw err;
-      }
+      this.dragonsmouthOutlet.next(update);
     }
 
     this.sm.markEventAsProcessed(slotStatus.sessionSequence);
@@ -681,6 +676,7 @@ function runtime_observer(this: FumaroleRuntimeCtx, ev: RuntimeEvent) {
 
   switch (ev._kind) {
     case 'tick':
+      console.debug("Received tick event");
       commitOffsetIfRequired.call(this);
       return;
     case 'subscribe_request_update':
@@ -735,6 +731,7 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
       })
     )
     .subscribe(fumaroleMainBus);
+    console.debug("Plugged download task result");
 
     // Plug ticker
     interval(commitIntervalMillis).pipe(
@@ -742,13 +739,14 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
         return { _kind: 'tick' } as RuntimeEvent;
       })
     ).subscribe(fumaroleMainBus);
+    console.debug("Plugged ticker");
 
     // Plug control plane response
     controlPlaneResponseObservable
       .subscribe((response) => {
         fumaroleMainBus.next({ _kind: 'control_plane_response', control_plane_response: response });
       });
-
+    console.debug("Plugged control plane response");
 
     const ctx: FumaroleRuntimeCtx = {
       currentTick: 0,
@@ -766,6 +764,7 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
     const runtimeObserver = runtime_observer.bind(ctx);
 
     fumaroleMainBus.subscribe(runtimeObserver);
+    console.debug("Plugged runtime observer");
 
     return outlet.asObservable();
   });

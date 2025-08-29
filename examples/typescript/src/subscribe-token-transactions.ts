@@ -8,6 +8,7 @@ import {
   InitialOffsetPolicy,
   SubscribeUpdate,
 } from "@triton-one/yellowstone-fumarole";
+import { Observable } from "rxjs";
 
 dotenv.config();
 
@@ -93,12 +94,11 @@ async function main() {
     }
 
     const subscribeConfig = {
-      concurrentDownloadLimit: 200,
-      commitInterval: 2000,
-      maxFailedSlotDownloadAttempt: 100,
-      dataChannelCapacity: 20000,
-      slotMemoryRetention: 300,
-      gcInterval: 30000,
+      concurrentDownloadLimit: 10,
+      commitInterval: 5000,
+      maxFailedSlotDownloadAttempt: 3,
+      slotMemoryRetention: 1000,
+      gcInterval: 1000,
     };
 
     console.log("Subscribe request:", safeJsonStringify(request));
@@ -108,46 +108,22 @@ async function main() {
 
     console.log(`Starting subscription for group ${groupName}...`);
 
-    const session = await client.dragonsmouthSubscribeWithConfig(
+    const observable: Observable<SubscribeUpdate> = await client.dragonsmouthSubscribeWithConfig(
       groupName,
       request,
       subscribeConfig,
     );
 
-    session.startWith(async (next) => {
-
-    })
-
-    // const { sink, source, fumaroleHandle } = subscription;
-
-    // // await fumaroleHandle;
-
-    // fumaroleHandle.catch((e) => {
-    //   console.log("caught in fumarole handle");
-    //   console.log(e);
-    // });
-
-    // Handle fumarole connection closure in background
-    fumaroleHandle.then((res) => {
-      console.error("Fumarole handle closed:", res);
+    observable.subscribe((next) => {
+      console.log("Received update:", safeJsonStringify(next));
     });
 
-    // while (true) {
-    // const up = await source.get()
-    // console.log("THE UPDATE");
-    // console.log(up);
+    // console.log("Subscription started. Listening for updates...");
+    // for await (const update of observable as any) {
+    //   console.log("Received update:", safeJsonStringify(update));
     // }
-    
-
-    // Consume async queue
-    for await (const event of source) {
-      console.log(JSON.stringify(event, null, 2));
-    }
-
-    console.error("Source closed");
   } catch (error) {
-    console.log("CATCH 2");
-    console.log(error);
+    console.error(error);
   }
 }
 

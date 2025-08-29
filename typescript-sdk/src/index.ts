@@ -36,7 +36,6 @@ import type {
   FumaroleSubscribeConfig,
 } from "./types";
 import {
-  DEFAULT_DRAGONSMOUTH_CAPACITY,
   DEFAULT_COMMIT_INTERVAL,
   DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT,
   DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
@@ -49,6 +48,7 @@ import { downloadSlotObserverFactory, GrpcSlotDownloader } from "./runtime/grpc-
 import { DownloadTaskArgs, DownloadTaskResult, fumaroleObservable, FumaroleRuntimeArgs, RuntimeEvent } from "./runtime/runtime";
 import { firstValueFrom, from, Observable, Observer, share, Subject } from "rxjs";
 import { createDeferred } from "./utils/promise";
+import { makeObservable } from "./utils/grpc_ext";
 
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
@@ -187,7 +187,7 @@ export class FumaroleClient {
         await defer.promise;
       });
 
-    const ctrlPlaneResponseObservable: Observable<ControlResponse> = from(fumeControlPlaneDuplex).pipe(share());
+    const ctrlPlaneResponseObservable: Observable<ControlResponse> = makeObservable(fumeControlPlaneDuplex);
     // Wait for initial response from control plane
     const controlResponsePromise: Promise<ControlResponse> = firstValueFrom(ctrlPlaneResponseObservable);
     controlPlaneCommandSubject.next(initialJoinCommand);
@@ -198,7 +198,7 @@ export class FumaroleClient {
     if (!init)
       throw new Error(`Unexpected initial response: ${controlResponse}`);
     console.log(`Control response:`, controlResponse);
-    
+    await firstValueFrom(ctrlPlaneResponseObservable);
     const lastCommittedOffset = init.lastCommittedOffsets[0];
     if (lastCommittedOffset == null)
       throw new Error("No last committed offset");
@@ -219,8 +219,6 @@ export class FumaroleClient {
     const grpcSlotDownloader: Observer<DownloadTaskArgs> = downloadSlotObserverFactory(
       grpcSlotDownloadCtx
     )
-    
-
     const runtimeArgs: FumaroleRuntimeArgs = {
       downloadTaskObserver: grpcSlotDownloader,
       downloadTaskResultObservable: downloadTaskResultSubject.asObservable(),
@@ -454,7 +452,6 @@ export {
   CommitmentLevel,
   SubscribeRequest,
   SubscribeUpdate,
-  DEFAULT_DRAGONSMOUTH_CAPACITY,
   DEFAULT_COMMIT_INTERVAL,
   DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT,
   DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
