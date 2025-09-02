@@ -1,12 +1,17 @@
 import { ClientReadableStream } from "@grpc/grpc-js";
 import { Observable, share } from "rxjs";
+import { LOGGER } from "../logging";
 
 
 
 export function makeObservable<T>(clientReadableStream: ClientReadableStream<T>): Observable<T> {
     return new Observable<T>((subscriber) => {
         clientReadableStream.on("data", (data: T) => {
-            subscriber.next(data);
+            try {
+                subscriber.next(data);
+            } catch(e) {
+                LOGGER.error(`makeObservable -- Error sending data to subscriber: ${e}`);
+            }
         });
 
         clientReadableStream.on("error", (err: Error) => {

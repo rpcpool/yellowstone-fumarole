@@ -27,7 +27,7 @@
  * @see https://rxjs.dev/guide/overview
  * 
  */
-import { defer, interval, map, Observable, Observer, Subject, Subscriber } from "rxjs";
+import { defer, finalize, interval, map, Observable, Observer, share, Subject, Subscriber } from "rxjs";
 import {
   ControlCommand,
   ControlResponse,
@@ -47,6 +47,7 @@ import {
 } from "./state-machine";
 import { Runtime } from "inspector/promises";
 import { LOGGER } from "../logging";
+import { subscribe } from "diagnostics_channel";
 
 export class CompletedDownloadBlockTask {
   constructor(
@@ -86,6 +87,7 @@ export type DownloadTaskArgs = {
   // todo: should be renamed slotDownloadInfo
   downloadRequest: FumeDownloadRequest,
   subscribeRequest: SubscribeRequest,
+  outlet: Observer<SubscribeUpdate>,
 }
 // ...existing code...
 export abstract class AsyncSlotDownloader {
@@ -123,7 +125,6 @@ export type FumaroleRuntimeArgs = {
   downloadTaskObserver: Observer<DownloadTaskArgs>,
   downloadTaskResultObservable: Observable<DownloadTaskResult>,
   controlPlaneObserver: Observer<ControlCommand>,
-  dragonsmouthOutlet: Subject<SubscribeUpdate>,
   controlPlaneResponseObservable: Observable<ControlResponse>,
   sm: FumaroleSM,
   commitIntervalMillis: number,
@@ -330,6 +331,7 @@ function scheduleDownloadTaskIfAny(
     const downloadTaskArgs: DownloadTaskArgs = {
       downloadRequest,
       subscribeRequest: this.subscribeRequest,
+      outlet: this.dragonsmouthOutlet,
     };
 
     // Track the promise alongside the request
@@ -424,7 +426,11 @@ function drainSlotStatusIfAny(
           deadError: slotStatus.deadError,
         },
       };
-      this.dragonsmouthOutlet.next(update);
+      try {
+        this.dragonsmouthOutlet.next(update);
+      } catch (e) {
+        LOGGER.error(`drainSlotStatusIfAny -- Error sending update to outlet: ${e}`);
+      } 
     }
 
     this.sm.markEventAsProcessed(slotStatus.sessionSequence);
@@ -489,7 +495,7 @@ function runtime_observer(this: FumaroleRuntimeCtx, ev: RuntimeEvent) {
  *                                                      │                        │               │                                                      
  * ┌───────────────┐               ┌────────────────────┴┐                ┌──────┴──────────┐    │      ┌───────────────┐          ┌───────────────────┐
  * │ ControlPlane  │               │ Fumarole Main Bus   ◄───(observe)────┤ runtimeObserver ├────┴────► │ Dragonsmouth  │  Observe │ User custom       │
- * │   Response  ◄─│───Subscribe───┤   Subject           │                │                 │           │    Subject    │◄─────────┼   Observer code   │
+ * │   Response  ◄─│───Subscribe───┤   Subject           │                │                 │           │    Observable │◄─────────┼   Observer code   │
  * │  Observable   │               └───       ──────────┬┘                └───────┬─────────┘           └──────▲────────┘          └───────────────────┘
  * └───────────────┘                                    │                         │                            │                                        
  *                                                    Observe                   (next)                         │                                        
@@ -509,7 +515,6 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
     downloadTaskObserver,
     controlPlaneObserver,
     downloadTaskResultObservable,
-    dragonsmouthOutlet,
     controlPlaneResponseObservable,
     commitIntervalMillis,
     sm,
@@ -517,13 +522,12 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
     initialSubscribeRequest,
   } = args;
 
-  // Defer all the stitching to wait at least one subscription otherwise we could lose event.
-  return defer(() => {
+  return new Observable<SubscribeUpdate>((subscriber) => {
     // Main bus will handle all runtime events
     const fumaroleMainBus = new Subject<RuntimeEvent>();
 
     // Plug download task result to the main bus
-    downloadTaskResultObservable
+    const downloadTaskResultSub = downloadTaskResultObservable
     .pipe(
       map((result) => {
         return { _kind: 'download_completed', download_completed: result } as RuntimeEvent;
@@ -533,7 +537,7 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
     LOGGER.debug("Plugged download task result");
 
     // Plug ticker
-    interval(commitIntervalMillis).pipe(
+    const tickSub = interval(commitIntervalMillis).pipe(
       map((_) => {
         return { _kind: 'tick' } as RuntimeEvent;
       })
@@ -541,7 +545,7 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
     LOGGER.debug("Plugged ticker");
 
     // Plug control plane response
-    controlPlaneResponseObservable
+    const ctrlPlaneResponseSub = controlPlaneResponseObservable
       .subscribe((response) => {
         fumaroleMainBus.next({ _kind: 'control_plane_response', control_plane_response: response });
       });
@@ -557,15 +561,23 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
       subscribeRequest: initialSubscribeRequest,
       controlPlaneObserver,
       downloadTaskObserver,
-      dragonsmouthOutlet,
+      dragonsmouthOutlet: subscriber,
       pollHistInflightFlag: false,
       commitOffsetInflightFlag: false,
     }; 
 
     const runtimeObserver = runtime_observer.bind(ctx);
 
-    fumaroleMainBus.subscribe(runtimeObserver);
+    const mainsub = fumaroleMainBus.subscribe(runtimeObserver);
     LOGGER.debug("Plugged runtime observer");
-    return dragonsmouthOutlet.asObservable();
-  });
+
+    return () => {
+      tickSub.unsubscribe();
+      ctrlPlaneResponseSub.unsubscribe();
+      downloadTaskResultSub.unsubscribe();
+      mainsub.unsubscribe();
+      controlPlaneObserver.complete();
+      downloadTaskObserver.complete();
+    };
+  }).pipe(share());
 }

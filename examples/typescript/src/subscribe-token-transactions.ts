@@ -38,7 +38,6 @@ async function main() {
   let client: FumaroleClient | undefined;
 
   try {
-    console.log(`Connecting to Fumarole server at ${FUMAROLE_ENDPOINT}...`);
     const config = {
       endpoint: FUMAROLE_ENDPOINT,
       xToken: FUMAROLE_X_TOKEN,
@@ -46,19 +45,22 @@ async function main() {
       xMetadata: {},
     };
 
-    console.log(
-      "Initializing Fumarole client with configuration:",
-      safeJsonStringify(Object.assign({}, config, { xToken: "***" }))
-    );
-
     client = await FumaroleClient.connect(config);
 
     const request: SubscribeRequest = {
       commitment: CommitmentLevel.CONFIRMED,
       accounts: { },
-      transactions: {},
+      transactions: {
+        token: {
+          accountInclude: [TOKEN_ADDRESS],
+          accountExclude: [],
+          accountRequired: [],
+        }
+      },
       slots: {
-        test: {}
+        test: {
+          filterByCommitment: true,
+        }
       },
       transactionsStatus: {},
       blocks: {},
@@ -107,19 +109,25 @@ async function main() {
       subscribeConfig,
     );
     console.log("Subscription started. Listening for updates...");
-    await observable.forEach((next) => {
-
-      if(next.transaction) {
-        console.log(`Received transaction update, slot: ${next.transaction.slot}`);
-      } else if (next.slot) {
-        console.log(`Received slot update, slot: ${next.slot.slot}`);
+    // Observable allow multiple subscription with shared event, no event copy.
+    const sub1 = observable.subscribe((next) => {
+      if (next.slot) {
+        console.log(`sub1 -- Received slot: ${next.slot?.slot}`)
       }
     });
 
-    // console.log("Subscription started. Listening for updates...");
-    // for await (const update of observable as any) {
-    //   console.log("Received update:", safeJsonStringify(update));
-    // }
+    const sub2 = observable.subscribe((next) => {
+      if (next.slot) {
+        console.log(`sub2 -- Received slot: ${next.slot?.slot}`)
+      }
+    });
+
+    const deadline =  2000;
+    console.log(`collecting data for ${deadline} millis...`)
+    await new Promise((resolve) => setTimeout(resolve, deadline));
+    sub1.unsubscribe();
+    sub2.unsubscribe();
+    console.log("finished!")
   } catch (error) {
     console.error(error);
   }
@@ -139,4 +147,12 @@ process.on("unhandledRejection", (reason, promise) => {
   console.error("Unhandled Rejection at:", promise, "reason:", reason);
 });
 
-main().catch(console.error);
+main()
+  // .then(() => {
+  //   console.log("Fumarole client initialized successfully");
+  //   process.exit(0);
+  // })
+  .catch(err => {
+    console.error(err);
+    process.exit(1)
+  });

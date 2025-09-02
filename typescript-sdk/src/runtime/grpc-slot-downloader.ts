@@ -50,10 +50,6 @@ export type GrpcSlotDownloader = {
    */
   client_metadata: Metadata,
   /**
-   * The outlet for dragonsmouth updates.
-   */
-  dragonsmouthOutlet: Observer<SubscribeUpdate>,
-  /**
    * Observer to send download task results too.
    */
   downloadTaskResultObserver: Observer<DownloadTaskResult>,
@@ -77,12 +73,13 @@ function do_download(
     shardIdx: 0,
     blockFilters: blockFilters,
   };
+  const outlet = args.outlet;
   const downloadResponse: ClientReadableStream<DataResponse> = this.client.downloadBlock(request, this.client_metadata);
   let totalEventDownloaded = 0;
   downloadResponse.on("data", (data: DataResponse) => {
     if (data.update) {
       totalEventDownloaded++;
-      this.dragonsmouthOutlet.next(data.update);
+      outlet.next(data.update);
     } else if (data.blockShardDownloadFinish) {
       LOGGER.info(`Finished download for slot ${args.downloadRequest.slot}, total events downloaded: ${totalEventDownloaded}`);
       this.downloadTaskResultObserver.next({
@@ -127,7 +124,10 @@ export function downloadSlotObserverFactory(
     },
     error: (err: Error) => {
       LOGGER.error(err);
+      ctx.client.close();
     },
-    complete: () => { }
+    complete: () => {
+      ctx.client.close();
+    }
   };
 }

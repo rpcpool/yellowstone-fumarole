@@ -7,7 +7,6 @@ export let LOGGER: winston.Logger = winston.createLogger({
     transports: [new winston.transports.Console()],
 });
 
-
 function getDefaultLogger() {
     return {
         level: process.env.FUMAROLE_CLIENT_LOG_LEVEL || 'error',

@@ -9,7 +9,6 @@ import { FumaroleConfig } from "./config/config";
 import { FumaroleClient as GrpcClient } from "./grpc/fumarole";
 import { FumaroleGrpcConnector } from "./connectivity";
 import { LOGGER, setCustomLogger, setDefaultLogger } from "./logging";
-const X_TOKEN_HEADER = "x-token";
 import {
   VersionRequest,
   VersionResponse,
@@ -31,24 +30,46 @@ import {
   SubscribeUpdate,
   CommitmentLevel,
 } from "./grpc/geyser";
-import type {
-  DragonsmouthAdapterSession,
-  FumaroleSubscribeConfig,
-} from "./types";
-import {
-  DEFAULT_COMMIT_INTERVAL,
-  DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT,
-  DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
-  DEFAULT_GC_INTERVAL,
-  DEFAULT_SLOT_MEMORY_RETENTION,
-  getDefaultFumaroleSubscribeConfig,
-} from "./types";
 import { FumaroleSM } from "./runtime/state-machine";
 import { downloadSlotObserverFactory, GrpcSlotDownloader } from "./runtime/grpc-slot-downloader";
 import { DownloadTaskArgs, DownloadTaskResult, fumaroleObservable, FumaroleRuntimeArgs, RuntimeEvent } from "./runtime/reactive_runtime";
-import { firstValueFrom, from, Observable, Observer, share, Subject } from "rxjs";
-import { createDeferred } from "./utils/promise";
+import { finalize, firstValueFrom, from, Observable, Observer, share, Subject } from "rxjs";
 import { makeObservable } from "./utils/grpc_ext";
+export interface FumaroleSubscribeConfig {
+  concurrentDownloadLimit: number;
+  commitInterval: number;
+  maxFailedSlotDownloadAttempt: number;
+  gcInterval: number;
+  slotMemoryRetention: number;
+}
+
+// Constants
+export const DEFAULT_COMMIT_INTERVAL = 5000; // milliseconds
+export const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT = 3;
+export const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP = 10;
+export const DEFAULT_GC_INTERVAL = 100; // ticks
+export const DEFAULT_SLOT_MEMORY_RETENTION = 1000; // seconds
+
+export function getDefaultFumaroleSubscribeConfig(): FumaroleSubscribeConfig {
+  return {
+    concurrentDownloadLimit: DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
+    commitInterval: DEFAULT_COMMIT_INTERVAL,
+    maxFailedSlotDownloadAttempt: DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT,
+    gcInterval: DEFAULT_GC_INTERVAL,
+    slotMemoryRetention: DEFAULT_SLOT_MEMORY_RETENTION
+  };
+}
+
+export interface DragonsmouthAdapterSession {
+  /** Queue for sending subscribe requests */
+  sink: Observer<SubscribeRequest>;
+  /** Queue for receiving subscription updates */
+  source: Observable<SubscribeUpdate | Error>;
+}
+
+
+
+
 
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
@@ -146,6 +167,7 @@ export class FumaroleClient {
    * @param persistentSubscriberName The name of the persistent subscriber to connect to.
    * @param request the initial `SubscribeRequest` to use.
    * @returns an observable that emits updates from the subscriber.
+   * 
    */
   async dragonsmouthSubscribe(
     persistentSubscriberName: string,
@@ -184,24 +206,35 @@ export class FumaroleClient {
     ) as ClientDuplexStream<ControlCommand, ControlResponse>;
 
     controlPlaneCommandSubject
+      .pipe(
+        finalize(() => {
+          fumeControlPlaneDuplex.end();
+        })
+      )
       .subscribe(async (command) => {
-        const defer = createDeferred<void>();
-        fumeControlPlaneDuplex.write(command, (error: any) => {
-          if (error) {
-            defer.reject(error);
-          } else {
-            defer.resolve();
-          }
+        await new Promise<void>((resolve, reject) => {
+          fumeControlPlaneDuplex.write(command, (error: any) => {
+            if (error) {
+              reject(error);
+            } else {
+              resolve();
+            }
+          });
         });
-        await defer.promise;
       });
     
     const waitInitCtrlMsg: Promise<ControlResponse> = new Promise((resolve, reject) => {
+      let has_resolved = false;
       fumeControlPlaneDuplex.once("data", (msg: ControlResponse) => {
+        has_resolved = true;
         resolve(msg);
       });
+      // I make sure I marked as resolve since data and error are independent
+      // and we cannot remove listener once they are called.
       fumeControlPlaneDuplex.once("error", (err: any) => {
-        reject(err);
+        if (!has_resolved) {
+          reject(err);
+        }
       });
     });
 
@@ -222,14 +255,12 @@ export class FumaroleClient {
     // Initialize state machine and queues
     const sm = new FumaroleSM(lastCommittedOffset, config.slotMemoryRetention);
 
-    const dragonsmouthOutlet = new Subject<SubscribeUpdate>();
     const downloadTaskResultSubject = new Subject<DownloadTaskResult>();
     // // Connect data plane and create slot downloader
     const dataPlaneClient = await this.connector.connect();
     const grpcSlotDownloadCtx: GrpcSlotDownloader = {
       client: dataPlaneClient,
       client_metadata: metadata,
-      dragonsmouthOutlet: dragonsmouthOutlet,
       downloadTaskResultObserver: downloadTaskResultSubject,
     }
     const grpcSlotDownloader: Observer<DownloadTaskArgs> = downloadSlotObserverFactory(
@@ -239,7 +270,6 @@ export class FumaroleClient {
       downloadTaskObserver: grpcSlotDownloader,
       downloadTaskResultObservable: downloadTaskResultSubject.asObservable(),
       controlPlaneObserver: controlPlaneCommandSubject,
-      dragonsmouthOutlet,
       controlPlaneResponseObservable: ctrlPlaneResponseObservable,
       sm,
       commitIntervalMillis: config.commitInterval,
@@ -469,11 +499,6 @@ export {
   CommitmentLevel,
   SubscribeRequest,
   SubscribeUpdate,
-  DEFAULT_COMMIT_INTERVAL,
-  DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT,
-  DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
   setCustomLogger,
   setDefaultLogger,
 };
-
-export type { DragonsmouthAdapterSession, FumaroleSubscribeConfig };
