@@ -10,7 +10,8 @@ def test_ordered_set():
     assert list(os) == [1, 2, 3]
     assert 2 in os
     assert len(os) == 3
-    os.popfirst()
+    val = os.popfirst()
+    assert val == 1
     assert list(os) == [2, 3]
     assert len(os) == 2
 

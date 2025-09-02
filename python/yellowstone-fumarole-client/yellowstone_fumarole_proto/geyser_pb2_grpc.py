@@ -5,7 +5,7 @@ import warnings
 
 import yellowstone_fumarole_proto.geyser_pb2 as geyser__pb2
 
-GRPC_GENERATED_VERSION = '1.71.0'
+GRPC_GENERATED_VERSION = '1.74.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -38,6 +38,11 @@ class GeyserStub(object):
                 '/geyser.Geyser/Subscribe',
                 request_serializer=geyser__pb2.SubscribeRequest.SerializeToString,
                 response_deserializer=geyser__pb2.SubscribeUpdate.FromString,
+                _registered_method=True)
+        self.SubscribeReplayInfo = channel.unary_unary(
+                '/geyser.Geyser/SubscribeReplayInfo',
+                request_serializer=geyser__pb2.SubscribeReplayInfoRequest.SerializeToString,
+                response_deserializer=geyser__pb2.SubscribeReplayInfoResponse.FromString,
                 _registered_method=True)
         self.Ping = channel.unary_unary(
                 '/geyser.Geyser/Ping',
@@ -75,6 +80,12 @@ class GeyserServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def Subscribe(self, request_iterator, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeReplayInfo(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -123,6 +134,11 @@ def add_GeyserServicer_to_server(servicer, server):
                     servicer.Subscribe,
                     request_deserializer=geyser__pb2.SubscribeRequest.FromString,
                     response_serializer=geyser__pb2.SubscribeUpdate.SerializeToString,
+            ),
+            'SubscribeReplayInfo': grpc.unary_unary_rpc_method_handler(
+                    servicer.SubscribeReplayInfo,
+                    request_deserializer=geyser__pb2.SubscribeReplayInfoRequest.FromString,
+                    response_serializer=geyser__pb2.SubscribeReplayInfoResponse.SerializeToString,
             ),
             'Ping': grpc.unary_unary_rpc_method_handler(
                     servicer.Ping,
@@ -182,6 +198,33 @@ class Geyser(object):
             '/geyser.Geyser/Subscribe',
             geyser__pb2.SubscribeRequest.SerializeToString,
             geyser__pb2.SubscribeUpdate.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeReplayInfo(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/geyser.Geyser/SubscribeReplayInfo',
+            geyser__pb2.SubscribeReplayInfoRequest.SerializeToString,
+            geyser__pb2.SubscribeReplayInfoResponse.FromString,
             options,
             channel_credentials,
             insecure,

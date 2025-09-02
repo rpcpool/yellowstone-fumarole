@@ -1,12 +1,11 @@
-from typing import Optional, List, Dict, Set, Deque, Tuple, Any, Sequence
+from typing import Optional, Set, Deque, Sequence
 from collections import deque, defaultdict
-from yellowstone_fumarole_proto.fumarole_v2_pb2 import (
+from yellowstone_fumarole_proto.fumarole_pb2 import (
     CommitmentLevel,
     BlockchainEvent,
 )
 from yellowstone_fumarole_client.utils.collections import OrderedSet
 import heapq
-import uuid
 from enum import Enum
 
 __all__ = [
@@ -323,4 +322,6 @@ class FumaroleSM:
 
     def need_new_blockchain_events(self) -> bool:
         """Check if new blockchain events are needed."""
-        return not self.slot_status_update_queue and not self.blocked_slot_status_update
+        MINIMUM_UNPROCESSED_BLOCKCHAIN_EVENT = 10
+        return len(self.unprocessed_blockchain_event) < MINIMUM_UNPROCESSED_BLOCKCHAIN_EVENT \
+            or (not self.slot_status_update_queue and not self.blocked_slot_status_update)

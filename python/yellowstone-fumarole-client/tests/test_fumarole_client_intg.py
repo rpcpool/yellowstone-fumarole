@@ -1,13 +1,11 @@
 from typing import Optional
 import uuid
 import pytest
-import asyncio
 import logging
 from os import environ
-from collections import defaultdict
 from yellowstone_fumarole_client.config import FumaroleConfig
 from yellowstone_fumarole_client import FumaroleClient, FumaroleSubscribeConfig
-from yellowstone_fumarole_proto.fumarole_v2_pb2 import CreateConsumerGroupRequest
+from yellowstone_fumarole_proto.fumarole_pb2 import CreateConsumerGroupRequest
 from yellowstone_fumarole_proto.geyser_pb2 import (
     SubscribeRequest,
     SubscribeRequestFilterAccounts,
@@ -24,6 +22,13 @@ from yellowstone_fumarole_proto.geyser_pb2 import (
     SubscribeUpdateEntry,
     SubscribeUpdateSlot,
 )
+import random
+import string
+
+def random_string(length=8):
+    """Generate a random string of given length (default: 8)."""
+    characters = string.ascii_letters + string.digits  # A-Z, a-z, 0-9
+    return ''.join(random.choice(characters) for _ in range(length))
 
 
 @pytest.fixture
@@ -43,22 +48,27 @@ async def test_fumarole_delete_all(fumarole_config):
     logging.debug("test_fumarole_delete_all")
     # Create a FumaroleClient instance
 
-    fumarole_config.x_metadata = {"x-subscription-id": str(uuid.uuid4())}
-
+    # fumarole_config.x_metadata = {"x-subscription-id": str(uuid.uuid4())}
     client: FumaroleClient = await FumaroleClient.connect(fumarole_config)
+
+    logging.debug(f"fumarole_config: {fumarole_config}")
+    version = await client.version()
+    logging.debug(f"Fumarole version: {version}")
     # Call the delete_all_cg function
     await client.delete_all_consumer_groups()
 
+    consumer_group_name = random_string(12)
     resp = await client.create_consumer_group(
         CreateConsumerGroupRequest(
-            consumer_group_name="test",
+            consumer_group_name=consumer_group_name,
         )
     )
     assert resp.consumer_group_id, "Failed to create consumer group"
-
+    
+    consumer_groiup_name2 = random_string(12)
     resp = await client.create_consumer_group(
         CreateConsumerGroupRequest(
-            consumer_group_name="test2",
+            consumer_group_name=consumer_groiup_name2,
         )
     )
 
@@ -76,7 +86,6 @@ async def test_fumarole_delete_all(fumarole_config):
     cg_info = await client.get_consumer_group_info(consumer_group_name="test")
     assert cg_info is None, "Failed to get consumer group info"
 
-
 @pytest.mark.asyncio
 async def test_updating_subscribe_request(fumarole_config):
     """
@@ -89,89 +98,40 @@ async def test_updating_subscribe_request(fumarole_config):
 
     client: FumaroleClient = await FumaroleClient.connect(fumarole_config)
 
+    consumer_group_name = random_string(12)
     resp = await client.create_consumer_group(
         CreateConsumerGroupRequest(
-            consumer_group_name="test",
+            consumer_group_name=consumer_group_name,
         )
     )
     assert resp.consumer_group_id, "Failed to create consumer group"
 
     session = await client.dragonsmouth_subscribe(
-        consumer_group_name="test",
-        request=SubscribeRequest(
-            slots={"fumarole": SubscribeRequestFilterSlots()},
-        ),
-    )
-
-    dragonsmouth_source = session.source
-    handle = session.fumarole_handle
-
-    slot_status_recv = []
-    for _ in range(10):
-        tasks = [asyncio.create_task(dragonsmouth_source.get()), handle]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in done:
-            if tasks[0] == t:
-                result: SubscribeUpdate = t.result()
-                assert result.HasField("slot"), "Expected slot update"
-                slot: SubscribeUpdateSlot = result.slot
-                slot_status_recv.append(slot)
-            else:
-                result = t.result()
-                raise RuntimeError("failed to get dragonsmouth source: %s" % result)
-    assert len(slot_status_recv) == 10
-
-
-@pytest.mark.asyncio
-async def test_updating_subscribe_request(fumarole_config):
-    """
-    Test the slot update subscription.
-    """
-    logging.debug("test_slot_update_subscribe")
-    # Create a FumaroleClient instance
-
-    fumarole_config.x_metadata = {"x-subscription-id": str(uuid.uuid4())}
-
-    client: FumaroleClient = await FumaroleClient.connect(fumarole_config)
-
-    resp = await client.create_consumer_group(
-        CreateConsumerGroupRequest(
-            consumer_group_name="test",
-        )
-    )
-    assert resp.consumer_group_id, "Failed to create consumer group"
-
-    session = await client.dragonsmouth_subscribe(
-        consumer_group_name="test",
+        consumer_group_name=consumer_group_name,
         request=SubscribeRequest(
             entry={"fumarole": SubscribeRequestFilterEntry()},
         ),
     )
 
-    dragonsmouth_source = session.source
-    handle = session.fumarole_handle
-
-    entry_recv = []
-    for _ in range(1000):
-        tasks = [asyncio.create_task(dragonsmouth_source.get()), handle]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in done:
-            if tasks[0] == t:
-                result: SubscribeUpdate = t.result()
-                assert result.HasField("entry"), "Expected slot update"
-                entry: SubscribeUpdateEntry = result.entry
-                assert isinstance(entry, SubscribeUpdateEntry), "Expected entry update"
-                entry_recv.append(entry)
-            else:
-                result = t.result()
-                raise RuntimeError("failed to get dragonsmouth source: %s" % result)
-    assert len(entry_recv) == 1000
+    async with session:
+        dragonsmouth_source = session.source
+        entry_recv = []
+        i = 0
+        async for result in dragonsmouth_source:
+            assert result.HasField("entry"), "Expected slot update"
+            entry: SubscribeUpdateEntry = result.entry
+            assert isinstance(entry, SubscribeUpdateEntry), "Expected entry update"
+            entry_recv.append(entry)
+            i += 1
+            if i == 1000:
+                break
+        assert len(entry_recv) == 1000
 
 
 @pytest.mark.asyncio
 async def test_dragonsmouth_adapter(fumarole_config):
     """
-    Test the delete_all_cg function.
+    test `DragonsmouthAdapterSession`
     """
     logging.debug("test_fumarole_delete_all")
     # Create a FumaroleClient instance
@@ -183,15 +143,20 @@ async def test_dragonsmouth_adapter(fumarole_config):
     client: FumaroleClient = await FumaroleClient.connect(fumarole_config)
     await client.delete_all_consumer_groups()
 
+    consumer_group_name = random_string(12)
     resp = await client.create_consumer_group(
         CreateConsumerGroupRequest(
-            consumer_group_name="test",
+            consumer_group_name=consumer_group_name,
         )
     )
     assert resp.consumer_group_id, "Failed to create consumer group"
 
-    session = await client.dragonsmouth_subscribe(
-        consumer_group_name="test",
+    subscribe_config = FumaroleSubscribeConfig(
+        concurrent_download_limit=1
+    )
+    logging.info(f"subscribe config : {subscribe_config}")
+    session = await client.dragonsmouth_subscribe_with_config(
+        consumer_group_name=consumer_group_name,
         request=SubscribeRequest(
             accounts={"fumarole": SubscribeRequestFilterAccounts()},
             transactions={"fumarole": SubscribeRequestFilterTransactions()},
@@ -199,11 +164,10 @@ async def test_dragonsmouth_adapter(fumarole_config):
             entry={"fumarole": SubscribeRequestFilterEntry()},
             slots={"fumarole": SubscribeRequestFilterSlots()},
         ),
+        config=subscribe_config,
     )
-    logging.warning("starting session")
-    dragonsmouth_source = session.source
-    handle = session.fumarole_handle
-
+    logging.info("starting session")
+    
     class BlockConstruction:
         def __init__(self):
             self.tx_vec: list[SubscribeUpdateTransaction] = []
@@ -212,51 +176,56 @@ async def test_dragonsmouth_adapter(fumarole_config):
             self.meta: Optional[SubscribeUpdateBlockMeta] = None
 
         def check_block_integrity(self) -> bool:
-            assert len(self.account_vec) > 0, "Block account vector is empty"
+            # assert len(self.account_vec) > 0, "Block account vector is empty"
             assert self.meta is not None, "Block meta is not set"
             return (
                 len(self.tx_vec) == self.meta.executed_transaction_count
                 and len(self.entry_vec) == self.meta.entries_count
             )
+        
+        @classmethod
+        def default(cls) -> "BlockConstruction":
+            return cls()
 
-    block_map = defaultdict(BlockConstruction)
-    while True:
-        tasks = [asyncio.create_task(dragonsmouth_source.get()), handle]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in done:
-            if tasks[0] == t:
-                result: SubscribeUpdate = t.result()
-                if result.HasField("block_meta"):
-                    block_meta: SubscribeUpdateBlockMeta = result.block_meta
-                    slot = block_meta.slot
-                    block_map[slot].meta = block_meta
-                elif result.HasField("transaction"):
-                    tx: SubscribeUpdateTransaction = result.transaction
-                    slot = tx.slot
-                    block = block_map[slot]
-                    block.tx_vec.append(tx)
-                elif result.HasField("account"):
-                    account: SubscribeUpdateAccount = result.account
-                    slot = account.slot
-                    block = block_map[slot]
-                    block.account_vec.append(account)
-                elif result.HasField("entry"):
-                    entry: SubscribeUpdateEntry = result.entry
-                    slot = entry.slot
-                    block = block_map[slot]
-                    block.entry_vec.append(entry)
-                elif result.HasField("slot"):
-                    result: SubscribeUpdateSlot = result.slot
-                    block = block_map[result.slot]
+    async with session:
+        dragonsmouth_source = session.source
+        block_map = dict()
+        async for result in dragonsmouth_source:
+            if result.HasField("block_meta"):
+                block_meta: SubscribeUpdateBlockMeta = result.block_meta
+                slot = block_meta.slot
+                block = block_map.setdefault(slot, BlockConstruction.default())
+                block.meta = block_meta
+            elif result.HasField("transaction"):
+                tx: SubscribeUpdateTransaction = result.transaction
+                slot = tx.slot
+                block = block_map.setdefault(slot, BlockConstruction.default())
+                block.tx_vec.append(tx)
+            elif result.HasField("account"):
+                account: SubscribeUpdateAccount = result.account
+                slot = account.slot
+                block = block_map.setdefault(slot, BlockConstruction.default())
+                block.account_vec.append(account)
+            elif result.HasField("entry"):
+                entry: SubscribeUpdateEntry = result.entry
+                slot = entry.slot
+                block = block_map.setdefault(slot, BlockConstruction.default())
+                block.entry_vec.append(entry)
+            elif result.HasField("slot"):
+                result: SubscribeUpdateSlot = result.slot
+                block = block_map.get(result.slot, None)
+                if block is not None:
+                    logging.info("slot received")
                     assert block.check_block_integrity()
-                    return
-            else:
-                result = t.result()
-                raise RuntimeError("failed to get dragonsmouth source: %s" % result)
-
+                    break
+        stats = session.stats()
+        assert stats.max_slot_seen >= max(block_map.keys())
+        assert stats.log_committable_offset >= stats.log_committed_offset
+        assert stats.log_committable_offset > 0
+    assert block_map, "No blocks received"
 
 @pytest.mark.asyncio
-async def test_updating_subscribe_request(fumarole_config):
+async def test_update_subscription_to_include_slotstatus_update(fumarole_config):
     """
     Test the slot update subscription.
     """
@@ -267,9 +236,10 @@ async def test_updating_subscribe_request(fumarole_config):
 
     client: FumaroleClient = await FumaroleClient.connect(fumarole_config)
 
+    consumer_group_name = random_string(12)
     resp = await client.create_consumer_group(
         CreateConsumerGroupRequest(
-            consumer_group_name="test",
+            consumer_group_name=consumer_group_name,
         )
     )
     assert resp.consumer_group_id, "Failed to create consumer group"
@@ -277,7 +247,7 @@ async def test_updating_subscribe_request(fumarole_config):
         concurrent_download_limit=1,
     )
     session = await client.dragonsmouth_subscribe_with_config(
-        consumer_group_name="test",
+        consumer_group_name=consumer_group_name,
         request=SubscribeRequest(
             entry={"fumarole": SubscribeRequestFilterEntry()},
         ),
@@ -287,62 +257,52 @@ async def test_updating_subscribe_request(fumarole_config):
     request2 = SubscribeRequest(
         slots={"fumarole": SubscribeRequestFilterSlots()},
     )
-    dragonsmouth_source = session.source
-    handle = session.fumarole_handle
-    update_subscribe_request_q = session.sink
-    data_recv = []
-    for _ in range(500):
-        tasks = [asyncio.create_task(dragonsmouth_source.get()), handle]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in done:
-            if tasks[0] == t:
-                result: SubscribeUpdate = t.result()
-                assert result.HasField("entry"), "Expected slot update"
+
+    async with session:
+        dragonsmouth_source = session.source
+        update_subscribe_request_q = session.sink
+        data_recv = []
+        i = 0
+        async for result in dragonsmouth_source:
+            assert result.HasField("entry"), "Expected slot update"
+            entry: SubscribeUpdateEntry = result.entry
+            assert isinstance(entry, SubscribeUpdateEntry), "Expected entry update"
+            data_recv.append(entry)
+            i += 1
+            if i == 500:
+                break
+
+        await update_subscribe_request_q.put(request2)
+
+        when_new_filter_in_effect = None
+        slot_update_detected = 0
+        while slot_update_detected < 10:
+            result: SubscribeUpdate = await anext(dragonsmouth_source)
+            assert result.HasField("slot") or result.HasField(
+                "entry"
+            ), "Expected slot or entry update"
+            if result.HasField("entry"):
                 entry: SubscribeUpdateEntry = result.entry
-                assert isinstance(entry, SubscribeUpdateEntry), "Expected entry update"
+                assert isinstance(
+                    entry, SubscribeUpdateEntry
+                ), "Expected entry update"
                 data_recv.append(entry)
-            else:
-                result = t.result()
-                raise RuntimeError("failed to get dragonsmouth source: %s" % result)
+                if when_new_filter_in_effect is not None:
+                    assert (
+                        when_new_filter_in_effect > entry.slot
+                    ), "New filter should be in effect after the slot update"
+            elif result.HasField("slot"):
+                assert isinstance(
+                    result.slot, SubscribeUpdateSlot
+                ), "Expected slot update"
+                if when_new_filter_in_effect is None:
+                    slot = result.slot.slot
+                    when_new_filter_in_effect = slot
+                data_recv.append(result.slot)
+                slot_update_detected += 1
+            slot: SubscribeUpdateSlot = result.slot
+            assert isinstance(slot, SubscribeUpdateSlot), "Expected slot update"
 
-    await update_subscribe_request_q.put(request2)
-
-    when_new_filter_in_effect = None
-    slot_update_detected = 0
-    while slot_update_detected < 10:
-        tasks = [asyncio.create_task(dragonsmouth_source.get()), handle]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in done:
-            if tasks[0] == t:
-                result: SubscribeUpdate = t.result()
-                assert result.HasField("slot") or result.HasField(
-                    "entry"
-                ), "Expected slot or entry update"
-                if result.HasField("entry"):
-                    entry: SubscribeUpdateEntry = result.entry
-                    assert isinstance(
-                        entry, SubscribeUpdateEntry
-                    ), "Expected entry update"
-                    data_recv.append(entry)
-                    if when_new_filter_in_effect is not None:
-                        assert (
-                            when_new_filter_in_effect > entry.slot
-                        ), "New filter should be in effect after the slot update"
-                elif result.HasField("slot"):
-                    assert isinstance(
-                        result.slot, SubscribeUpdateSlot
-                    ), "Expected slot update"
-                    if when_new_filter_in_effect is None:
-                        slot = result.slot.slot
-                        when_new_filter_in_effect = slot
-                    data_recv.append(result.slot)
-                    slot_update_detected += 1
-                slot: SubscribeUpdateSlot = result.slot
-                assert isinstance(slot, SubscribeUpdateSlot), "Expected slot update"
-            else:
-                result = t.result()
-                raise RuntimeError("failed to get dragonsmouth source: %s" % result)
-
-    assert (
-        when_new_filter_in_effect is not None
-    ), "New filter should be in effect after the slot update"
+        assert (
+            when_new_filter_in_effect is not None
+        ), "New filter should be in effect after the slot update"

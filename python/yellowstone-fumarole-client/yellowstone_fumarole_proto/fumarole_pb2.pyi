@@ -4,7 +4,8 @@ from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
+from collections.abc import Iterable as _Iterable, Mapping as _Mapping
+from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 from yellowstone_fumarole_proto.geyser_pb2 import SubscribeRequest as SubscribeRequest
 from yellowstone_fumarole_proto.geyser_pb2 import SubscribeRequestFilterAccounts as SubscribeRequestFilterAccounts
 from yellowstone_fumarole_proto.geyser_pb2 import SubscribeRequestFilterAccountsFilter as SubscribeRequestFilterAccountsFilter
@@ -29,6 +30,8 @@ from yellowstone_fumarole_proto.geyser_pb2 import SubscribeUpdateBlockMeta as Su
 from yellowstone_fumarole_proto.geyser_pb2 import SubscribeUpdateEntry as SubscribeUpdateEntry
 from yellowstone_fumarole_proto.geyser_pb2 import SubscribeUpdatePing as SubscribeUpdatePing
 from yellowstone_fumarole_proto.geyser_pb2 import SubscribeUpdatePong as SubscribeUpdatePong
+from yellowstone_fumarole_proto.geyser_pb2 import SubscribeReplayInfoRequest as SubscribeReplayInfoRequest
+from yellowstone_fumarole_proto.geyser_pb2 import SubscribeReplayInfoResponse as SubscribeReplayInfoResponse
 from yellowstone_fumarole_proto.geyser_pb2 import PingRequest as PingRequest
 from yellowstone_fumarole_proto.geyser_pb2 import PongResponse as PongResponse
 from yellowstone_fumarole_proto.geyser_pb2 import GetLatestBlockhashRequest as GetLatestBlockhashRequest
@@ -59,7 +62,46 @@ SLOT_DEAD: _geyser_pb2.SlotStatus
 class InitialOffsetPolicy(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     LATEST: _ClassVar[InitialOffsetPolicy]
+    FROM_SLOT: _ClassVar[InitialOffsetPolicy]
 LATEST: InitialOffsetPolicy
+FROM_SLOT: InitialOffsetPolicy
+
+class GetSlotRangeRequest(_message.Message):
+    __slots__ = ("blockchain_id",)
+    BLOCKCHAIN_ID_FIELD_NUMBER: _ClassVar[int]
+    blockchain_id: bytes
+    def __init__(self, blockchain_id: _Optional[bytes] = ...) -> None: ...
+
+class GetSlotRangeResponse(_message.Message):
+    __slots__ = ("blockchain_id", "min_slot", "max_slot")
+    BLOCKCHAIN_ID_FIELD_NUMBER: _ClassVar[int]
+    MIN_SLOT_FIELD_NUMBER: _ClassVar[int]
+    MAX_SLOT_FIELD_NUMBER: _ClassVar[int]
+    blockchain_id: bytes
+    min_slot: int
+    max_slot: int
+    def __init__(self, blockchain_id: _Optional[bytes] = ..., min_slot: _Optional[int] = ..., max_slot: _Optional[int] = ...) -> None: ...
+
+class GetChainTipRequest(_message.Message):
+    __slots__ = ("blockchain_id",)
+    BLOCKCHAIN_ID_FIELD_NUMBER: _ClassVar[int]
+    blockchain_id: bytes
+    def __init__(self, blockchain_id: _Optional[bytes] = ...) -> None: ...
+
+class GetChainTipResponse(_message.Message):
+    __slots__ = ("blockchain_id", "shard_to_max_offset_map")
+    class ShardToMaxOffsetMapEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: int
+        value: int
+        def __init__(self, key: _Optional[int] = ..., value: _Optional[int] = ...) -> None: ...
+    BLOCKCHAIN_ID_FIELD_NUMBER: _ClassVar[int]
+    SHARD_TO_MAX_OFFSET_MAP_FIELD_NUMBER: _ClassVar[int]
+    blockchain_id: bytes
+    shard_to_max_offset_map: _containers.ScalarMap[int, int]
+    def __init__(self, blockchain_id: _Optional[bytes] = ..., shard_to_max_offset_map: _Optional[_Mapping[int, int]] = ...) -> None: ...
 
 class VersionRequest(_message.Message):
     __slots__ = ()
@@ -100,14 +142,16 @@ class ListConsumerGroupsResponse(_message.Message):
     def __init__(self, consumer_groups: _Optional[_Iterable[_Union[ConsumerGroupInfo, _Mapping]]] = ...) -> None: ...
 
 class ConsumerGroupInfo(_message.Message):
-    __slots__ = ("id", "consumer_group_name", "is_stale")
+    __slots__ = ("id", "consumer_group_name", "is_stale", "blockchain_id")
     ID_FIELD_NUMBER: _ClassVar[int]
     CONSUMER_GROUP_NAME_FIELD_NUMBER: _ClassVar[int]
     IS_STALE_FIELD_NUMBER: _ClassVar[int]
+    BLOCKCHAIN_ID_FIELD_NUMBER: _ClassVar[int]
     id: str
     consumer_group_name: str
     is_stale: bool
-    def __init__(self, id: _Optional[str] = ..., consumer_group_name: _Optional[str] = ..., is_stale: bool = ...) -> None: ...
+    blockchain_id: bytes
+    def __init__(self, id: _Optional[str] = ..., consumer_group_name: _Optional[str] = ..., is_stale: bool = ..., blockchain_id: _Optional[bytes] = ...) -> None: ...
 
 class GetSlotLagInfoRequest(_message.Message):
     __slots__ = ("consumer_group_name",)
@@ -320,9 +364,11 @@ class CreateConsumerGroupResponse(_message.Message):
     def __init__(self, consumer_group_id: _Optional[str] = ...) -> None: ...
 
 class CreateConsumerGroupRequest(_message.Message):
-    __slots__ = ("consumer_group_name", "initial_offset_policy")
+    __slots__ = ("consumer_group_name", "initial_offset_policy", "from_slot")
     CONSUMER_GROUP_NAME_FIELD_NUMBER: _ClassVar[int]
     INITIAL_OFFSET_POLICY_FIELD_NUMBER: _ClassVar[int]
+    FROM_SLOT_FIELD_NUMBER: _ClassVar[int]
     consumer_group_name: str
     initial_offset_policy: InitialOffsetPolicy
-    def __init__(self, consumer_group_name: _Optional[str] = ..., initial_offset_policy: _Optional[_Union[InitialOffsetPolicy, str]] = ...) -> None: ...
+    from_slot: int
+    def __init__(self, consumer_group_name: _Optional[str] = ..., initial_offset_policy: _Optional[_Union[InitialOffsetPolicy, str]] = ..., from_slot: _Optional[int] = ...) -> None: ...

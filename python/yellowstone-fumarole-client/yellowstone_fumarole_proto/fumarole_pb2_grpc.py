@@ -3,9 +3,9 @@
 import grpc
 import warnings
 
-import yellowstone_fumarole_proto.fumarole_v2_pb2 as fumarole__v2__pb2
+import yellowstone_fumarole_proto.fumarole_pb2 as fumarole__pb2
 
-GRPC_GENERATED_VERSION = '1.71.0'
+GRPC_GENERATED_VERSION = '1.74.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -18,7 +18,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in fumarole_v2_pb2_grpc.py depends on'
+        + f' but the generated code in fumarole_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -35,44 +35,54 @@ class FumaroleStub(object):
             channel: A grpc.Channel.
         """
         self.GetConsumerGroupInfo = channel.unary_unary(
-                '/fumarole_v2.Fumarole/GetConsumerGroupInfo',
-                request_serializer=fumarole__v2__pb2.GetConsumerGroupInfoRequest.SerializeToString,
-                response_deserializer=fumarole__v2__pb2.ConsumerGroupInfo.FromString,
+                '/fumarole.Fumarole/GetConsumerGroupInfo',
+                request_serializer=fumarole__pb2.GetConsumerGroupInfoRequest.SerializeToString,
+                response_deserializer=fumarole__pb2.ConsumerGroupInfo.FromString,
                 _registered_method=True)
         self.ListConsumerGroups = channel.unary_unary(
-                '/fumarole_v2.Fumarole/ListConsumerGroups',
-                request_serializer=fumarole__v2__pb2.ListConsumerGroupsRequest.SerializeToString,
-                response_deserializer=fumarole__v2__pb2.ListConsumerGroupsResponse.FromString,
+                '/fumarole.Fumarole/ListConsumerGroups',
+                request_serializer=fumarole__pb2.ListConsumerGroupsRequest.SerializeToString,
+                response_deserializer=fumarole__pb2.ListConsumerGroupsResponse.FromString,
                 _registered_method=True)
         self.DeleteConsumerGroup = channel.unary_unary(
-                '/fumarole_v2.Fumarole/DeleteConsumerGroup',
-                request_serializer=fumarole__v2__pb2.DeleteConsumerGroupRequest.SerializeToString,
-                response_deserializer=fumarole__v2__pb2.DeleteConsumerGroupResponse.FromString,
+                '/fumarole.Fumarole/DeleteConsumerGroup',
+                request_serializer=fumarole__pb2.DeleteConsumerGroupRequest.SerializeToString,
+                response_deserializer=fumarole__pb2.DeleteConsumerGroupResponse.FromString,
                 _registered_method=True)
         self.CreateConsumerGroup = channel.unary_unary(
-                '/fumarole_v2.Fumarole/CreateConsumerGroup',
-                request_serializer=fumarole__v2__pb2.CreateConsumerGroupRequest.SerializeToString,
-                response_deserializer=fumarole__v2__pb2.CreateConsumerGroupResponse.FromString,
+                '/fumarole.Fumarole/CreateConsumerGroup',
+                request_serializer=fumarole__pb2.CreateConsumerGroupRequest.SerializeToString,
+                response_deserializer=fumarole__pb2.CreateConsumerGroupResponse.FromString,
                 _registered_method=True)
         self.DownloadBlock = channel.unary_stream(
-                '/fumarole_v2.Fumarole/DownloadBlock',
-                request_serializer=fumarole__v2__pb2.DownloadBlockShard.SerializeToString,
-                response_deserializer=fumarole__v2__pb2.DataResponse.FromString,
+                '/fumarole.Fumarole/DownloadBlock',
+                request_serializer=fumarole__pb2.DownloadBlockShard.SerializeToString,
+                response_deserializer=fumarole__pb2.DataResponse.FromString,
                 _registered_method=True)
         self.SubscribeData = channel.stream_stream(
-                '/fumarole_v2.Fumarole/SubscribeData',
-                request_serializer=fumarole__v2__pb2.DataCommand.SerializeToString,
-                response_deserializer=fumarole__v2__pb2.DataResponse.FromString,
+                '/fumarole.Fumarole/SubscribeData',
+                request_serializer=fumarole__pb2.DataCommand.SerializeToString,
+                response_deserializer=fumarole__pb2.DataResponse.FromString,
+                _registered_method=True)
+        self.GetChainTip = channel.unary_unary(
+                '/fumarole.Fumarole/GetChainTip',
+                request_serializer=fumarole__pb2.GetChainTipRequest.SerializeToString,
+                response_deserializer=fumarole__pb2.GetChainTipResponse.FromString,
                 _registered_method=True)
         self.Subscribe = channel.stream_stream(
-                '/fumarole_v2.Fumarole/Subscribe',
-                request_serializer=fumarole__v2__pb2.ControlCommand.SerializeToString,
-                response_deserializer=fumarole__v2__pb2.ControlResponse.FromString,
+                '/fumarole.Fumarole/Subscribe',
+                request_serializer=fumarole__pb2.ControlCommand.SerializeToString,
+                response_deserializer=fumarole__pb2.ControlResponse.FromString,
                 _registered_method=True)
         self.Version = channel.unary_unary(
-                '/fumarole_v2.Fumarole/Version',
-                request_serializer=fumarole__v2__pb2.VersionRequest.SerializeToString,
-                response_deserializer=fumarole__v2__pb2.VersionResponse.FromString,
+                '/fumarole.Fumarole/Version',
+                request_serializer=fumarole__pb2.VersionRequest.SerializeToString,
+                response_deserializer=fumarole__pb2.VersionResponse.FromString,
+                _registered_method=True)
+        self.GetSlotRange = channel.unary_unary(
+                '/fumarole.Fumarole/GetSlotRange',
+                request_serializer=fumarole__pb2.GetSlotRangeRequest.SerializeToString,
+                response_deserializer=fumarole__pb2.GetSlotRangeResponse.FromString,
                 _registered_method=True)
 
 
@@ -116,6 +126,12 @@ class FumaroleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetChainTip(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Subscribe(self, request_iterator, context):
         """Represents subscription to the control plane
         """
@@ -129,54 +145,70 @@ class FumaroleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetSlotRange(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_FumaroleServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'GetConsumerGroupInfo': grpc.unary_unary_rpc_method_handler(
                     servicer.GetConsumerGroupInfo,
-                    request_deserializer=fumarole__v2__pb2.GetConsumerGroupInfoRequest.FromString,
-                    response_serializer=fumarole__v2__pb2.ConsumerGroupInfo.SerializeToString,
+                    request_deserializer=fumarole__pb2.GetConsumerGroupInfoRequest.FromString,
+                    response_serializer=fumarole__pb2.ConsumerGroupInfo.SerializeToString,
             ),
             'ListConsumerGroups': grpc.unary_unary_rpc_method_handler(
                     servicer.ListConsumerGroups,
-                    request_deserializer=fumarole__v2__pb2.ListConsumerGroupsRequest.FromString,
-                    response_serializer=fumarole__v2__pb2.ListConsumerGroupsResponse.SerializeToString,
+                    request_deserializer=fumarole__pb2.ListConsumerGroupsRequest.FromString,
+                    response_serializer=fumarole__pb2.ListConsumerGroupsResponse.SerializeToString,
             ),
             'DeleteConsumerGroup': grpc.unary_unary_rpc_method_handler(
                     servicer.DeleteConsumerGroup,
-                    request_deserializer=fumarole__v2__pb2.DeleteConsumerGroupRequest.FromString,
-                    response_serializer=fumarole__v2__pb2.DeleteConsumerGroupResponse.SerializeToString,
+                    request_deserializer=fumarole__pb2.DeleteConsumerGroupRequest.FromString,
+                    response_serializer=fumarole__pb2.DeleteConsumerGroupResponse.SerializeToString,
             ),
             'CreateConsumerGroup': grpc.unary_unary_rpc_method_handler(
                     servicer.CreateConsumerGroup,
-                    request_deserializer=fumarole__v2__pb2.CreateConsumerGroupRequest.FromString,
-                    response_serializer=fumarole__v2__pb2.CreateConsumerGroupResponse.SerializeToString,
+                    request_deserializer=fumarole__pb2.CreateConsumerGroupRequest.FromString,
+                    response_serializer=fumarole__pb2.CreateConsumerGroupResponse.SerializeToString,
             ),
             'DownloadBlock': grpc.unary_stream_rpc_method_handler(
                     servicer.DownloadBlock,
-                    request_deserializer=fumarole__v2__pb2.DownloadBlockShard.FromString,
-                    response_serializer=fumarole__v2__pb2.DataResponse.SerializeToString,
+                    request_deserializer=fumarole__pb2.DownloadBlockShard.FromString,
+                    response_serializer=fumarole__pb2.DataResponse.SerializeToString,
             ),
             'SubscribeData': grpc.stream_stream_rpc_method_handler(
                     servicer.SubscribeData,
-                    request_deserializer=fumarole__v2__pb2.DataCommand.FromString,
-                    response_serializer=fumarole__v2__pb2.DataResponse.SerializeToString,
+                    request_deserializer=fumarole__pb2.DataCommand.FromString,
+                    response_serializer=fumarole__pb2.DataResponse.SerializeToString,
+            ),
+            'GetChainTip': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetChainTip,
+                    request_deserializer=fumarole__pb2.GetChainTipRequest.FromString,
+                    response_serializer=fumarole__pb2.GetChainTipResponse.SerializeToString,
             ),
             'Subscribe': grpc.stream_stream_rpc_method_handler(
                     servicer.Subscribe,
-                    request_deserializer=fumarole__v2__pb2.ControlCommand.FromString,
-                    response_serializer=fumarole__v2__pb2.ControlResponse.SerializeToString,
+                    request_deserializer=fumarole__pb2.ControlCommand.FromString,
+                    response_serializer=fumarole__pb2.ControlResponse.SerializeToString,
             ),
             'Version': grpc.unary_unary_rpc_method_handler(
                     servicer.Version,
-                    request_deserializer=fumarole__v2__pb2.VersionRequest.FromString,
-                    response_serializer=fumarole__v2__pb2.VersionResponse.SerializeToString,
+                    request_deserializer=fumarole__pb2.VersionRequest.FromString,
+                    response_serializer=fumarole__pb2.VersionResponse.SerializeToString,
+            ),
+            'GetSlotRange': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetSlotRange,
+                    request_deserializer=fumarole__pb2.GetSlotRangeRequest.FromString,
+                    response_serializer=fumarole__pb2.GetSlotRangeResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'fumarole_v2.Fumarole', rpc_method_handlers)
+            'fumarole.Fumarole', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('fumarole_v2.Fumarole', rpc_method_handlers)
+    server.add_registered_method_handlers('fumarole.Fumarole', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -197,9 +229,9 @@ class Fumarole(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/fumarole_v2.Fumarole/GetConsumerGroupInfo',
-            fumarole__v2__pb2.GetConsumerGroupInfoRequest.SerializeToString,
-            fumarole__v2__pb2.ConsumerGroupInfo.FromString,
+            '/fumarole.Fumarole/GetConsumerGroupInfo',
+            fumarole__pb2.GetConsumerGroupInfoRequest.SerializeToString,
+            fumarole__pb2.ConsumerGroupInfo.FromString,
             options,
             channel_credentials,
             insecure,
@@ -224,9 +256,9 @@ class Fumarole(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/fumarole_v2.Fumarole/ListConsumerGroups',
-            fumarole__v2__pb2.ListConsumerGroupsRequest.SerializeToString,
-            fumarole__v2__pb2.ListConsumerGroupsResponse.FromString,
+            '/fumarole.Fumarole/ListConsumerGroups',
+            fumarole__pb2.ListConsumerGroupsRequest.SerializeToString,
+            fumarole__pb2.ListConsumerGroupsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -251,9 +283,9 @@ class Fumarole(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/fumarole_v2.Fumarole/DeleteConsumerGroup',
-            fumarole__v2__pb2.DeleteConsumerGroupRequest.SerializeToString,
-            fumarole__v2__pb2.DeleteConsumerGroupResponse.FromString,
+            '/fumarole.Fumarole/DeleteConsumerGroup',
+            fumarole__pb2.DeleteConsumerGroupRequest.SerializeToString,
+            fumarole__pb2.DeleteConsumerGroupResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -278,9 +310,9 @@ class Fumarole(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/fumarole_v2.Fumarole/CreateConsumerGroup',
-            fumarole__v2__pb2.CreateConsumerGroupRequest.SerializeToString,
-            fumarole__v2__pb2.CreateConsumerGroupResponse.FromString,
+            '/fumarole.Fumarole/CreateConsumerGroup',
+            fumarole__pb2.CreateConsumerGroupRequest.SerializeToString,
+            fumarole__pb2.CreateConsumerGroupResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -305,9 +337,9 @@ class Fumarole(object):
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/fumarole_v2.Fumarole/DownloadBlock',
-            fumarole__v2__pb2.DownloadBlockShard.SerializeToString,
-            fumarole__v2__pb2.DataResponse.FromString,
+            '/fumarole.Fumarole/DownloadBlock',
+            fumarole__pb2.DownloadBlockShard.SerializeToString,
+            fumarole__pb2.DataResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -332,9 +364,36 @@ class Fumarole(object):
         return grpc.experimental.stream_stream(
             request_iterator,
             target,
-            '/fumarole_v2.Fumarole/SubscribeData',
-            fumarole__v2__pb2.DataCommand.SerializeToString,
-            fumarole__v2__pb2.DataResponse.FromString,
+            '/fumarole.Fumarole/SubscribeData',
+            fumarole__pb2.DataCommand.SerializeToString,
+            fumarole__pb2.DataResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetChainTip(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/fumarole.Fumarole/GetChainTip',
+            fumarole__pb2.GetChainTipRequest.SerializeToString,
+            fumarole__pb2.GetChainTipResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -359,9 +418,9 @@ class Fumarole(object):
         return grpc.experimental.stream_stream(
             request_iterator,
             target,
-            '/fumarole_v2.Fumarole/Subscribe',
-            fumarole__v2__pb2.ControlCommand.SerializeToString,
-            fumarole__v2__pb2.ControlResponse.FromString,
+            '/fumarole.Fumarole/Subscribe',
+            fumarole__pb2.ControlCommand.SerializeToString,
+            fumarole__pb2.ControlResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -386,9 +445,36 @@ class Fumarole(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/fumarole_v2.Fumarole/Version',
-            fumarole__v2__pb2.VersionRequest.SerializeToString,
-            fumarole__v2__pb2.VersionResponse.FromString,
+            '/fumarole.Fumarole/Version',
+            fumarole__pb2.VersionRequest.SerializeToString,
+            fumarole__pb2.VersionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetSlotRange(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/fumarole.Fumarole/GetSlotRange',
+            fumarole__pb2.GetSlotRangeRequest.SerializeToString,
+            fumarole__pb2.GetSlotRangeResponse.FromString,
             options,
             channel_credentials,
             insecure,
