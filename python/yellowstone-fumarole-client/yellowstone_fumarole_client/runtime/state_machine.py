@@ -322,4 +322,6 @@ class FumaroleSM:
 
     def need_new_blockchain_events(self) -> bool:
         """Check if new blockchain events are needed."""
-        return not self.slot_status_update_queue and not self.blocked_slot_status_update
+        MINIMUM_UNPROCESSED_BLOCKCHAIN_EVENT = 10
+        return len(self.unprocessed_blockchain_event) < MINIMUM_UNPROCESSED_BLOCKCHAIN_EVENT \
+            or (not self.slot_status_update_queue and not self.blocked_slot_status_update)

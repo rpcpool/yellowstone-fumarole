@@ -133,6 +133,8 @@ class AsyncioFumeDragonsmouthRuntime:
         self.commit_interval = commit_interval
         self.gc_interval = gc_interval
         self.max_concurrent_download = max_concurrent_download
+        self.poll_hist_inflight = False
+        self.commit_offset_inflight = False
 
         # holds metadata about the download task
         self.download_tasks = dict()
@@ -167,10 +169,12 @@ class AsyncioFumeDragonsmouthRuntime:
 
         match response_field:
             case "poll_hist":
+                self.poll_hist_inflight = False
                 poll_hist = control_response.poll_hist
                 LOGGER.debug(f"Received poll history {len(poll_hist.events)} events")
                 self.sm.queue_blockchain_event(poll_hist.events)
             case "commit_offset":
+                self.commit_offset_inflight = False
                 commit_offset = control_response.commit_offset
                 LOGGER.debug(f"Received commit offset: {commit_offset}")
                 self.sm.update_committed_offset(commit_offset.offset)
@@ -181,9 +185,12 @@ class AsyncioFumeDragonsmouthRuntime:
 
     async def poll_history_if_needed(self):
         """Poll the history if the state machine needs new events."""
+        if self.poll_hist_inflight:
+            return
         if self.sm.need_new_blockchain_events():
             cmd = self._build_poll_history_cmd(self.sm.committable_offset)
             await self.control_plane_tx.put(cmd)
+            self.poll_hist_inflight = True
 
     def commitment_level(self):
         """Gets the commitment level from the subscribe request."""
@@ -241,9 +248,12 @@ class AsyncioFumeDragonsmouthRuntime:
 
     async def _commit_offset(self):
         self.last_commit = time.time()
+        if self.commit_offset_inflight:
+            return
         if self.sm.last_committed_offset < self.sm.committable_offset:
             LOGGER.debug(f"Committing offset {self.sm.committable_offset}")
             await self._force_commit_offset()
+            self.commit_offset_inflight = True
 
     async def _drain_slot_status(self):
         """Drains the slot status from the state machine and sends updates to the Dragonsmouth outlet."""
