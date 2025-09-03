@@ -33,7 +33,7 @@ import {
 import { FumaroleSM } from "./runtime/state-machine";
 import { downloadSlotObserverFactory, GrpcSlotDownloader } from "./runtime/grpc-slot-downloader";
 import { DownloadTaskArgs, DownloadTaskResult, fumaroleObservable, FumaroleRuntimeArgs, RuntimeEvent } from "./runtime/reactive_runtime";
-import { finalize, firstValueFrom, from, Observable, Observer, share, Subject } from "rxjs";
+import { finalize, firstValueFrom, from, Observable, Observer, PartialObserver, share, Subject, Subscription } from "rxjs";
 import { makeObservable } from "./utils/grpc_ext";
 export interface FumaroleSubscribeConfig {
   concurrentDownloadLimit: number;
@@ -60,20 +60,119 @@ export function getDefaultFumaroleSubscribeConfig(): FumaroleSubscribeConfig {
   };
 }
 
+/**
+ * Adapter that allows to bridge Fumarole protocol to Dragonsmouth-like consumer API.
+ */
 export interface DragonsmouthAdapterSession {
-  /** Queue for sending subscribe requests */
+
+  /** Emits {@link SubscribeRequest} update to the current Fumarole subscribe session */
   sink: Observer<SubscribeRequest>;
-  /** Queue for receiving subscription updates */
-  source: Observable<SubscribeUpdate | Error>;
+
+  /** An {@link Observable} of {@link SubscribeUpdate} */
+  source: Observable<SubscribeUpdate>;
+
 }
-
-
-
 
 
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
 };
+
+/**
+ * 
+ * Fumarole Client class.
+ * 
+ * # Examples 
+ * 
+ * ## Subscribe 
+ * 
+ * Subscribe to {@link SubscribeUpdate}
+ * 
+ * ```ts
+ * const config = {
+ *   endpoint: FUMAROLE_ENDPOINT,
+ *   xToken: FUMAROLE_X_TOKEN,
+ *   maxDecodingMessageSizeBytes: 100 * 1024 * 1024,
+ *   xMetadata: {},
+ * };
+ * client = await FumaroleClient.connect(config);
+ * 
+ * const request: SubscribeRequest = {
+ *   commitment: CommitmentLevel.CONFIRMED,
+ *   accounts: { },
+ *   transactions: {
+ *     token: {
+ *       accountInclude: [TOKEN_ADDRESS],
+ *       accountExclude: [],
+ *       accountRequired: [],
+ *     }
+ *   },
+ *   slots: {
+ *     test: {
+ *       filterByCommitment: true,
+ *     }
+ *   },
+ *   transactionsStatus: {},
+ *   blocks: {},
+ *   blocksMeta: {},
+ *   entry: {},
+ *   ping: { id: Date.now() },
+ *   accountsDataSlice: [],
+ *   fromSlot: undefined,
+ * };
+ * 
+ * const {
+ *  sink,
+ *  source
+ * } = await client.dragonsmouthSubscribe("example", request);
+ * ```
+ * 
+ * ## Update `SubscribeRequest` during session
+ * 
+ * To update the {@link SubscribeRequest}, use the `sink` observer:
+ * 
+ * ```ts
+ * const {
+ *  sink,
+ *  source
+ * } = await client.dragonsmouthSubscribe("example", request);
+ * 
+ * sink.next(my_new_request);
+ * ```
+ * 
+ * ## for-await supports
+ * 
+ * To consume `source`, you can use all {@link Observable} operators, or use `for await` with `rxjs-for-await` lib:
+ * 
+ * ```ts
+ * for await (const update of eachValueFrom(source)) {
+ *   console.log("Received update:", update);
+ * }
+ * ```
+ * 
+ * ## Observable's Subscription handling
+ * 
+ * ```ts
+ * const sub = source.subscribe((update) => {
+ *  console.log(`new subscribe update: ${update}`);
+ * });
+ * 
+ * ...
+ * 
+ * // Don't forget to `unsubscribe()`
+ * sub.unsubscribe();
+ * ```
+ * 
+ * ## Observable to Promise using `forEach`
+ * 
+ * You can also use `forEach` which transforms {@link Observable} into a {@link Promise}:
+ * 
+ * ```ts
+ * await source.forEach((update) => {
+ *   console.log(`new subscribe update: ${update}`);
+ * });
+ * ```
+ */
 export class FumaroleClient {
   private readonly connector: FumaroleGrpcConnector;
   private readonly stub: GrpcClient;
@@ -163,6 +262,7 @@ export class FumaroleClient {
 
   /**
    * Establish a Dragonsouth-like consumption stream from a persistent subscriber.
+   * See {@link FumaroleClient.dragonsmouthSubscribeWithConfig} for more details.
    * 
    * @param persistentSubscriberName The name of the persistent subscriber to connect to.
    * @param request the initial `SubscribeRequest` to use.
@@ -172,7 +272,7 @@ export class FumaroleClient {
   async dragonsmouthSubscribe(
     persistentSubscriberName: string,
     request: SubscribeRequest,
-  ): Promise<Observable<SubscribeUpdate>> {
+  ): Promise<DragonsmouthAdapterSession> {
     return this.dragonsmouthSubscribeWithConfig(
       persistentSubscriberName,
       request,
@@ -192,12 +292,11 @@ export class FumaroleClient {
     persistentSubscriberName: string,
     initialSubscribeRequest: SubscribeRequest,
     config: FumaroleSubscribeConfig,
-  ): Promise<Observable<SubscribeUpdate>> {
+  ): Promise<DragonsmouthAdapterSession> {
 
     const initialJoin: JoinControlPlane = { consumerGroupName: persistentSubscriberName };
     const initialJoinCommand: ControlCommand = { initialJoin };
     const controlPlaneCommandSubject = new Subject<ControlCommand>();
-    const fumaroleRuntimeEventSubject = new Subject<RuntimeEvent>();
     const metadata = new Metadata();
 
     // Create duplex stream
@@ -251,7 +350,6 @@ export class FumaroleClient {
       throw new Error("No last committed offset");
 
     const ctrlPlaneResponseObservable: Observable<ControlResponse> = makeObservable(fumeControlPlaneDuplex);
-    const controlResponsePromise: Promise<ControlResponse> = firstValueFrom(ctrlPlaneResponseObservable);
     // Initialize state machine and queues
     const sm = new FumaroleSM(lastCommittedOffset, config.slotMemoryRetention);
 
@@ -266,6 +364,9 @@ export class FumaroleClient {
     const grpcSlotDownloader: Observer<DownloadTaskArgs> = downloadSlotObserverFactory(
       grpcSlotDownloadCtx
     )
+
+    const subscribeRequestSub = new Subject<SubscribeRequest>();
+
     const runtimeArgs: FumaroleRuntimeArgs = {
       downloadTaskObserver: grpcSlotDownloader,
       downloadTaskResultObservable: downloadTaskResultSubject.asObservable(),
@@ -275,9 +376,13 @@ export class FumaroleClient {
       commitIntervalMillis: config.commitInterval,
       maxConcurrentDownload: config.concurrentDownloadLimit,
       initialSubscribeRequest,
+      subscribeRequestObservable: subscribeRequestSub.asObservable(),
     }
 
-    return fumaroleObservable(runtimeArgs)
+    return {
+      sink: subscribeRequestSub,
+      source: fumaroleObservable(runtimeArgs),
+    };
   }
 
   async listConsumerGroups(): Promise<ListConsumerGroupsResponse> {

@@ -99,11 +99,6 @@ export abstract class AsyncSlotDownloader {
 
 export type Tick = { };
 
-export type ControlPlaneResp = { readonly response: ControlResponse }
-
-export type DownloadTaskCompleted = { readonly result: DownloadTaskResult }
-
-export type SubscribeRequestUpdate = { readonly new_subscribe_request: SubscribeRequest }
 
 export type RuntimeEventKind =
   | 'tick'
@@ -114,7 +109,7 @@ export type RuntimeEventKind =
 
 export type RuntimeEvent =
   | { _kind: 'tick'; tick: Tick }
-  | { _kind: 'subscribe_request_update'; subscribe_request_update: SubscribeRequestUpdate }
+  | { _kind: 'subscribe_request_update'; subscribe_request_update: SubscribeRequest }
   | { _kind: 'download_completed'; download_completed: DownloadTaskResult }
   | { _kind: 'control_plane_response'; control_plane_response: ControlResponse };
 
@@ -130,6 +125,7 @@ export type FumaroleRuntimeArgs = {
   commitIntervalMillis: number,
   maxConcurrentDownload: number
   initialSubscribeRequest: SubscribeRequest,
+  subscribeRequestObservable: Observable<SubscribeRequest>,
 }
 
 /**
@@ -285,9 +281,9 @@ function commitOffsetIfRequired(
  * @param this `FumaroleRuntimeCtx` to use
  * @param update `SubscribeRequestUpdate` update to apply
  */
-function onSubscribeRequestUpdate(this: FumaroleRuntimeCtx, update: SubscribeRequestUpdate) {
+function onSubscribeRequestUpdate(this: FumaroleRuntimeCtx, update: SubscribeRequest) {
   LOGGER.debug("New subscribe request update");
-  this.subscribeRequest = update.new_subscribe_request;
+  this.subscribeRequest = update;
 }
 
 /**
@@ -520,6 +516,7 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
     sm,
     maxConcurrentDownload,
     initialSubscribeRequest,
+    subscribeRequestObservable,
   } = args;
 
   return new Observable<SubscribeUpdate>((subscriber) => {
@@ -550,6 +547,18 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
         fumaroleMainBus.next({ _kind: 'control_plane_response', control_plane_response: response });
       });
     LOGGER.debug("Plugged control plane response");
+    
+    const subscribeRequestSub = subscribeRequestObservable.subscribe({
+      next: (newSubscribeRequest) => {
+        fumaroleMainBus.next({ _kind: 'subscribe_request_update', subscribe_request_update: newSubscribeRequest });
+      },
+      error: (err) => {
+        LOGGER.error(`Error in subscribe request observable: ${err}`);
+      },
+      complete: () => {
+        // NOTHING TO DO
+      },
+    });
 
     const ctx: FumaroleRuntimeCtx = {
       currentTick: 0,
@@ -573,6 +582,7 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
 
     return () => {
       tickSub.unsubscribe();
+      subscribeRequestSub.unsubscribe();
       ctrlPlaneResponseSub.unsubscribe();
       downloadTaskResultSub.unsubscribe();
       mainsub.unsubscribe();

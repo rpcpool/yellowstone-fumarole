@@ -4,7 +4,6 @@ import { BlockchainEvent } from "../grpc/fumarole";
 import { CommitmentLevel } from "../grpc/geyser";
 import { BinaryHeap } from "./binary-heap";
 import { Deque } from "@datastructures-js/deque";
-import { LOGGER } from "../logging";
 
 // Constants
 export const DEFAULT_SLOT_MEMORY_RETENTION = 10000;
@@ -41,14 +40,6 @@ export class FumeSlotStatus {
 
 export class SlotCommitmentProgression {
   processedCommitmentLevels = new Set<CommitmentLevel>();
-
-  // public hasProcessedCommitment(level: CommitmentLevel): boolean {
-  //   return this.processedCommitmentLevels.has(level);
-  // }
-
-  // public addProcessedCommitment(level: CommitmentLevel): void {
-  //   this.processedCommitmentLevels.add(level);
-  // }
 }
 
 export class SlotDownloadProgress {

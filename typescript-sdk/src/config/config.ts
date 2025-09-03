@@ -8,10 +8,10 @@ export interface FumaroleConfigOptions {
 }
 
 export class FumaroleConfig {
-  readonly endpoint: string;
-  readonly xToken?: string;
-  readonly maxDecodingMessageSizeBytes: number;
-  readonly xMetadata: Record<string, string>;
+  endpoint: string;
+  xToken?: string;
+  maxDecodingMessageSizeBytes: number;
+  xMetadata?: Record<string, string>;
 
   static readonly DEFAULT_MAX_DECODING_MESSAGE_SIZE = 512_000_000;
 

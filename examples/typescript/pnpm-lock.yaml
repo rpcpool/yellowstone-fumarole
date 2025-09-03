@@ -20,6 +20,9 @@ importers:
       rxjs:
         specifier: ^7.8.2
         version: 7.8.2
+      rxjs-for-await:
+        specifier: ^1.0.0
+        version: 1.0.0(rxjs@7.8.2)
       tsx:
         specifier: ^4.20.5
         version: 4.20.5
@@ -350,6 +353,11 @@ packages:
   resolve-pkg-maps@1.0.0:
     resolution: {integrity: sha512-seS2Tj26TBVOC2NIc2rOe2y2ZO7efxITtLZcGSOnHHNOQ7CkiUBfw0Iw2ck6xkIhPwLhKNLS8BO+hEpngQlqzw==}
 
+  rxjs-for-await@1.0.0:
+    resolution: {integrity: sha512-MJhvf1vtQaljd5wlzsasvOjcohVogzkHkUI0gFE9nGhZ15/fT2vR1CjkLEh37oRqWwpv11vHo5D+sLM+Aw9Y8g==}
+    peerDependencies:
+      rxjs: ^7.0.0
+
   rxjs@7.8.2:
     resolution: {integrity: sha512-dhKf903U/PQZY6boNNtAGdWbG85WAbjT/1xYoZIC7FAY0yWapOBQVsVrDl58W86//e1VpMNBtRV4MaXfdMySFA==}
 
@@ -639,6 +647,10 @@ snapshots:
   require-directory@2.1.1: {}
 
   resolve-pkg-maps@1.0.0: {}
+
+  rxjs-for-await@1.0.0(rxjs@7.8.2):
+    dependencies:
+      rxjs: 7.8.2
 
   rxjs@7.8.2:
     dependencies:

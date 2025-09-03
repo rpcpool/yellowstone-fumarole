@@ -48,22 +48,10 @@ async function main() {
 
   const request: SubscribeRequest = {
     commitment: CommitmentLevel.PROCESSED,
-    accounts: {
-      token: {
-        account: [],
-        owner: [TOKEN_ADDRESS],
-        filters: [],
-      }
-    },
-    transactions: {
-      token: {
-        accountInclude: [TOKEN_ADDRESS],
-        accountExclude: [],
-        accountRequired: [],
-      }
-    },
+    accounts: {},
+    transactions: {},
     slots: {
-      test: {
+      example: {
         filterByCommitment: true,
       }
     },
@@ -115,14 +103,28 @@ async function main() {
   );
   console.log("Subscription started. Listening for updates...");
 
-  for await (const update of eachValueFrom(source)) {
-    if (update.account) {
-      console.log(`Received account update in slot ${update.account?.slot}`);
-    } else if (update.slot) {
-      console.log(`Received slot update: ${update.slot?.slot}`);
-    } else if (update.transaction) {
-      console.log(`Received transaction in slot ${update.transaction?.slot}`);
+  // Observable in rxjs can be subscribed multiple time.
+  // In the case of Fumarole source, the `Observable` is "hot", meaning it can emit reference (not copy) to the same event to all subscribers.
+  const sub1 = source.subscribe((next) => {
+    if (next.slot) {
+      console.log(`sub1 -- received slot update ${next.slot?.slot}`);
     }
+  });
+  const sub2 = source.subscribe((next) => {
+    if (next.slot) {
+      console.log(`sub2 -- received slot update ${next.slot?.slot}`);
+    }
+  });
+
+  try {
+    await new Promise((resolve) => {
+      setTimeout(resolve, 5000);
+    });
+  } finally {
+    console.log("10 seconds elapsed!");
+    // Don't forget to unsubscribe!!!
+    sub1.unsubscribe();
+    sub2.unsubscribe();
   }
 }
 
