@@ -5,15 +5,14 @@ import {
   SubscribeRequest,
   CommitmentLevel,
   InitialOffsetPolicy,
-  SubscribeUpdate,
-  setDefaultLogger
+  setDefaultFumaroleLogger 
 } from "@triton-one/yellowstone-fumarole";
 import { from, Observable } from "rxjs";
 import { eachValueFrom } from "rxjs-for-await";
 
 dotenv.config();
 
-setDefaultLogger();
+setDefaultFumaroleLogger();
 
 // stringify bigint in json
 function safeJsonStringify(obj: unknown): string {
@@ -65,14 +64,14 @@ async function main() {
   };
 
   // delete them all because they pile up and hit limit while developing
-  await client.deleteAllConsumerGroups();
+  await client.deleteAllPersistentSubscribers();
 
   groupName = `token-monitor-${Math.random().toString(36).substring(7)}`;
-  console.log(`Creating consumer group: ${groupName}`);
+  console.log(`Creating persistent subscriber: ${groupName}`);
 
-  console.log("Creating consumer group with initialOffsetPolicy LATEST");
+  console.log("Creating persistent subscriber with initialOffsetPolicy LATEST");
   try {
-    await client.createConsumerGroup({
+    await client.createPersistentSubscriber({
       consumerGroupName: groupName,
       initialOffsetPolicy: InitialOffsetPolicy.LATEST,
     });
