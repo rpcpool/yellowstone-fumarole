@@ -1,14 +1,12 @@
-import {
-  Metadata,
-  ServiceError,
-  MetadataValue,
-  status,
-  ClientDuplexStream,
-} from "@grpc/grpc-js";
+import { Metadata, ServiceError, ClientDuplexStream } from "@grpc/grpc-js";
 import { FumaroleConfig } from "./config/config";
 import { FumaroleClient as GrpcClient } from "./grpc/fumarole";
 import { FumaroleGrpcConnector } from "./connectivity";
-import { LOGGER, setCustomLogger, setDefaultLogger } from "./logging";
+import {
+  LOGGER,
+  setCustomFumaroleLogger,
+  setDefaultFumaroleLogger,
+} from "./logging";
 import {
   VersionRequest,
   VersionResponse,
@@ -31,9 +29,17 @@ import {
   CommitmentLevel,
 } from "./grpc/geyser";
 import { FumaroleSM } from "./runtime/state-machine";
-import { downloadSlotObserverFactory, GrpcSlotDownloader } from "./runtime/grpc-slot-downloader";
-import { DownloadTaskArgs, DownloadTaskResult, fumaroleObservable, FumaroleRuntimeArgs, RuntimeEvent } from "./runtime/reactive_runtime";
-import { finalize, firstValueFrom, from, Observable, Observer, PartialObserver, share, Subject, Subscription } from "rxjs";
+import {
+  downloadSlotObserverFactory,
+  GrpcSlotDownloader,
+} from "./runtime/grpc-slot-downloader";
+import {
+  DownloadTaskArgs,
+  DownloadTaskResult,
+  fumaroleObservable,
+  FumaroleRuntimeArgs,
+} from "./runtime/reactive_runtime";
+import { finalize, Observable, Observer, Subject } from "rxjs";
 import { makeObservable } from "./utils/grpc_ext";
 export interface FumaroleSubscribeConfig {
   concurrentDownloadLimit: number;
@@ -50,13 +56,18 @@ export const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP = 10;
 export const DEFAULT_GC_INTERVAL = 100; // ticks
 export const DEFAULT_SLOT_MEMORY_RETENTION = 1000; // seconds
 
+/**
+ * Get the default configuration for Fumarole subscriptions.
+ *
+ * @returns The default Fumarole subscribe configuration.
+ */
 export function getDefaultFumaroleSubscribeConfig(): FumaroleSubscribeConfig {
   return {
     concurrentDownloadLimit: DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP,
     commitInterval: DEFAULT_COMMIT_INTERVAL,
     maxFailedSlotDownloadAttempt: DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT,
     gcInterval: DEFAULT_GC_INTERVAL,
-    slotMemoryRetention: DEFAULT_SLOT_MEMORY_RETENTION
+    slotMemoryRetention: DEFAULT_SLOT_MEMORY_RETENTION,
   };
 }
 
@@ -64,30 +75,27 @@ export function getDefaultFumaroleSubscribeConfig(): FumaroleSubscribeConfig {
  * Adapter that allows to bridge Fumarole protocol to Dragonsmouth-like consumer API.
  */
 export interface DragonsmouthAdapterSession {
-
   /** Emits {@link SubscribeRequest} update to the current Fumarole subscribe session */
   sink: Observer<SubscribeRequest>;
 
   /** An {@link Observable} of {@link SubscribeUpdate} */
   source: Observable<SubscribeUpdate>;
-
 }
-
 
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
 };
 
 /**
- * 
+ *
  * Fumarole Client class.
- * 
- * # Examples 
- * 
- * ## Subscribe 
- * 
+ *
+ * # Examples
+ *
+ * ## Subscribe
+ *
  * Subscribe to {@link SubscribeUpdate}
- * 
+ *
  * ```ts
  * const config = {
  *   endpoint: FUMAROLE_ENDPOINT,
@@ -96,7 +104,7 @@ export interface DragonsmouthAdapterSession {
  *   xMetadata: {},
  * };
  * client = await FumaroleClient.connect(config);
- * 
+ *
  * const request: SubscribeRequest = {
  *   commitment: CommitmentLevel.CONFIRMED,
  *   accounts: { },
@@ -120,53 +128,53 @@ export interface DragonsmouthAdapterSession {
  *   accountsDataSlice: [],
  *   fromSlot: undefined,
  * };
- * 
+ *
  * const {
  *  sink,
  *  source
  * } = await client.dragonsmouthSubscribe("example", request);
  * ```
- * 
+ *
  * ## Update `SubscribeRequest` during session
- * 
+ *
  * To update the {@link SubscribeRequest}, use the `sink` observer:
- * 
+ *
  * ```ts
  * const {
  *  sink,
  *  source
  * } = await client.dragonsmouthSubscribe("example", request);
- * 
+ *
  * sink.next(my_new_request);
  * ```
- * 
+ *
  * ## for-await supports
- * 
+ *
  * To consume `source`, you can use all {@link Observable} operators, or use `for await` with `rxjs-for-await` lib:
- * 
+ *
  * ```ts
  * for await (const update of eachValueFrom(source)) {
  *   console.log("Received update:", update);
  * }
  * ```
- * 
+ *
  * ## Observable's Subscription handling
- * 
+ *
  * ```ts
  * const sub = source.subscribe((update) => {
  *  console.log(`new subscribe update: ${update}`);
  * });
- * 
+ *
  * ...
- * 
+ *
  * // Don't forget to `unsubscribe()`
  * sub.unsubscribe();
  * ```
- * 
+ *
  * ## Observable to Promise using `forEach`
- * 
+ *
  * You can also use `forEach` which transforms {@link Observable} into a {@link Promise}:
- * 
+ *
  * ```ts
  * await source.forEach((update) => {
  *   console.log(`new subscribe update: ${update}`);
@@ -179,7 +187,7 @@ export class FumaroleClient {
 
   private static safeStringify(obj: unknown): string {
     return JSON.stringify(obj, (_, v) =>
-      typeof v === "bigint" ? v.toString() : v
+      typeof v === "bigint" ? v.toString() : v,
     );
   }
 
@@ -199,7 +207,7 @@ export class FumaroleClient {
         endpoint: config.endpoint,
         xToken: config.xToken ? "***" : "none",
         maxDecodingMessageSizeBytes: config.maxDecodingMessageSizeBytes,
-      })
+      }),
     );
 
     const client = await connector.connect();
@@ -212,7 +220,7 @@ export class FumaroleClient {
         if (error) {
           LOGGER.error(
             "Client failed to become ready:",
-            FumaroleClient.safeStringify(error)
+            FumaroleClient.safeStringify(error),
           );
           reject(error);
         } else {
@@ -227,10 +235,7 @@ export class FumaroleClient {
       const methods = client
         ? Object.getOwnPropertyNames(Object.getPrototypeOf(client))
         : [];
-      LOGGER.error(
-        "Available methods:",
-        FumaroleClient.safeStringify(methods)
-      );
+      LOGGER.error("Available methods:", FumaroleClient.safeStringify(methods));
       throw new Error("gRPC client or listConsumerGroups method not available");
     }
 
@@ -246,13 +251,13 @@ export class FumaroleClient {
         if (error) {
           LOGGER.error(
             "Version request failed:",
-            FumaroleClient.safeStringify(error)
+            FumaroleClient.safeStringify(error),
           );
           reject(error);
         } else {
           LOGGER.debug(
             "Version response:",
-            FumaroleClient.safeStringify(response)
+            FumaroleClient.safeStringify(response),
           );
           resolve(response);
         }
@@ -263,11 +268,12 @@ export class FumaroleClient {
   /**
    * Establish a Dragonsouth-like consumption stream from a persistent subscriber.
    * See {@link FumaroleClient.dragonsmouthSubscribeWithConfig} for more details.
-   * 
+   *
    * @param persistentSubscriberName The name of the persistent subscriber to connect to.
    * @param request the initial `SubscribeRequest` to use.
-   * @returns an observable that emits updates from the subscriber.
-   * 
+   *
+   * @returns an {@link DragonsmouthAdapterSession}
+   *
    */
   async dragonsmouthSubscribe(
     persistentSubscriberName: string,
@@ -282,33 +288,35 @@ export class FumaroleClient {
 
   /**
    * Establish a Dragonsouth-like consumption stream from a persistent subscriber.
-   * 
+   *
    * @param persistentSubscriberName The name of the persistent subscriber to connect to.
    * @param initialSubscribeRequest The initial `SubscribeRequest` to use.
    * @param config An instance of `FumaroleSubscribeConfig` configuration options for the subscription.
-   * @returns an observable that emits updates from the subscriber.
+   * @returns an {@link DragonsmouthAdapterSession}
    */
   public async dragonsmouthSubscribeWithConfig(
     persistentSubscriberName: string,
     initialSubscribeRequest: SubscribeRequest,
     config: FumaroleSubscribeConfig,
   ): Promise<DragonsmouthAdapterSession> {
-
-    const initialJoin: JoinControlPlane = { consumerGroupName: persistentSubscriberName };
+    const initialJoin: JoinControlPlane = {
+      consumerGroupName: persistentSubscriberName,
+    };
     const initialJoinCommand: ControlCommand = { initialJoin };
     const controlPlaneCommandSubject = new Subject<ControlCommand>();
     const metadata = new Metadata();
 
     // Create duplex stream
     const fumeControlPlaneDuplex = this.stub.subscribe(
-      metadata, {}
+      metadata,
+      {},
     ) as ClientDuplexStream<ControlCommand, ControlResponse>;
 
     controlPlaneCommandSubject
       .pipe(
         finalize(() => {
           fumeControlPlaneDuplex.end();
-        })
+        }),
       )
       .subscribe(async (command) => {
         await new Promise<void>((resolve, reject) => {
@@ -321,25 +329,27 @@ export class FumaroleClient {
           });
         });
       });
-    
-    const waitInitCtrlMsg: Promise<ControlResponse> = new Promise((resolve, reject) => {
-      let has_resolved = false;
-      fumeControlPlaneDuplex.once("data", (msg: ControlResponse) => {
-        has_resolved = true;
-        resolve(msg);
-      });
-      // I make sure I marked as resolve since data and error are independent
-      // and we cannot remove listener once they are called.
-      fumeControlPlaneDuplex.once("error", (err: any) => {
-        if (!has_resolved) {
-          reject(err);
-        }
-      });
-    });
+
+    const waitInitCtrlMsg: Promise<ControlResponse> = new Promise(
+      (resolve, reject) => {
+        let has_resolved = false;
+        fumeControlPlaneDuplex.once("data", (msg: ControlResponse) => {
+          has_resolved = true;
+          resolve(msg);
+        });
+        // I make sure I marked as resolve since data and error are independent
+        // and we cannot remove listener once they are called.
+        fumeControlPlaneDuplex.once("error", (err: any) => {
+          if (!has_resolved) {
+            reject(err);
+          }
+        });
+      },
+    );
 
     controlPlaneCommandSubject.next(initialJoinCommand);
     const controlResponse = await waitInitCtrlMsg;
-   
+
     const init = (controlResponse as ControlResponse).init;
     if (!init)
       throw new Error(`Unexpected initial response: ${controlResponse}`);
@@ -349,7 +359,8 @@ export class FumaroleClient {
     if (lastCommittedOffset == null)
       throw new Error("No last committed offset");
 
-    const ctrlPlaneResponseObservable: Observable<ControlResponse> = makeObservable(fumeControlPlaneDuplex);
+    const ctrlPlaneResponseObservable: Observable<ControlResponse> =
+      makeObservable(fumeControlPlaneDuplex);
     // Initialize state machine and queues
     const sm = new FumaroleSM(lastCommittedOffset, config.slotMemoryRetention);
 
@@ -360,10 +371,9 @@ export class FumaroleClient {
       client: dataPlaneClient,
       client_metadata: metadata,
       downloadTaskResultObserver: downloadTaskResultSubject,
-    }
-    const grpcSlotDownloader: Observer<DownloadTaskArgs> = downloadSlotObserverFactory(
-      grpcSlotDownloadCtx
-    )
+    };
+    const grpcSlotDownloader: Observer<DownloadTaskArgs> =
+      downloadSlotObserverFactory(grpcSlotDownloadCtx);
 
     const subscribeRequestSub = new Subject<SubscribeRequest>();
 
@@ -377,7 +387,7 @@ export class FumaroleClient {
       maxConcurrentDownload: config.concurrentDownloadLimit,
       initialSubscribeRequest,
       subscribeRequestObservable: subscribeRequestSub.asObservable(),
-    }
+    };
 
     return {
       sink: subscribeRequestSub,
@@ -385,7 +395,12 @@ export class FumaroleClient {
     };
   }
 
-  async listConsumerGroups(): Promise<ListConsumerGroupsResponse> {
+  /**
+   * List all persistent subscribers under your account.
+   *
+   * @returns
+   */
+  async listPersistentSubscribers(): Promise<ListConsumerGroupsResponse> {
     if (!this.stub) {
       throw new Error("gRPC stub not initialized");
     }
@@ -424,7 +439,7 @@ export class FumaroleClient {
           },
           (
             error: ServiceError | null,
-            response: ListConsumerGroupsResponse
+            response: ListConsumerGroupsResponse,
           ) => {
             hasResponded = true;
             clearTimeout(timeout);
@@ -438,28 +453,22 @@ export class FumaroleClient {
                 message: error.message,
                 name: error.name,
               };
-              LOGGER.error(
-                "ListConsumerGroups error:",
-                errorDetails
-              );
+              LOGGER.error("ListConsumerGroups error:", errorDetails);
               reject(error);
             } else {
               LOGGER.debug(
                 "ListConsumerGroups success - Response:",
-                FumaroleClient.safeStringify(response)
+                FumaroleClient.safeStringify(response),
               );
               resolve(response);
             }
-          }
+          },
         );
 
         // Monitor call state
         if (call) {
           call.on("metadata", (metadata: Metadata) => {
-            LOGGER.debug(
-              "Received metadata:",
-              metadata.getMap()
-            );
+            LOGGER.debug("Received metadata:", metadata.getMap());
           });
 
           call.on("status", (status: any) => {
@@ -489,14 +498,22 @@ export class FumaroleClient {
     });
   }
 
-  async getConsumerGroupInfo(
-    consumerGroupName: string
+  /**
+   * Get information about a persistent subscriber.
+   *
+   * @param persistentSubscriberName The name of the persistent subscriber.
+   * @returns The information about the persistent subscriber or null if not found.
+   */
+  async getPersistentSubscriberInfo(
+    persistentSubscriberName: string,
   ): Promise<ConsumerGroupInfo | null> {
     LOGGER.debug(
       "Sending getConsumerGroupInfo request:",
-      consumerGroupName
+      persistentSubscriberName,
     );
-    const request = { consumerGroupName } as GetConsumerGroupInfoRequest;
+    const request = {
+      consumerGroupName: persistentSubscriberName,
+    } as GetConsumerGroupInfoRequest;
     return new Promise((resolve, reject) => {
       this.stub.getConsumerGroupInfo(
         request,
@@ -506,7 +523,7 @@ export class FumaroleClient {
               // grpc.status.NOT_FOUND
               LOGGER.debug(
                 "Consumer group not found:",
-                consumerGroupName
+                persistentSubscriberName,
               );
               resolve(null);
             } else {
@@ -514,25 +531,30 @@ export class FumaroleClient {
               reject(error);
             }
           } else {
-            LOGGER.debug(
-              "GetConsumerGroupInfo response:",
-              response
-            );
+            LOGGER.debug("GetConsumerGroupInfo response:", response);
             resolve(response);
           }
-        }
+        },
       );
     });
   }
 
-  async deleteConsumerGroup(
-    consumerGroupName: string
+  /**
+   * Delete a persistent subscriber.
+   *
+   * @param persistentSubscriberName The name of the persistent subscriber.
+   * @returns The response from the delete operation.
+   */
+  async deletePersistentSubscriber(
+    persistentSubscriberName: string,
   ): Promise<DeleteConsumerGroupResponse> {
     LOGGER.debug(
       "Sending deleteConsumerGroup request:",
-      consumerGroupName
+      persistentSubscriberName,
     );
-    const request = { consumerGroupName } as DeleteConsumerGroupRequest;
+    const request = {
+      consumerGroupName: persistentSubscriberName,
+    } as DeleteConsumerGroupRequest;
     return new Promise((resolve, reject) => {
       this.stub.deleteConsumerGroup(
         request,
@@ -541,21 +563,21 @@ export class FumaroleClient {
             LOGGER.error("DeleteConsumerGroup error:", error);
             reject(error);
           } else {
-            LOGGER.debug(
-              "DeleteConsumerGroup response:",
-              response
-            );
+            LOGGER.debug("DeleteConsumerGroup response:", response);
             resolve(response);
           }
-        }
+        },
       );
     });
   }
 
-  async deleteAllConsumerGroups(): Promise<void> {
-    const response = await this.listConsumerGroups();
+  /**
+   * Delete all persistent subscribers under you account.
+   */
+  async deleteAllPersistentSubscribers(): Promise<void> {
+    const response = await this.listPersistentSubscribers();
     const deletePromises = response.consumerGroups.map((group) =>
-      this.deleteConsumerGroup(group.consumerGroupName)
+      this.deletePersistentSubscriber(group.consumerGroupName),
     );
 
     const results = await Promise.all(deletePromises);
@@ -565,19 +587,22 @@ export class FumaroleClient {
     if (failures.length > 0) {
       throw new Error(
         `Failed to delete some consumer groups: ${FumaroleClient.safeStringify(
-          failures
-        )}`
+          failures,
+        )}`,
       );
     }
   }
 
-  async createConsumerGroup(
-    request: CreateConsumerGroupRequest
+  /**
+   * Create a new persistent subscriber.
+   *
+   * @param request The request object containing the subscriber details.
+   * @returns The response from the create operation.
+   */
+  async createPersistentSubscriber(
+    request: CreateConsumerGroupRequest,
   ): Promise<CreateConsumerGroupResponse> {
-    LOGGER.debug(
-      "Sending createConsumerGroup request:",
-      request
-    );
+    LOGGER.debug("Sending createConsumerGroup request:", request);
     return new Promise((resolve, reject) => {
       this.stub.createConsumerGroup(
         request,
@@ -586,13 +611,10 @@ export class FumaroleClient {
             LOGGER.error("CreateConsumerGroup error:", error);
             reject(error);
           } else {
-            LOGGER.debug(
-              "CreateConsumerGroup response:",
-              response
-            );
+            LOGGER.debug("CreateConsumerGroup response:", response);
             resolve(response);
           }
-        }
+        },
       );
     });
   }
@@ -604,6 +626,6 @@ export {
   CommitmentLevel,
   SubscribeRequest,
   SubscribeUpdate,
-  setCustomLogger,
-  setDefaultLogger,
+  setCustomFumaroleLogger,
+  setDefaultFumaroleLogger,
 };

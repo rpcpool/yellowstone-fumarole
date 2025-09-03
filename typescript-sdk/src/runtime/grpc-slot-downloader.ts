@@ -1,18 +1,26 @@
-import { ClientReadableStream, Metadata, ServiceError, status } from "@grpc/grpc-js";
+import {
+  ClientReadableStream,
+  Metadata,
+  ServiceError,
+  status,
+} from "@grpc/grpc-js";
 import {
   DataResponse,
   DownloadBlockShard,
   FumaroleClient,
 } from "../grpc/fumarole";
 import { SubscribeUpdate } from "../grpc/geyser";
-import { DownloadBlockErrorKind, DownloadTaskArgs, DownloadTaskResult } from "./reactive_runtime";
+import {
+  DownloadBlockErrorKind,
+  DownloadTaskArgs,
+  DownloadTaskResult,
+} from "./reactive_runtime";
 import { Observer } from "rxjs";
 import { LOGGER } from "../logging";
 
-
 function mapTonicErrorCodeToDownloadBlockError(
-    e: ServiceError
-  ): DownloadBlockErrorKind {
+  e: ServiceError,
+): DownloadBlockErrorKind {
   const code = e.code;
 
   if (code === status.NOT_FOUND) {
@@ -36,7 +44,6 @@ function mapTonicErrorCodeToDownloadBlockError(
   }
 }
 
-
 /**
  * gRPC slot downloader context.
  */
@@ -44,22 +51,18 @@ export type GrpcSlotDownloader = {
   /**
    * The gRPC client for downloading slots.
    */
-  client: FumaroleClient,
+  client: FumaroleClient;
   /**
    * The metadata for the gRPC client.
    */
-  client_metadata: Metadata,
+  client_metadata: Metadata;
   /**
    * Observer to send download task results too.
    */
-  downloadTaskResultObserver: Observer<DownloadTaskResult>,
-}
+  downloadTaskResultObserver: Observer<DownloadTaskResult>;
+};
 
-
-function do_download(
-  this: GrpcSlotDownloader,
-  args: DownloadTaskArgs
-) {
+function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
   const blockFilters = {
     accounts: args.subscribeRequest.accounts,
     transactions: args.subscribeRequest.transactions,
@@ -74,14 +77,17 @@ function do_download(
     blockFilters: blockFilters,
   };
   const outlet = args.outlet;
-  const downloadResponse: ClientReadableStream<DataResponse> = this.client.downloadBlock(request, this.client_metadata);
+  const downloadResponse: ClientReadableStream<DataResponse> =
+    this.client.downloadBlock(request, this.client_metadata);
   let totalEventDownloaded = 0;
   downloadResponse.on("data", (data: DataResponse) => {
     if (data.update) {
       totalEventDownloaded++;
       outlet.next(data.update);
     } else if (data.blockShardDownloadFinish) {
-      LOGGER.info(`Finished download for slot ${args.downloadRequest.slot}, total events downloaded: ${totalEventDownloaded}`);
+      LOGGER.info(
+        `Finished download for slot ${args.downloadRequest.slot}, total events downloaded: ${totalEventDownloaded}`,
+      );
       this.downloadTaskResultObserver.next({
         kind: "Ok",
         completed: {
@@ -96,7 +102,7 @@ function do_download(
 
   downloadResponse.on("error", (err: any) => {
     const result: DownloadTaskResult = {
-      kind: 'Err',
+      kind: "Err",
       err: {
         kind: mapTonicErrorCodeToDownloadBlockError(err),
         message: err,
@@ -109,14 +115,13 @@ function do_download(
 
 /**
  * Creates an observer for downloading slots.
- * 
+ *
  * @param ctx The gRPC slot downloader context.
  * @returns An observer for download task arguments.
  */
 export function downloadSlotObserverFactory(
   ctx: GrpcSlotDownloader,
 ): Observer<DownloadTaskArgs> {
-
   const download_fn = do_download.bind(ctx);
   return {
     next: (args: DownloadTaskArgs) => {
@@ -128,6 +133,6 @@ export function downloadSlotObserverFactory(
     },
     complete: () => {
       ctx.client.close();
-    }
+    },
   };
 }

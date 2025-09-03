@@ -1,7 +1,11 @@
-import { CommitmentLevel } from '../grpc/geyser';
-import { BlockchainEvent } from '../grpc/fumarole';
-import { FumaroleSM, DEFAULT_SLOT_MEMORY_RETENTION, SlotDownloadState } from '../runtime/state-machine';
-import { randomBytes } from 'crypto';
+import { CommitmentLevel } from "../grpc/geyser";
+import { BlockchainEvent } from "../grpc/fumarole";
+import {
+  FumaroleSM,
+  DEFAULT_SLOT_MEMORY_RETENTION,
+  SlotDownloadState,
+} from "../runtime/state-machine";
+import { randomBytes } from "crypto";
 
 function randomBlockchainEvent(
   offset: bigint,
@@ -10,7 +14,7 @@ function randomBlockchainEvent(
 ): BlockchainEvent {
   const nilBlockchainId = new Uint8Array(16); // UUID.nil()
   const randomBlockUid = randomBytes(16); // UUID.v4()
-  
+
   return {
     offset,
     blockchainId: nilBlockchainId,
@@ -24,9 +28,9 @@ function randomBlockchainEvent(
   };
 }
 
-describe('FumaroleSM', () => {
-  describe('happy path', () => {
-    it('should handle basic flow correctly', () => {
+describe("FumaroleSM", () => {
+  describe("happy path", () => {
+    it("should handle basic flow correctly", () => {
       const sm = new FumaroleSM(0n, DEFAULT_SLOT_MEMORY_RETENTION);
 
       const event = randomBlockchainEvent(1n, 1n, CommitmentLevel.PROCESSED);
@@ -74,8 +78,8 @@ describe('FumaroleSM', () => {
     });
   });
 
-  describe('slot status deduplication', () => {
-    it('should deduplicate slot status', () => {
+  describe("slot status deduplication", () => {
+    it("should deduplicate slot status", () => {
       const sm = new FumaroleSM(0n, DEFAULT_SLOT_MEMORY_RETENTION);
 
       const event = randomBlockchainEvent(1n, 1n, CommitmentLevel.PROCESSED);
@@ -105,8 +109,8 @@ describe('FumaroleSM', () => {
     });
   });
 
-  describe('minimum commitment level', () => {
-    it('should handle min commitment level correctly', () => {
+  describe("minimum commitment level", () => {
+    it("should handle min commitment level correctly", () => {
       const sm = new FumaroleSM(0n, DEFAULT_SLOT_MEMORY_RETENTION);
 
       const event = randomBlockchainEvent(1n, 1n, CommitmentLevel.PROCESSED);

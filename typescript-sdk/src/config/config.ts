@@ -8,9 +8,21 @@ export interface FumaroleConfigOptions {
 }
 
 export class FumaroleConfig {
+  /**
+   * The endpoint URL for the Fumarole service.
+   */
   endpoint: string;
+  /**
+   * The token used for authentication with the Fumarole service.
+   */
   xToken?: string;
+  /**
+   * The maximum size of a message that can be decoded by the Fumarole service.
+   */
   maxDecodingMessageSizeBytes: number;
+  /**
+   * Optional metadata to include with each request to the Fumarole service.
+   */
   xMetadata?: Record<string, string>;
 
   static readonly DEFAULT_MAX_DECODING_MESSAGE_SIZE = 512_000_000;
@@ -24,6 +36,12 @@ export class FumaroleConfig {
     this.xMetadata = options.xMetadata ?? {};
   }
 
+  /**
+   * Creates a FumaroleConfig instance from a YAML string.
+   *
+   * @param yamlContent The YAML string to parse.
+   * @returns A FumaroleConfig instance.
+   */
   static fromYaml(yamlContent: string): FumaroleConfig {
     const data = yaml.load(yamlContent) as Record<string, any>;
 

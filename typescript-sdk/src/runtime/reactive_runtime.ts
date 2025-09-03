@@ -20,18 +20,25 @@
  *
  * For more information, see:
  * - RxJS documentation: https://rxjs.dev/guide/overview
- * 
- * 
+ *
+ *
  * Here's the execution graph of the runtime:
- * 
+ *
  * @see https://rxjs.dev/guide/overview
- * 
+ *
  */
-import { defer, finalize, interval, map, Observable, Observer, share, Subject, Subscriber } from "rxjs";
 import {
-  ControlCommand,
-  ControlResponse,
-} from "../grpc/fumarole";
+  defer,
+  finalize,
+  interval,
+  map,
+  Observable,
+  Observer,
+  share,
+  Subject,
+  Subscriber,
+} from "rxjs";
+import { ControlCommand, ControlResponse } from "../grpc/fumarole";
 import {
   CommitmentLevel,
   SlotStatus,
@@ -54,7 +61,7 @@ export class CompletedDownloadBlockTask {
     public slot: bigint,
     public blockUid: Uint8Array,
     public shardIdx: FumeShardIdx,
-    public totalEventDownloaded: number
+    public totalEventDownloaded: number,
   ) {}
 }
 
@@ -65,12 +72,10 @@ export type DownloadBlockErrorKind =
   | "FailedDownload"
   | "Fatal";
 
-
 export type DownloadBlockError = {
-  kind: DownloadBlockErrorKind,
-  message: any
-}
-
+  kind: DownloadBlockErrorKind;
+  message: any;
+};
 
 export type DownloadTaskResultKind = "Ok" | "Err";
 
@@ -79,54 +84,58 @@ export class DownloadTaskResult {
     public kind: DownloadTaskResultKind,
     public completed?: CompletedDownloadBlockTask,
     public slot?: bigint,
-    public err?: DownloadBlockError
+    public err?: DownloadBlockError,
   ) {}
 }
 
 export type DownloadTaskArgs = {
   // todo: should be renamed slotDownloadInfo
-  downloadRequest: FumeDownloadRequest,
-  subscribeRequest: SubscribeRequest,
-  outlet: Observer<SubscribeUpdate>,
-}
+  downloadRequest: FumeDownloadRequest;
+  subscribeRequest: SubscribeRequest;
+  outlet: Observer<SubscribeUpdate>;
+};
 // ...existing code...
 export abstract class AsyncSlotDownloader {
   abstract runDownload(
     subscribeRequest: SubscribeRequest,
-    spec: DownloadTaskArgs
+    spec: DownloadTaskArgs,
   ): Promise<DownloadTaskResult>;
 }
 
-export type Tick = { };
-
+export type Tick = {};
 
 export type RuntimeEventKind =
-  | 'tick'
-  | 'subscribe_request_update'
-  | 'download_completed'
-  | 'control_plane_response';
-
+  | "tick"
+  | "subscribe_request_update"
+  | "download_completed"
+  | "control_plane_response";
 
 export type RuntimeEvent =
-  | { _kind: 'tick'; tick: Tick }
-  | { _kind: 'subscribe_request_update'; subscribe_request_update: SubscribeRequest }
-  | { _kind: 'download_completed'; download_completed: DownloadTaskResult }
-  | { _kind: 'control_plane_response'; control_plane_response: ControlResponse };
+  | { _kind: "tick"; tick: Tick }
+  | {
+      _kind: "subscribe_request_update";
+      subscribe_request_update: SubscribeRequest;
+    }
+  | { _kind: "download_completed"; download_completed: DownloadTaskResult }
+  | {
+      _kind: "control_plane_response";
+      control_plane_response: ControlResponse;
+    };
 
 /**
  * Arguments for creating a Fumarole runtime.
  */
 export type FumaroleRuntimeArgs = {
-  downloadTaskObserver: Observer<DownloadTaskArgs>,
-  downloadTaskResultObservable: Observable<DownloadTaskResult>,
-  controlPlaneObserver: Observer<ControlCommand>,
-  controlPlaneResponseObservable: Observable<ControlResponse>,
-  sm: FumaroleSM,
-  commitIntervalMillis: number,
-  maxConcurrentDownload: number
-  initialSubscribeRequest: SubscribeRequest,
-  subscribeRequestObservable: Observable<SubscribeRequest>,
-}
+  downloadTaskObserver: Observer<DownloadTaskArgs>;
+  downloadTaskResultObservable: Observable<DownloadTaskResult>;
+  controlPlaneObserver: Observer<ControlCommand>;
+  controlPlaneResponseObservable: Observable<ControlResponse>;
+  sm: FumaroleSM;
+  commitIntervalMillis: number;
+  maxConcurrentDownload: number;
+  initialSubscribeRequest: SubscribeRequest;
+  subscribeRequestObservable: Observable<SubscribeRequest>;
+};
 
 /**
  * Execution context for the Fumarole runtime.
@@ -135,18 +144,18 @@ type FumaroleRuntimeCtx = {
   /**
    * Current tick count for the runtime.
    */
-  currentTick: number,
+  currentTick: number;
   /**
    * State machine for managing the runtime's state.
    */
-  sm: FumaroleSM,
+  sm: FumaroleSM;
   /**
    * How many loop-tick interval before running runtime's GC routine.
    */
   gcInterval: number;
   /**
    * Maximum number of concurrent in-flight download tasks
-   * 
+   *
    * `inflight_downloads` should never exceed this number
    */
   maxConcurrentDownload: number;
@@ -157,45 +166,48 @@ type FumaroleRuntimeCtx = {
   /**
    * In-flight download requests
    */
-  inflightDownloads: Map<Slot, DownloadTaskArgs>,
+  inflightDownloads: Map<Slot, DownloadTaskArgs>;
   /**
    * Current subscribe request to apply during slot download.
    */
-  subscribeRequest: SubscribeRequest,
-  
+  subscribeRequest: SubscribeRequest;
+
   /**
    * {@link Observer} for control plane commands.
    */
-  controlPlaneObserver: Observer<ControlCommand>,
+  controlPlaneObserver: Observer<ControlCommand>;
 
   /**
    * {@link Observer} for download task results.
    */
-  downloadTaskObserver: Observer<DownloadTaskArgs>
+  downloadTaskObserver: Observer<DownloadTaskArgs>;
 
   /**
    * {@link Observer} for dragonsmouth subscribe updates.
    */
-  dragonsmouthOutlet: Observer<SubscribeUpdate>,
+  dragonsmouthOutlet: Observer<SubscribeUpdate>;
 
   /**
    * Flag indicating whether a poll history request is in flight.
    */
-  pollHistInflightFlag: boolean,
+  pollHistInflightFlag: boolean;
 
   /**
    * Flag indicating whether a commit offset request is in flight.
    */
-  commitOffsetInflightFlag: boolean
-}
+  commitOffsetInflightFlag: boolean;
+};
 
 /**
  * Handles control plane responses.
- * 
+ *
  * @param this `FumaroleRuntimeCtx` to use
  * @param resp `ControlResponse` response from Fumarole controle-plane.
  */
-function onControlPlaneResponse(this: FumaroleRuntimeCtx, resp: ControlResponse) {
+function onControlPlaneResponse(
+  this: FumaroleRuntimeCtx,
+  resp: ControlResponse,
+) {
   if (resp.pollHist) {
     this.pollHistInflightFlag = false;
     const pollHist = resp.pollHist;
@@ -221,18 +233,18 @@ function onControlPlaneResponse(this: FumaroleRuntimeCtx, resp: ControlResponse)
  * @param this `FumaroleRuntimeCtx` to use
  * @param result `DownloadTaskResult` result of the download task
  */
-function onDownloadCompleted(this: FumaroleRuntimeCtx, result: DownloadTaskResult) {
+function onDownloadCompleted(
+  this: FumaroleRuntimeCtx,
+  result: DownloadTaskResult,
+) {
   LOGGER.debug("Download completed:", result);
   if (result.kind === "Ok") {
     const completed = result.completed!;
     LOGGER.debug(
-      `Download completed for slot ${completed.slot}, shard ${completed.shardIdx}, ${completed.totalEventDownloaded} total events`
+      `Download completed for slot ${completed.slot}, shard ${completed.shardIdx}, ${completed.totalEventDownloaded} total events`,
     );
 
-    this.sm.makeSlotDownloadProgress(
-      completed.slot,
-      completed.shardIdx
-    );
+    this.sm.makeSlotDownloadProgress(completed.slot, completed.shardIdx);
 
     if (!this.inflightDownloads.delete(completed.slot)) {
       LOGGER.warn(`Completed download for unknown slot ${completed.slot}`);
@@ -248,28 +260,22 @@ function onDownloadCompleted(this: FumaroleRuntimeCtx, result: DownloadTaskResul
  * Commits the offset if required.
  * This is what actually commits the offset to the control plane and make the persistent-subscriber progress
  * across gRPC sessions.
- * 
+ *
  * @param this `FumaroleRuntimeCtx` to use
- * @returns 
+ * @returns
  */
-function commitOffsetIfRequired(
-  this: FumaroleRuntimeCtx
-) {
+function commitOffsetIfRequired(this: FumaroleRuntimeCtx) {
   if (this.commitOffsetInflightFlag) {
     return;
   }
   if (this.sm.lastCommittedOffset < this.sm.committableOffset) {
-    LOGGER.debug(
-      `Committing offset ${this.sm.committableOffset}`
-    );
-    this.controlPlaneObserver.next(
-      {
-        commitOffset: {
-          offset: this.sm.committableOffset,
-          shardId: 0,
-        }
-      }
-    )
+    LOGGER.debug(`Committing offset ${this.sm.committableOffset}`);
+    this.controlPlaneObserver.next({
+      commitOffset: {
+        offset: this.sm.committableOffset,
+        shardId: 0,
+      },
+    });
     this.commitOffsetInflightFlag = true;
   }
   this.lastCommit = Date.now();
@@ -281,7 +287,10 @@ function commitOffsetIfRequired(
  * @param this `FumaroleRuntimeCtx` to use
  * @param update `SubscribeRequestUpdate` update to apply
  */
-function onSubscribeRequestUpdate(this: FumaroleRuntimeCtx, update: SubscribeRequest) {
+function onSubscribeRequestUpdate(
+  this: FumaroleRuntimeCtx,
+  update: SubscribeRequest,
+) {
   LOGGER.debug("New subscribe request update");
   this.subscribeRequest = update;
 }
@@ -292,7 +301,7 @@ function onSubscribeRequestUpdate(this: FumaroleRuntimeCtx, update: SubscribeReq
  * @returns `CommitmentLevel` for the context
  */
 function ctxCommitmentLevel(ctx: FumaroleRuntimeCtx): CommitmentLevel {
-  return ctx.subscribeRequest.commitment ?? CommitmentLevel.PROCESSED
+  return ctx.subscribeRequest.commitment ?? CommitmentLevel.PROCESSED;
 }
 
 /**
@@ -304,17 +313,13 @@ function ctxCommitmentLevel(ctx: FumaroleRuntimeCtx): CommitmentLevel {
  *
  * @param this `FumaroleRuntimeCtx` to use
  */
-function scheduleDownloadTaskIfAny(
-  this: FumaroleRuntimeCtx,
-) {
+function scheduleDownloadTaskIfAny(this: FumaroleRuntimeCtx) {
   while (true) {
     if (this.inflightDownloads.size >= this.maxConcurrentDownload) {
       break;
     }
 
-    const downloadRequest = this.sm.popSlotToDownload(
-      ctxCommitmentLevel(this)
-    );
+    const downloadRequest = this.sm.popSlotToDownload(ctxCommitmentLevel(this));
 
     if (!downloadRequest) {
       break;
@@ -336,9 +341,7 @@ function scheduleDownloadTaskIfAny(
 
     this.downloadTaskObserver.next(downloadTaskArgs);
 
-    LOGGER.debug(
-      `Scheduling download task for slot ${downloadRequest.slot}`
-    );
+    LOGGER.debug(`Scheduling download task for slot ${downloadRequest.slot}`);
   }
 }
 
@@ -347,9 +350,7 @@ function scheduleDownloadTaskIfAny(
  *
  * @param this `FumaroleRuntimeCtx`
  */
-function pollHistoryIfNeeded(
-  this: FumaroleRuntimeCtx
-) {
+function pollHistoryIfNeeded(this: FumaroleRuntimeCtx) {
   if (this.pollHistInflightFlag) {
     return;
   }
@@ -370,16 +371,14 @@ function pollHistoryIfNeeded(
  *
  * Fumarole guarantees {@link SlotStatus} are **always** sent after the entire block content ({@link SubscribeUpdateAccount}, {@link SubscribeUpdateTransaction}, {@link SubscribeUpdateEntry} and {@link SubscribeUpdateBlockMeta}).
  * This is to simplify buffering strategy for user code.
- * 
+ *
  * During download, The runtime tracks which slot have been "processed" (downlaoded and forwarded to the outlet).
  * Once a slot is "processed" we can down push (drain) {@link SlotStatus} of the slot.
  *
  * @param this {@link FumaroleRuntimeCtx}
- * @returns 
+ * @returns
  */
-function drainSlotStatusIfAny(
-  this: FumaroleRuntimeCtx
-) {
+function drainSlotStatusIfAny(this: FumaroleRuntimeCtx) {
   const commitment = ctxCommitmentLevel(this);
   const slotStatusVec: FumeSlotStatus[] = [];
 
@@ -399,7 +398,7 @@ function drainSlotStatusIfAny(
     const matchedFilters: string[] = [];
 
     for (const [filterName, filter] of Object.entries(
-      this.subscribeRequest.slots
+      this.subscribeRequest.slots,
     )) {
       if (
         filter.filterByCommitment &&
@@ -425,39 +424,40 @@ function drainSlotStatusIfAny(
       try {
         this.dragonsmouthOutlet.next(update);
       } catch (e) {
-        LOGGER.error(`drainSlotStatusIfAny -- Error sending update to outlet: ${e}`);
-      } 
+        LOGGER.error(
+          `drainSlotStatusIfAny -- Error sending update to outlet: ${e}`,
+        );
+      }
     }
 
     this.sm.markEventAsProcessed(slotStatus.sessionSequence);
   }
-
 }
 
 /**
- * 
+ *
  * Rxjs's {@link Observer}-like implementation.
  * In order to fit the {@link Observer} interface, one has to `bind` the `this` instance that will be used
  * in the closure.
- * 
+ *
  * @param this {@link FumaroleRuntimeCtx}
- * @param ev 
+ * @param ev
  */
 function runtime_observer(this: FumaroleRuntimeCtx, ev: RuntimeEvent) {
   this.currentTick += 1;
 
   switch (ev._kind) {
-    case 'tick':
+    case "tick":
       LOGGER.debug("Received tick event");
       commitOffsetIfRequired.call(this);
       break;
-    case 'subscribe_request_update':
+    case "subscribe_request_update":
       onSubscribeRequestUpdate.call(this, ev.subscribe_request_update);
       break;
-    case 'download_completed':
+    case "download_completed":
       onDownloadCompleted.call(this, ev.download_completed);
       break;
-    case 'control_plane_response':
+    case "control_plane_response":
       onControlPlaneResponse.call(this, ev.control_plane_response);
       break;
   }
@@ -468,45 +468,47 @@ function runtime_observer(this: FumaroleRuntimeCtx, ev: RuntimeEvent) {
   if (this.currentTick % this.gcInterval === 0) {
     this.sm.gc();
   }
-} 
+}
 
 /**
  * Creates a defered rxjs {@link Observable} for the fumarole runtime.
- * 
+ *
  * The actual runtime event-loop will bootstrap lazily on first {@link Subscriber} instance listening
  * to the {@link Observable}.
- *  
- *                                                                                                                                                      
- *                                                                        ┌────────────────┐                                                            
- *                                                                        │ ControlPlane   │                                                            
- *                                                                        │   Command      │                                                            
- *                                                                        │  Observer      │                                                            
- *                                                                        └────────────────┘                                                            
- *                        ┌─────────────────┐                                    ▲                                                                      
- *                        │ Interval Ticker │                                    │                                                                      
- *                        │     Observable  ◄──────Subscribe                     │                                                                      
- *                        └─────────────────┘           │                      (next)        (next: slot_status)                                        
- *                                                      │                        │               │                                                      
- *                                                      │                        │               │                                                      
- *                                                      │                        │               │                                                      
+ *
+ *
+ *                                                                        ┌────────────────┐
+ *                                                                        │ ControlPlane   │
+ *                                                                        │   Command      │
+ *                                                                        │  Observer      │
+ *                                                                        └────────────────┘
+ *                        ┌─────────────────┐                                    ▲
+ *                        │ Interval Ticker │                                    │
+ *                        │     Observable  ◄──────Subscribe                     │
+ *                        └─────────────────┘           │                      (next)        (next: slot_status)
+ *                                                      │                        │               │
+ *                                                      │                        │               │
+ *                                                      │                        │               │
  * ┌───────────────┐               ┌────────────────────┴┐                ┌──────┴──────────┐    │      ┌───────────────┐          ┌───────────────────┐
  * │ ControlPlane  │               │ Fumarole Main Bus   ◄───(observe)────┤ runtimeObserver ├────┴────► │ Dragonsmouth  │  Observe │ User custom       │
  * │   Response  ◄─│───Subscribe───┤   Subject           │                │                 │           │    Observable │◄─────────┼   Observer code   │
  * │  Observable   │               └───       ──────────┬┘                └───────┬─────────┘           └──────▲────────┘          └───────────────────┘
- * └───────────────┘                                    │                         │                            │                                        
- *                                                    Observe                   (next)                         │                                        
- *                                                      │                         │                            │                                        
- *                                                      │                         │                            │                                        
- *                                                      ▼                         ▼                            │                                        
- *                                             ┌───────────────────┐        ┌─────────────┐                    │                                        
- *                                             │DownloadTaskResult          │SlotDownloder│                    │                                        
- *                                             │   Observable      │        │ Observer    ┼───────(next)───────┘                                        
- *                                             └───────────────────┘        └─────────────┘      (data: account/tx/entry/blockmeta)                                                                       
- *  
+ * └───────────────┘                                    │                         │                            │
+ *                                                    Observe                   (next)                         │
+ *                                                      │                         │                            │
+ *                                                      │                         │                            │
+ *                                                      ▼                         ▼                            │
+ *                                             ┌───────────────────┐        ┌─────────────┐                    │
+ *                                             │DownloadTaskResult          │SlotDownloder│                    │
+ *                                             │   Observable      │        │ Observer    ┼───────(next)───────┘
+ *                                             └───────────────────┘        └─────────────┘      (data: account/tx/entry/blockmeta)
+ *
  * @param args The arguments for the fumarole runtime.
  * @returns An observable that emits subscribe updates.
  */
-export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<SubscribeUpdate> {
+export function fumaroleObservable(
+  args: FumaroleRuntimeArgs,
+): Observable<SubscribeUpdate> {
   const {
     downloadTaskObserver,
     controlPlaneObserver,
@@ -525,32 +527,44 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
 
     // Plug download task result to the main bus
     const downloadTaskResultSub = downloadTaskResultObservable
-    .pipe(
-      map((result) => {
-        return { _kind: 'download_completed', download_completed: result } as RuntimeEvent;
-      })
-    )
-    .subscribe(fumaroleMainBus);
+      .pipe(
+        map((result) => {
+          return {
+            _kind: "download_completed",
+            download_completed: result,
+          } as RuntimeEvent;
+        }),
+      )
+      .subscribe(fumaroleMainBus);
     LOGGER.debug("Plugged download task result");
 
     // Plug ticker
-    const tickSub = interval(commitIntervalMillis).pipe(
-      map((_) => {
-        return { _kind: 'tick' } as RuntimeEvent;
-      })
-    ).subscribe(fumaroleMainBus);
+    const tickSub = interval(commitIntervalMillis)
+      .pipe(
+        map((_) => {
+          return { _kind: "tick" } as RuntimeEvent;
+        }),
+      )
+      .subscribe(fumaroleMainBus);
     LOGGER.debug("Plugged ticker");
 
     // Plug control plane response
-    const ctrlPlaneResponseSub = controlPlaneResponseObservable
-      .subscribe((response) => {
-        fumaroleMainBus.next({ _kind: 'control_plane_response', control_plane_response: response });
-      });
+    const ctrlPlaneResponseSub = controlPlaneResponseObservable.subscribe(
+      (response) => {
+        fumaroleMainBus.next({
+          _kind: "control_plane_response",
+          control_plane_response: response,
+        });
+      },
+    );
     LOGGER.debug("Plugged control plane response");
-    
+
     const subscribeRequestSub = subscribeRequestObservable.subscribe({
       next: (newSubscribeRequest) => {
-        fumaroleMainBus.next({ _kind: 'subscribe_request_update', subscribe_request_update: newSubscribeRequest });
+        fumaroleMainBus.next({
+          _kind: "subscribe_request_update",
+          subscribe_request_update: newSubscribeRequest,
+        });
       },
       error: (err) => {
         LOGGER.error(`Error in subscribe request observable: ${err}`);
@@ -573,7 +587,7 @@ export function fumaroleObservable(args: FumaroleRuntimeArgs): Observable<Subscr
       dragonsmouthOutlet: subscriber,
       pollHistInflightFlag: false,
       commitOffsetInflightFlag: false,
-    }; 
+    };
 
     const runtimeObserver = runtime_observer.bind(ctx);
 

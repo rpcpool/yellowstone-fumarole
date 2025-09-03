@@ -8,7 +8,7 @@ module.exports = {
     "^.+\\.tsx?$": [
       "ts-jest",
       {
-        useESM: true,              // <-- important for ESM builds
+        useESM: true, // <-- important for ESM builds
         tsconfig: "tsconfig.json",
       },
     ],

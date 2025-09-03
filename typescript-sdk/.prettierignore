@@ -1,0 +1,8 @@
+dist
+*.txt
+*.json
+pnpm-lock.yaml
+*.yaml
+src/grpc
+*.mjs
+*.md

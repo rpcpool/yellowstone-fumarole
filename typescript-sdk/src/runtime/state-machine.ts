@@ -20,12 +20,12 @@ export type Slot = bigint; // From solana_sdk::clock::Slot
 
 // Data structures
 export type FumeDownloadRequest = {
-  slot: Slot,
-  blockchainId: FumeBlockchainId,
-  blockUid: FumeBlockUID,
-  numShards: FumeNumShards,
-  commitmentLevel: CommitmentLevel
-}
+  slot: Slot;
+  blockchainId: FumeBlockchainId;
+  blockUid: FumeBlockUID;
+  numShards: FumeNumShards;
+  commitmentLevel: CommitmentLevel;
+};
 
 export class FumeSlotStatus {
   constructor(
@@ -34,7 +34,7 @@ export class FumeSlotStatus {
     public readonly slot: Slot,
     public readonly parentSlot: Slot | undefined,
     public readonly commitmentLevel: CommitmentLevel,
-    public readonly deadError: string | undefined
+    public readonly deadError: string | undefined,
   ) {}
 }
 
@@ -95,7 +95,7 @@ export class FumaroleSM {
     this.blockedSlotStatusUpdate = new Map();
     this.slotStatusUpdateQueue = new Deque();
     this.processedOffset = new BinaryHeap<[FumeSessionSequence, FumeOffset]>(
-      (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0) // min-heap by sequence number
+      (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0), // min-heap by sequence number
     );
     this.committableOffset = lastCommittedOffset;
     this.maxSlotDetected = 0n;
@@ -107,7 +107,10 @@ export class FumaroleSM {
   }
 
   updateCommittedOffset(offset: FumeOffset): void {
-    console.assert(offset >= this.lastCommittedOffset, "Offset must be >= last committed offset");
+    console.assert(
+      offset >= this.lastCommittedOffset,
+      "Offset must be >= last committed offset",
+    );
     this.lastCommittedOffset = offset;
   }
 
@@ -173,7 +176,7 @@ export class FumaroleSM {
 
   makeSlotDownloadProgress(
     slot: Slot,
-    shardIdx: FumeShardIdx
+    shardIdx: FumeShardIdx,
   ): SlotDownloadState {
     // Update download progress for a given slot.
     const downloadProgress = this.inflightSlotShardDownload.get(slot);
@@ -190,7 +193,7 @@ export class FumaroleSM {
       if (!this.slotCommitmentProgression.has(slot)) {
         this.slotCommitmentProgression.set(
           slot,
-          new SlotCommitmentProgression()
+          new SlotCommitmentProgression(),
         );
       }
 
@@ -215,17 +218,17 @@ export class FumaroleSM {
       }
 
       const commitmentHistory = this.slotCommitmentProgression.get(
-        slotStatus.slot
+        slotStatus.slot,
       );
 
       if (
         commitmentHistory &&
         !commitmentHistory.processedCommitmentLevels.has(
-          slotStatus.commitmentLevel
+          slotStatus.commitmentLevel,
         )
       ) {
         commitmentHistory.processedCommitmentLevels.add(
-          slotStatus.commitmentLevel
+          slotStatus.commitmentLevel,
         );
         return slotStatus;
       } else if (!commitmentHistory) {
@@ -236,7 +239,7 @@ export class FumaroleSM {
   }
 
   makeSureSlotCommitmentProgressionExists(
-    slot: Slot
+    slot: Slot,
   ): SlotCommitmentProgression {
     // Ensure a slot has a commitment progression entry.
     if (!this.slotCommitmentProgression.has(slot)) {
@@ -263,8 +266,8 @@ export class FumaroleSM {
             blockchainEvent.slot,
             blockchainEvent.parentSlot,
             eventCommitmentLevel,
-            blockchainEvent.deadError
-          )
+            blockchainEvent.deadError,
+          ),
         );
         this.makeSureSlotCommitmentProgressionExists(blockchainEvent.slot);
         continue;
@@ -273,7 +276,7 @@ export class FumaroleSM {
       if (orderedSetContains(this.downloadedSlotSet, blockchainEvent.slot)) {
         this.makeSureSlotCommitmentProgressionExists(blockchainEvent.slot);
         const progression = this.slotCommitmentProgression.get(
-          blockchainEvent.slot
+          blockchainEvent.slot,
         )!;
 
         if (progression.processedCommitmentLevels.has(eventCommitmentLevel)) {
@@ -288,27 +291,32 @@ export class FumaroleSM {
             blockchainEvent.slot,
             blockchainEvent.parentSlot,
             eventCommitmentLevel,
-            blockchainEvent.deadError
-          )
+            blockchainEvent.deadError,
+          ),
         );
       } else {
         const blockchainId = blockchainEvent.blockchainId;
         const blockUid = blockchainEvent.blockUid;
 
         if (!this.blockedSlotStatusUpdate.get(blockchainEvent.slot)) {
-          this.blockedSlotStatusUpdate.set(blockchainEvent.slot, new Deque<FumeSlotStatus>());
+          this.blockedSlotStatusUpdate.set(
+            blockchainEvent.slot,
+            new Deque<FumeSlotStatus>(),
+          );
         }
         // this won't be undefined because if it is then we just created it above
-        this.blockedSlotStatusUpdate.get(blockchainEvent.slot)!.pushBack(
-          new FumeSlotStatus(
-            sessionSequence,
-            blockchainEvent.offset,
-            blockchainEvent.slot,
-            blockchainEvent.parentSlot,
-            eventCommitmentLevel,
-            blockchainEvent.deadError
-          )
-        );
+        this.blockedSlotStatusUpdate
+          .get(blockchainEvent.slot)!
+          .pushBack(
+            new FumeSlotStatus(
+              sessionSequence,
+              blockchainEvent.offset,
+              blockchainEvent.slot,
+              blockchainEvent.parentSlot,
+              eventCommitmentLevel,
+              blockchainEvent.deadError,
+            ),
+          );
 
         if (!this.inflightSlotShardDownload.has(blockchainEvent.slot)) {
           const downloadRequest: FumeDownloadRequest = {
@@ -316,14 +324,14 @@ export class FumaroleSM {
             blockchainId,
             blockUid,
             numShards: blockchainEvent.numShards,
-            commitmentLevel: eventCommitmentLevel
+            commitmentLevel: eventCommitmentLevel,
           };
           const downloadProgress = new SlotDownloadProgress(
-            blockchainEvent.numShards
+            blockchainEvent.numShards,
           );
           this.inflightSlotShardDownload.set(
             blockchainEvent.slot,
-            downloadProgress
+            downloadProgress,
           );
           return downloadRequest;
         }
@@ -366,9 +374,11 @@ export class FumaroleSM {
 
   needNewBlockchainEvents(): boolean {
     const MINIMUM_UNPROCESSED_BLOCKCHAIN_EVENT = 10;
-    return this.unprocessedBlockchainEvent.size() < MINIMUM_UNPROCESSED_BLOCKCHAIN_EVENT || (
-      this.slotStatusUpdateQueue.size() === 0 &&
-      this.blockedSlotStatusUpdate.size === 0
-    )
+    return (
+      this.unprocessedBlockchainEvent.size() <
+        MINIMUM_UNPROCESSED_BLOCKCHAIN_EVENT ||
+      (this.slotStatusUpdateQueue.size() === 0 &&
+        this.blockedSlotStatusUpdate.size === 0)
+    );
   }
 }

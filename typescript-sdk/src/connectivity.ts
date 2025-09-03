@@ -34,7 +34,7 @@ export class FumaroleGrpcConnector {
   }
 
   async connect(
-    grpcOptions: { [key: string]: any }[] = []
+    grpcOptions: { [key: string]: any }[] = [],
   ): Promise<FumaroleClient> {
     LOGGER.debug(`Connecting to endpoint: ${this.endpoint}`);
 
@@ -80,7 +80,7 @@ export class FumaroleGrpcConnector {
     try {
       const endpointURL = new URL(this.endpoint);
       LOGGER.debug(
-        `Parsed URL - protocol: ${endpointURL.protocol}, hostname: ${endpointURL.hostname}, port: ${endpointURL.port}`
+        `Parsed URL - protocol: ${endpointURL.protocol}, hostname: ${endpointURL.hostname}, port: ${endpointURL.port}`,
       );
 
       let port = endpointURL.port;
@@ -108,17 +108,15 @@ export class FumaroleGrpcConnector {
             if (this.config.xToken !== undefined) {
               LOGGER.debug("Adding x-token to metadata");
               metadata.add(X_TOKEN_HEADER, this.config.xToken);
-              // TODO remove this
-              metadata.add("x-subscription-id", this.config.xToken);
             }
             return callback(null, metadata);
-          }
+          },
         );
         LOGGER.debug("Call credentials created");
 
         channelCredentials = credentials.combineChannelCredentials(
           sslCreds,
-          callCreds
+          callCreds,
         );
         LOGGER.debug("Using secure channel with x-token authentication");
       } else {
@@ -132,7 +130,7 @@ export class FumaroleGrpcConnector {
       const client = new FumaroleClient(
         finalEndpoint,
         channelCredentials,
-        channelOptions
+        channelOptions,
       );
 
       LOGGER.debug(`gRPC client created, waiting for ready state...`);
@@ -142,9 +140,7 @@ export class FumaroleGrpcConnector {
         const deadline = new Date().getTime() + 30000; // 30 second timeout
         client.waitForReady(deadline, (error) => {
           if (error) {
-            LOGGER.debug(
-              `Client failed to become ready: ${error.message}`
-            );
+            LOGGER.debug(`Client failed to become ready: ${error.message}`);
             const grpcError = error as ServiceError;
             if (grpcError.code !== undefined)
               LOGGER.debug(`Error code: ${grpcError.code}`);
@@ -160,15 +156,13 @@ export class FumaroleGrpcConnector {
         });
       });
 
-      LOGGER.debug(
-        `gRPC client created successfully for ${finalEndpoint}`
-      );
+      LOGGER.debug(`gRPC client created successfully for ${finalEndpoint}`);
       return client;
     } catch (error) {
       LOGGER.debug(
         `Error during connection setup: ${
           error instanceof Error ? error.message : String(error)
-        }`
+        }`,
       );
       throw error;
     }
