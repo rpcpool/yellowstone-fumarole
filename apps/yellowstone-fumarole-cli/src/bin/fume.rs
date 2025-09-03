@@ -1,6 +1,6 @@
 use {
     clap::Parser,
-    futures::{future::BoxFuture, FutureExt},
+    futures::{FutureExt, future::BoxFuture},
     solana_pubkey::Pubkey,
     std::{
         collections::{HashMap, HashSet},
