@@ -90,6 +90,7 @@ export class DownloadTaskResult {
 
 export type DownloadTaskArgs = {
   // todo: should be renamed slotDownloadInfo
+  downloadAttempt: number;
   downloadRequest: FumeDownloadRequest;
   subscribeRequest: SubscribeRequest;
   outlet: Observer<SubscribeUpdate>;
@@ -330,6 +331,7 @@ function scheduleDownloadTaskIfAny(this: FumaroleRuntimeCtx) {
     }
 
     const downloadTaskArgs: DownloadTaskArgs = {
+      downloadAttempt: 1,
       downloadRequest,
       subscribeRequest: this.subscribeRequest,
       outlet: this.dragonsmouthOutlet,

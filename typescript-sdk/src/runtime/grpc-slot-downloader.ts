@@ -60,6 +60,11 @@ export type GrpcSlotDownloader = {
    * Observer to send download task results too.
    */
   downloadTaskResultObserver: Observer<DownloadTaskResult>;
+  /**
+   * Maximum number of download attempts.
+   * Must be greater than 0
+   */
+  maxDownloadAttempt: number;
 };
 
 function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
@@ -88,6 +93,7 @@ function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
       LOGGER.info(
         `Finished download for slot ${args.downloadRequest.slot}, total events downloaded: ${totalEventDownloaded}`,
       );
+      downloadResponse.cancel();
       this.downloadTaskResultObserver.next({
         kind: "Ok",
         completed: {
@@ -101,15 +107,23 @@ function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
   });
 
   downloadResponse.on("error", (err: any) => {
-    const result: DownloadTaskResult = {
-      kind: "Err",
-      err: {
-        kind: mapTonicErrorCodeToDownloadBlockError(err),
-        message: err,
-      },
-      slot: args.downloadRequest.slot,
-    };
-    this.downloadTaskResultObserver.next(result);
+    const err_kind = mapTonicErrorCodeToDownloadBlockError(err);
+    if (err_kind === "FailedDownload" && args.downloadAttempt < this.maxDownloadAttempt) {
+      LOGGER.error("Download failed, retrying...");
+      const args2 = { ...args };
+      args2.downloadAttempt += 1;
+      do_download.call(this, args2);
+    } else {
+      const result: DownloadTaskResult = {
+        kind: "Err",
+        err: {
+          kind: err_kind,
+          message: err,
+        },
+        slot: args.downloadRequest.slot,
+      };
+      this.downloadTaskResultObserver.next(result);
+    }
   });
 }
 
@@ -123,6 +137,9 @@ export function downloadSlotObserverFactory(
   ctx: GrpcSlotDownloader,
 ): Observer<DownloadTaskArgs> {
   const download_fn = do_download.bind(ctx);
+  if (ctx.maxDownloadAttempt <= 0) {
+    throw new Error("maxDownloadAttempt must be greater than 0");
+  }
   return {
     next: (args: DownloadTaskArgs) => {
       download_fn(args);

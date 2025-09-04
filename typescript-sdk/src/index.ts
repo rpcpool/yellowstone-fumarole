@@ -371,6 +371,7 @@ export class FumaroleClient {
       client: dataPlaneClient,
       client_metadata: metadata,
       downloadTaskResultObserver: downloadTaskResultSubject,
+      maxDownloadAttempt: config.maxFailedSlotDownloadAttempt,
     };
     const grpcSlotDownloader: Observer<DownloadTaskArgs> =
       downloadSlotObserverFactory(grpcSlotDownloadCtx);
