@@ -91,12 +91,17 @@ function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
     this.client.downloadBlock(request, this.client_metadata);
   let totalEventDownloaded = 0;
   let finish = false;
+  let cumu_elapsed = 0;
+  let last = Date.now();
   downloadResponse.on("data", (data: DataResponse) => {
     if (finish) {
       return;
     }
     if (data.update) {
       totalEventDownloaded++;
+      const now = Date.now();
+      const elapsed = now - last;
+      cumu_elapsed += elapsed;
       outlet.next(data.update);
     } else if (data.blockShardDownloadFinish) {
       LOGGER.info(
@@ -106,7 +111,14 @@ function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
       finish = true;
       downloadResponse.cancel();
       this.totalDownloadedSlot += 1;
-      LOGGER.debug(`Total downloaded slots: ${this.totalDownloadedSlot}`);
+      let avg = 0;
+      if (totalEventDownloaded > 0) {
+        cumu_elapsed / totalEventDownloaded
+        avg = cumu_elapsed / totalEventDownloaded;
+      } else {
+        avg = 0;
+      }
+      LOGGER.debug(`Total downloaded slots: ${this.totalDownloadedSlot} -- ${avg}`);
       this.downloadTaskResultObserver.next({
         kind: "Ok",
         completed: {

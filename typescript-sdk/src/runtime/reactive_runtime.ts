@@ -112,7 +112,8 @@ export type RuntimeEventKind =
   | "control_plane_response";
 
 export type RuntimeEvent =
-  | { _kind: "tick"; tick: Tick }
+  | { _kind: "tick" }
+  | { _kind: "commit_check_tick" }
   | {
       _kind: "subscribe_request_update";
       subscribe_request_update: SubscribeRequest;
@@ -450,7 +451,10 @@ function runtime_observer(this: FumaroleRuntimeCtx, ev: RuntimeEvent) {
 
   switch (ev._kind) {
     case "tick":
-      LOGGER.debug("Received tick event");
+      const now = Date.now();
+      LOGGER.debug(`tick : ${now} -- inflight download slot : ${this.inflightDownloads.size}`);
+      break;
+    case "commit_check_tick":
       commitOffsetIfRequired.call(this);
       break;
     case "subscribe_request_update":
@@ -468,6 +472,7 @@ function runtime_observer(this: FumaroleRuntimeCtx, ev: RuntimeEvent) {
   scheduleDownloadTaskIfAny.call(this);
 
   if (this.currentTick % this.gcInterval === 0) {
+    LOGGER.debug("running garbage collection");
     this.sm.gc();
   }
 }
@@ -539,12 +544,20 @@ export function fumaroleObservable(
       )
       .subscribe(fumaroleMainBus);
     LOGGER.debug("Plugged download task result");
+    
+    const tickerSub = interval(1000)
+      .pipe(
+        map(() => {
+          return { _kind: "tick" } as RuntimeEvent;
+        })
+      )
+      .subscribe(fumaroleMainBus);
 
-    // Plug ticker
-    const tickSub = interval(commitIntervalMillis)
+    // Plug commit interval
+    const commitInterval = interval(commitIntervalMillis)
       .pipe(
         map((_) => {
-          return { _kind: "tick" } as RuntimeEvent;
+          return { _kind: "commit_check_tick" } as RuntimeEvent;
         }),
       )
       .subscribe(fumaroleMainBus);
@@ -597,7 +610,8 @@ export function fumaroleObservable(
     LOGGER.debug("Plugged runtime observer");
 
     return () => {
-      tickSub.unsubscribe();
+      tickerSub.unsubscribe();
+      commitInterval.unsubscribe();
       subscribeRequestSub.unsubscribe();
       ctrlPlaneResponseSub.unsubscribe();
       downloadTaskResultSub.unsubscribe();

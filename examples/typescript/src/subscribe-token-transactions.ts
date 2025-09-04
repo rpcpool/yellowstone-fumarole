@@ -93,8 +93,8 @@ async function main() {
   }
 
   const subscribeConfig = {
-    concurrentDownloadLimit: 1,
-    commitInterval: 1000,
+    concurrentDownloadLimit: 10,
+    commitInterval: 5000,
     maxFailedSlotDownloadAttempt: 3,
     slotMemoryRetention: 1000,
     gcInterval: 1000,
@@ -114,6 +114,7 @@ async function main() {
   const block_map = {};
   for await (const update of eachValueFrom(source)) {
     const slot: number = Number(getSlotFromUpdate(update));
+    // console.log(`slot: ${slot}`);
     if (!(slot in block_map)) {
       block_map[slot] = {
         account: [],
