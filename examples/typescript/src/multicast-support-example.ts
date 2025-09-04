@@ -5,7 +5,7 @@ import {
   SubscribeRequest,
   CommitmentLevel,
   InitialOffsetPolicy,
-  setDefaultFumaroleLogger 
+  setDefaultFumaroleLogger,
 } from "@triton-one/yellowstone-fumarole";
 import { from, Observable } from "rxjs";
 import { eachValueFrom } from "rxjs-for-await";
@@ -52,7 +52,7 @@ async function main() {
     slots: {
       example: {
         filterByCommitment: true,
-      }
+      },
     },
     transactionsStatus: {},
     blocks: {},
@@ -92,13 +92,10 @@ async function main() {
   console.log("Subscribe config:", safeJsonStringify(subscribeConfig));
   console.log(`Starting subscription for group ${groupName}...`);
 
-  const {
-    sink: _sink,
-    source
-  } = await client.dragonsmouthSubscribeWithConfig(
+  const { sink: _sink, source } = await client.dragonsmouthSubscribeWithConfig(
     groupName,
     request,
-    subscribeConfig,
+    subscribeConfig
   );
   console.log("Subscription started. Listening for updates...");
 
@@ -146,7 +143,7 @@ main()
     console.log("Fumarole client initialized successfully");
     process.exit(0);
   })
-  .catch(err => {
+  .catch((err) => {
     console.error(err);
-    process.exit(1)
+    process.exit(1);
   });

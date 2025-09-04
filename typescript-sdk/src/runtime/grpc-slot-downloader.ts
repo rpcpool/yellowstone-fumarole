@@ -65,6 +65,11 @@ export type GrpcSlotDownloader = {
    * Must be greater than 0
    */
   maxDownloadAttempt: number;
+
+  /**
+   * Total number of slots downloaded so far.
+   */
+  totalDownloadedSlot: number;
 };
 
 function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
@@ -85,7 +90,11 @@ function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
   const downloadResponse: ClientReadableStream<DataResponse> =
     this.client.downloadBlock(request, this.client_metadata);
   let totalEventDownloaded = 0;
+  let finish = false;
   downloadResponse.on("data", (data: DataResponse) => {
+    if (finish) {
+      return;
+    }
     if (data.update) {
       totalEventDownloaded++;
       outlet.next(data.update);
@@ -93,7 +102,11 @@ function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
       LOGGER.info(
         `Finished download for slot ${args.downloadRequest.slot}, total events downloaded: ${totalEventDownloaded}`,
       );
+      // cancel can trigger an error later in stream.
+      finish = true;
       downloadResponse.cancel();
+      this.totalDownloadedSlot += 1;
+      LOGGER.debug(`Total downloaded slots: ${this.totalDownloadedSlot}`);
       this.downloadTaskResultObserver.next({
         kind: "Ok",
         completed: {
@@ -107,8 +120,15 @@ function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
   });
 
   downloadResponse.on("error", (err: any) => {
+    if (finish) {
+      return;
+    }
+    finish = true;
     const err_kind = mapTonicErrorCodeToDownloadBlockError(err);
-    if (err_kind === "FailedDownload" && args.downloadAttempt < this.maxDownloadAttempt) {
+    if (
+      err_kind === "FailedDownload" &&
+      args.downloadAttempt < this.maxDownloadAttempt
+    ) {
       LOGGER.error("Download failed, retrying...");
       const args2 = { ...args };
       args2.downloadAttempt += 1;
@@ -146,6 +166,37 @@ export function downloadSlotObserverFactory(
     },
     error: (err: Error) => {
       LOGGER.error(err);
+      ctx.client.close();
+    },
+    complete: () => {
+      ctx.client.close();
+    },
+  };
+}
+
+/**
+ * (for testing only)
+ * Creates an observer that always fails the download.
+ *
+ * @param ctx The gRPC slot downloader context.
+ * @returns An observer for download task arguments.
+ */
+export function failingDownloadSlotObserverFactory(
+  ctx: GrpcSlotDownloader,
+): Observer<DownloadTaskArgs> {
+  return {
+    next: (args: DownloadTaskArgs) => {
+      LOGGER.error("Download failed");
+      ctx.downloadTaskResultObserver.next({
+        kind: "Err",
+        err: {
+          kind: "FailedDownload",
+          message: "Download failed",
+        },
+        slot: args.downloadRequest.slot,
+      });
+    },
+    error: (err: Error) => {
       ctx.client.close();
     },
     complete: () => {

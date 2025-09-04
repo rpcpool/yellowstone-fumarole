@@ -31,6 +31,7 @@ import {
 import { FumaroleSM } from "./runtime/state-machine";
 import {
   downloadSlotObserverFactory,
+  failingDownloadSlotObserverFactory,
   GrpcSlotDownloader,
 } from "./runtime/grpc-slot-downloader";
 import {
@@ -372,7 +373,9 @@ export class FumaroleClient {
       client_metadata: metadata,
       downloadTaskResultObserver: downloadTaskResultSubject,
       maxDownloadAttempt: config.maxFailedSlotDownloadAttempt,
+      totalDownloadedSlot: 0,
     };
+
     const grpcSlotDownloader: Observer<DownloadTaskArgs> =
       downloadSlotObserverFactory(grpcSlotDownloadCtx);
 

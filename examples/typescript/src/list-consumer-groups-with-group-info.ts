@@ -1,10 +1,12 @@
-import { FumaroleClient, FumaroleConfig } from "@triton-one/yellowstone-fumarole";
+import {
+  FumaroleClient,
+  FumaroleConfig,
+} from "@triton-one/yellowstone-fumarole";
 import dotenv from "dotenv";
-dotenv.config()
+dotenv.config();
 
 const FUMAROLE_ENDPOINT = process.env.FUMAROLE_ENDPOINT!;
 const FUMAROLE_X_TOKEN = process.env.FUMAROLE_X_TOKEN!;
-
 
 async function main() {
   try {

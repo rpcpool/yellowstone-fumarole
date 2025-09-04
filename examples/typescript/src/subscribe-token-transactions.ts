@@ -5,7 +5,8 @@ import {
   SubscribeRequest,
   CommitmentLevel,
   InitialOffsetPolicy,
-  setDefaultFumaroleLogger
+  setDefaultFumaroleLogger,
+  SubscribeUpdate,
 } from "@triton-one/yellowstone-fumarole";
 import { eachValueFrom } from "rxjs-for-await";
 
@@ -51,19 +52,19 @@ async function main() {
         account: [],
         owner: [TOKEN_ADDRESS],
         filters: [],
-      }
+      },
     },
     transactions: {
       token: {
         accountInclude: [TOKEN_ADDRESS],
         accountExclude: [],
         accountRequired: [],
-      }
+      },
     },
     slots: {
       test: {
         filterByCommitment: true,
-      }
+      },
     },
     transactionsStatus: {},
     blocks: {},
@@ -103,24 +104,51 @@ async function main() {
   console.log("Subscribe config:", safeJsonStringify(subscribeConfig));
   console.log(`Starting subscription for group ${subscriberName}...`);
 
-  const {
-    sink: _sink,
-    source
-  } = await client.dragonsmouthSubscribeWithConfig(
+  const { sink: _sink, source } = await client.dragonsmouthSubscribeWithConfig(
     subscriberName,
     request,
-    subscribeConfig,
+    subscribeConfig
   );
   console.log("Subscription started. Listening for updates...");
 
+  const block_map = {};
   for await (const update of eachValueFrom(source)) {
-    if (update.account) {
-      console.log(`Received account update in slot ${update.account?.slot}`);
-    } else if (update.slot) {
-      console.log(`Received slot update: ${update.slot?.slot}`);
-    } else if (update.transaction) {
-      console.log(`Received transaction in slot ${update.transaction?.slot}`);
+    const slot: number = Number(getSlotFromUpdate(update));
+    if (!(slot in block_map)) {
+      block_map[slot] = {
+        account: [],
+        tx: [],
+      };
     }
+    if (update.account) {
+      block_map[slot].account.push(update.account);
+    } else if (update.slot) {
+      const block = block_map[slot];
+      delete block_map[slot];
+      console.log(
+        `Slot ${slot} account count: ${block.account.length}, tx count: ${block.tx.length}`
+      );
+    } else if (update.transaction) {
+      block_map[slot].tx.push(update.transaction);
+    }
+  }
+}
+
+function getSlotFromUpdate(update: SubscribeUpdate): bigint {
+  if (update.account) {
+    return update.account.slot;
+  } else if (update.slot) {
+    return update.slot.slot;
+  } else if (update.transaction) {
+    return update.transaction.slot;
+  } else if (update.entry) {
+    return update.entry.slot;
+  } else if (update.blockMeta) {
+    return update.blockMeta.slot;
+  } else if (update.slot) {
+    return update.slot.slot;
+  } else {
+    throw new Error("Unable to extract slot from update");
   }
 }
 
@@ -143,7 +171,7 @@ main()
     console.log("Fumarole client initialized successfully");
     process.exit(0);
   })
-  .catch(err => {
+  .catch((err) => {
     console.error(err);
-    process.exit(1)
+    process.exit(1);
   });
