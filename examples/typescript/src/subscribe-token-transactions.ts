@@ -48,11 +48,11 @@ async function main() {
   const request: SubscribeRequest = {
     commitment: CommitmentLevel.PROCESSED,
     accounts: {
-      token: {
-        account: [],
-        owner: [TOKEN_ADDRESS],
-        filters: [],
-      },
+      // token: {
+      //   account: [],
+      //   owner: [TOKEN_ADDRESS],
+      //   filters: [],
+      // },
     },
     transactions: {
       token: {
@@ -93,7 +93,7 @@ async function main() {
   }
 
   const subscribeConfig = {
-    concurrentDownloadLimit: 10,
+    concurrentDownloadLimit: 1,
     commitInterval: 5000,
     maxFailedSlotDownloadAttempt: 3,
     slotMemoryRetention: 1000,
@@ -112,15 +112,16 @@ async function main() {
   console.log("Subscription started. Listening for updates...");
 
   const block_map = {};
-  for await (const update of eachValueFrom(source)) {
+  let now = Date.now();
+  await source.forEach((update) => {
     const slot: number = Number(getSlotFromUpdate(update));
-    // console.log(`slot: ${slot}`);
     if (!(slot in block_map)) {
       block_map[slot] = {
         account: [],
         tx: [],
       };
     }
+
     if (update.account) {
       block_map[slot].account.push(update.account);
     } else if (update.slot) {
@@ -130,9 +131,13 @@ async function main() {
         `Slot ${slot} account count: ${block.account.length}, tx count: ${block.tx.length}`
       );
     } else if (update.transaction) {
-      block_map[slot].tx.push(update.transaction);
+      let dt = Date.now() - now;
+      now = Date.now();
+      const block = block_map[slot];
+      block.tx.push(update.transaction);
+      console.log(`slot ${slot} tx count: ${block.tx.length}, dt: ${dt}`);
     }
-  }
+  });
 }
 
 function getSlotFromUpdate(update: SubscribeUpdate): bigint {
