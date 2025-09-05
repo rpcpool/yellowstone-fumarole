@@ -604,9 +604,15 @@ export class FumaroleClient {
    * @returns The response from the create operation.
    */
   async createPersistentSubscriber(
-    request: CreateConsumerGroupRequest,
+    name: string,
+    fromSlot?: bigint
   ): Promise<CreateConsumerGroupResponse> {
-    LOGGER.debug("Sending createConsumerGroup request:", request);
+    const initialOffsetPolicy = fromSlot ? InitialOffsetPolicy.FROM_SLOT : InitialOffsetPolicy.LATEST;
+    let request  = {
+      consumerGroupName: String(name),
+      initialOffsetPolicy: initialOffsetPolicy,
+      fromSlot: fromSlot
+    }
     return new Promise((resolve, reject) => {
       this.stub.createConsumerGroup(
         request,

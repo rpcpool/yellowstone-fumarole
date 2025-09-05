@@ -31,7 +31,7 @@ async function main() {
         console.error("Unhandled Rejection at:", promise, "reason:", reason);
       });
 
-      const response = await client.listConsumerGroups().catch((error) => {
+      const response = await client.listPersistentSubscribers().catch((error) => {
         console.error("Caught error during listConsumerGroups:", error);
         if (error.code) console.error("Error code:", error.code);
         if (error.details) console.error("Error details:", error.details);
@@ -59,7 +59,7 @@ async function main() {
             console.log(
               `\nFetching detailed info for group: ${group.consumerGroupName}`
             );
-            const info = await client.getConsumerGroupInfo(
+            const info = await client.getPersistentSubscriberInfo(
               group.consumerGroupName
             );
             if (info) {

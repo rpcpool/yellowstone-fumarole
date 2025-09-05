@@ -30,6 +30,7 @@ function safeJsonStringify(obj: unknown): string {
 const FUMAROLE_ENDPOINT = process.env.FUMAROLE_ENDPOINT!;
 const FUMAROLE_X_TOKEN = process.env.FUMAROLE_X_TOKEN!;
 const TOKEN_ADDRESS = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const BGUM_ADDRESS = "BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY";
 
 let isShuttingDown = false;
 
@@ -83,10 +84,9 @@ async function main() {
 
   console.log("Creating persistent subscriber with initialOffsetPolicy LATEST");
   try {
-    await client.createPersistentSubscriber({
-      consumerGroupName: subscriberName,
-      initialOffsetPolicy: InitialOffsetPolicy.LATEST,
-    });
+    await client.createPersistentSubscriber(
+      subscriberName,
+    );
   } catch (err) {
     console.error("Failed to create consumer group:", err);
     throw err;
@@ -112,13 +112,14 @@ async function main() {
   console.log("Subscription started. Listening for updates...");
 
   const block_map = {};
-  let now = Date.now();
   await source.forEach((update) => {
     const slot: number = Number(getSlotFromUpdate(update));
     if (!(slot in block_map)) {
       block_map[slot] = {
+        started: Date.now(),
         account: [],
         tx: [],
+        tx_cnt: 0,
       };
     }
 
@@ -127,15 +128,14 @@ async function main() {
     } else if (update.slot) {
       const block = block_map[slot];
       delete block_map[slot];
+      const e = Date.now() - block.started;
       console.log(
-        `Slot ${slot} account count: ${block.account.length}, tx count: ${block.tx.length}`
+        `Slot ${slot} account count: ${block.account.length}, tx count: ${block.tx_cnt} in ${e} ms`
       );
     } else if (update.transaction) {
-      let dt = Date.now() - now;
-      now = Date.now();
       const block = block_map[slot];
-      block.tx.push(update.transaction);
-      console.log(`slot ${slot} tx count: ${block.tx.length}, dt: ${dt}`);
+      // block.tx.push(update.transaction);
+      block.tx_cnt += 1;
     }
   });
 }

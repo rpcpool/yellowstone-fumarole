@@ -545,7 +545,7 @@ export function fumaroleObservable(
       .subscribe(fumaroleMainBus);
     LOGGER.debug("Plugged download task result");
     
-    const tickerSub = interval(1000)
+    const tickerSub = interval(10)
       .pipe(
         map(() => {
           return { _kind: "tick" } as RuntimeEvent;

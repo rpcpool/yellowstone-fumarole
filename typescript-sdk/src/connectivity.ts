@@ -14,6 +14,8 @@ interface FumaroleConfig {
   xMetadata?: Record<string, string>;
 }
 
+export const GRPC_MAX_RECV_MESSAGE_LEN = 100 * 1024 * 1024; // 100 MB
+
 export class FumaroleGrpcConnector {
   private readonly config: FumaroleConfig;
   private readonly endpoint: string;
@@ -39,28 +41,28 @@ export class FumaroleGrpcConnector {
     LOGGER.debug(`Connecting to endpoint: ${this.endpoint}`);
 
     const defaultOptions: { [key: string]: any } = {
-      "grpc.max_receive_message_length": 111111110,
-      "grpc.keepalive_time_ms": 10000,
-      "grpc.keepalive_timeout_ms": 5000,
-      "grpc.http2.min_time_between_pings_ms": 10000,
-      "grpc.keepalive_permit_without_calls": 1,
-      "grpc.initial_reconnect_backoff_ms": 1000,
-      "grpc.max_reconnect_backoff_ms": 10000,
-      "grpc.service_config": JSON.stringify({
-        loadBalancingConfig: [{ round_robin: {} }],
-        methodConfig: [
-          {
-            name: [{ service: "fumarole.Fumarole" }],
-            retryPolicy: {
-              maxAttempts: 5,
-              initialBackoff: "1s",
-              maxBackoff: "10s",
-              backoffMultiplier: 2,
-              retryableStatusCodes: ["UNAVAILABLE"],
-            },
-          },
-        ],
-      }),
+      "grpc.max_receive_message_length": GRPC_MAX_RECV_MESSAGE_LEN,
+      // "grpc.keepalive_time_ms": 10000,
+      // "grpc.keepalive_timeout_ms": 5000,
+      // "grpc.http2.min_time_between_pings_ms": 10000,
+      // "grpc.keepalive_permit_without_calls": 1,
+      // "grpc.initial_reconnect_backoff_ms": 1000,
+      // "grpc.max_reconnect_backoff_ms": 10000,
+      // "grpc.service_config": JSON.stringify({
+      //   loadBalancingConfig: [{ round_robin: {} }],
+      //   methodConfig: [
+      //     {
+      //       name: [{ service: "fumarole.Fumarole" }],
+      //       retryPolicy: {
+      //         maxAttempts: 5,
+      //         initialBackoff: "1s",
+      //         maxBackoff: "10s",
+      //         backoffMultiplier: 2,
+      //         retryableStatusCodes: ["UNAVAILABLE"],
+      //       },
+      //     },
+      //   ],
+      // }),
     };
 
     const channelOptions: { [key: string]: any } = {

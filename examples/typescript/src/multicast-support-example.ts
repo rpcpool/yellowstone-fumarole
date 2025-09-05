@@ -34,7 +34,7 @@ const TOKEN_ADDRESS = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 let isShuttingDown = false;
 
 async function main() {
-  let groupName: string | undefined;
+  let subscriberName: string | undefined;
   let client: FumaroleClient | undefined;
 
   const config = {
@@ -66,15 +66,14 @@ async function main() {
   // delete them all because they pile up and hit limit while developing
   await client.deleteAllPersistentSubscribers();
 
-  groupName = `token-monitor-${Math.random().toString(36).substring(7)}`;
-  console.log(`Creating persistent subscriber: ${groupName}`);
+  subscriberName = `token-monitor-${Math.random().toString(36).substring(7)}`;
+  console.log(`Creating persistent subscriber: ${subscriberName}`);
 
   console.log("Creating persistent subscriber with initialOffsetPolicy LATEST");
   try {
-    await client.createPersistentSubscriber({
-      consumerGroupName: groupName,
-      initialOffsetPolicy: InitialOffsetPolicy.LATEST,
-    });
+    await client.createPersistentSubscriber(
+      subscriberName,
+    );
   } catch (err) {
     console.error("Failed to create consumer group:", err);
     throw err;
@@ -90,10 +89,10 @@ async function main() {
 
   console.log("Subscribe request:", safeJsonStringify(request));
   console.log("Subscribe config:", safeJsonStringify(subscribeConfig));
-  console.log(`Starting subscription for group ${groupName}...`);
+  console.log(`Starting subscription for group ${subscriberName}...`);
 
   const { sink: _sink, source } = await client.dragonsmouthSubscribeWithConfig(
-    groupName,
+    subscriberName,
     request,
     subscribeConfig
   );

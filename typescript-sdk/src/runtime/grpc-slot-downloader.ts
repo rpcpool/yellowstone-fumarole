@@ -9,7 +9,6 @@ import {
   DownloadBlockShard,
   FumaroleClient,
 } from "../grpc/fumarole";
-import { SubscribeUpdate } from "../grpc/geyser";
 import {
   DownloadBlockErrorKind,
   DownloadTaskArgs,
@@ -79,7 +78,7 @@ function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
     entries: args.subscribeRequest.entry,
     blocksMeta: args.subscribeRequest.blocksMeta,
   };
-  LOGGER.info(`Starting download for block ${JSON.stringify(blockFilters)}`);
+  LOGGER.debug(`Starting download for block ${JSON.stringify(blockFilters)}`);
   const request: DownloadBlockShard = {
     blockchainId: args.downloadRequest.blockchainId,
     blockUid: args.downloadRequest.blockUid,
@@ -91,38 +90,22 @@ function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
     this.client.downloadBlock(request, this.client_metadata);
   let totalEventDownloaded = 0;
   let finish = false;
-  let cumu_elapsed = 0;
-  let last: number | null = null;
+  let startedAt = Date.now();
   downloadResponse.on("data", (data: DataResponse) => {
     if (finish) {
       return;
     }
     if (data.update) {
       totalEventDownloaded++;
-      const now = Date.now();
-      if (last == null) {
-        last = now;
-      } else {
-        const elapsed = now - last;
-        cumu_elapsed += elapsed;
-      }
-      
       outlet.next(data.update);
     } else if (data.blockShardDownloadFinish) {
+      const e = Date.now() - startedAt;
       LOGGER.info(
-        `Finished download for slot ${args.downloadRequest.slot}, total events downloaded: ${totalEventDownloaded}`,
+        `Finished download for slot ${args.downloadRequest.slot}, total events downloaded: ${totalEventDownloaded} in ${e} ms`,
       );
       // cancel can trigger an error later in stream.
       finish = true;
-      downloadResponse.cancel();
       this.totalDownloadedSlot += 1;
-      let avg = 0;
-      if (totalEventDownloaded > 1) {
-        avg = cumu_elapsed / (totalEventDownloaded - 1);
-      } else {
-        avg = 0;
-      }
-      LOGGER.debug(`Total downloaded slots: ${this.totalDownloadedSlot} -- ${avg}`);
       this.downloadTaskResultObserver.next({
         kind: "Ok",
         completed: {
@@ -140,6 +123,7 @@ function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
       return;
     }
     finish = true;
+    downloadResponse.cancel();
     const err_kind = mapTonicErrorCodeToDownloadBlockError(err);
     if (
       err_kind === "FailedDownload" &&

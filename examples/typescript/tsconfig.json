@@ -1,7 +1,8 @@
 {
   "compilerOptions": {
-    "outDir": "dist",
+    "outDir": "dist/cjs",
     "rootDir": "src",
+    "declaration": true,
     "moduleResolution": "node",
     "esModuleInterop": true
   }
