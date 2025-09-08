@@ -47,8 +47,7 @@ export interface FumaroleSubscribeConfig {
    * The maximum number of concurrent downloads allowed per TCP connection.
    * 
    * NOTE: Since grpc-js is pure javascript, the grpc handling is really slow and underperforming compared
-   * to other programming languages. 
-   * 
+   * to other programming languages. Suggested value: `1`
    */
   concurrentDownloadLimit: number;
   /**
@@ -75,7 +74,7 @@ export interface FumaroleSubscribeConfig {
 // Constants
 export const DEFAULT_COMMIT_INTERVAL = 5000; // milliseconds
 export const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT = 3;
-export const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP = 4;
+export const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP = 1;
 export const DEFAULT_GC_INTERVAL = 100; // ticks
 export const DEFAULT_SLOT_MEMORY_RETENTION = 1000; // seconds
 
