@@ -1,5 +1,5 @@
 import { Metadata, ServiceError, ClientDuplexStream } from "@grpc/grpc-js";
-import { FumaroleConfig } from "./config/config";
+import { FumaroleConfig } from "./config";
 import { FumaroleClient as GrpcClient } from "./grpc/fumarole";
 import { FumaroleGrpcConnector } from "./connectivity";
 import {
