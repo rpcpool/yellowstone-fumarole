@@ -1,30 +1,46 @@
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
 use {
-    clap::Parser, futures::{future::BoxFuture, FutureExt}, solana_pubkey::{ParsePubkeyError, Pubkey}, solana_signature::Signature, std::{
+    clap::Parser,
+    futures::{FutureExt, future::BoxFuture},
+    solana_pubkey::{ParsePubkeyError, Pubkey},
+    solana_signature::Signature,
+    std::{
         collections::{HashMap, HashSet},
         env,
         fmt::{self, Debug},
         fs::File,
         hash::Hash,
-        io::{stdout, Write},
+        io::{Write, stdout},
         net::{AddrParseError, SocketAddr},
         num::{NonZeroU8, NonZeroUsize},
         path::PathBuf,
         str::FromStr,
         time::Duration,
-    }, tabled::{builder::Builder, Table}, tokio::{
+    },
+    tabled::{Table, builder::Builder},
+    tokio::{
         io::{self, AsyncBufReadExt, BufReader},
-        signal::unix::{signal, SignalKind},
-    }, tonic::Code, tracing_subscriber::EnvFilter, yellowstone_fumarole_cli::prom::prometheus_server, yellowstone_fumarole_client::{
-        config::FumaroleConfig, proto::{
+        signal::unix::{SignalKind, signal},
+    },
+    tonic::Code,
+    tracing_subscriber::EnvFilter,
+    yellowstone_fumarole_cli::prom::prometheus_server,
+    yellowstone_fumarole_client::{
+        DragonsmouthAdapterSession, FumaroleClient, FumaroleSubscribeConfig,
+        config::FumaroleConfig,
+        proto::{
             ConsumerGroupInfo, CreateConsumerGroupRequest, DeleteConsumerGroupRequest,
             GetConsumerGroupInfoRequest, InitialOffsetPolicy, ListConsumerGroupsRequest,
-        }, DragonsmouthAdapterSession, FumaroleClient, FumaroleSubscribeConfig
-    }, yellowstone_grpc_proto::geyser::{
-        subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterSlots, SubscribeRequestFilterTransactions, SubscribeUpdateAccount, SubscribeUpdateBlockMeta, SubscribeUpdateSlot, SubscribeUpdateTransaction
-    }
+        },
+    },
+    yellowstone_grpc_proto::geyser::{
+        CommitmentLevel, SubscribeRequest, SubscribeRequestFilterAccounts,
+        SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterSlots,
+        SubscribeRequestFilterTransactions, SubscribeUpdateAccount, SubscribeUpdateBlockMeta,
+        SubscribeUpdateSlot, SubscribeUpdateTransaction, subscribe_update::UpdateOneof,
+    },
 };
-#[cfg(not(target_env = "msvc"))]
-use tikv_jemallocator::Jemalloc;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
