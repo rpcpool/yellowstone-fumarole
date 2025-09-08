@@ -16,7 +16,11 @@ The minor version will be incremented upon a breaking change and the patch versi
 
 ### Breaking
 
-## [0.2.3]
+## [0.3.0]
+
+### Features
+
+- Added `yellowstone_fumarole_client.error` module for public error types.
 
 ### Fixes
 
