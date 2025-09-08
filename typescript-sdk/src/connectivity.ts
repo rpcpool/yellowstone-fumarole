@@ -42,6 +42,7 @@ export class FumaroleGrpcConnector {
 
     const defaultOptions: { [key: string]: any } = {
       "grpc.max_receive_message_length": GRPC_MAX_RECV_MESSAGE_LEN,
+      "grpc-node.flow_control_window": 1024 * 1024 * 100, // 100 MB
       // "grpc.keepalive_time_ms": 10000,
       // "grpc.keepalive_timeout_ms": 5000,
       // "grpc.http2.min_time_between_pings_ms": 10000,

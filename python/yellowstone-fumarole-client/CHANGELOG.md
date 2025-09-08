@@ -16,7 +16,15 @@ The minor version will be incremented upon a breaking change and the patch versi
 
 ### Breaking
 
+## [0.2.3]
+
+### Fixes
+
+- Fumarole runtime exception bubbling up [#38](https://github.com/rpcpool/yellowstone-fumarole/issues/38)
+
 ## [0.2.2]
+
+### Fixes
 
 - Fixed `FumaroleSM.need_new_blockchain_events` to follow rust's implementation [#35](https://github.com/rpcpool/yellowstone-fumarole/issues/35).
 

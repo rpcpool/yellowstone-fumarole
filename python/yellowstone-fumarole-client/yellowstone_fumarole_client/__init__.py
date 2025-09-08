@@ -33,6 +33,7 @@ from yellowstone_fumarole_proto.fumarole_pb2 import (
     CreateConsumerGroupResponse,
 )
 from yellowstone_fumarole_proto.fumarole_pb2_grpc import FumaroleStub
+from yellowstone_fumarole_client.error import SubscribeError
 import grpc
 
 from yellowstone_fumarole_client import config
@@ -54,6 +55,7 @@ DEFAULT_COMMIT_INTERVAL = 5.0  # seconds
 DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT = 3
 DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP = 10
 
+LOGGER = logging.getLogger(__name__)
 # Error classes
 
 
@@ -262,18 +264,30 @@ class FumaroleClient:
             max_concurrent_download=config.concurrent_download_limit,
         )
 
-        async def rt_run(rt):
-            async with rt as rt:
-                await rt.run()
-
-        rt_task = asyncio.create_task(rt_run(rt))
-
+        rt_task = asyncio.create_task(rt.run())
+        rt_task.set_name("rt_task")
+        control_plane_src_task.set_name("control_plane_src_task")
         async def fumarole_overseer():
-            done, pending = await asyncio.wait(
-                [rt_task, control_plane_src_task], return_when=asyncio.FIRST_COMPLETED
-            )
-            for t in pending:
-                t.cancel()
+            try:
+                done, pending = await asyncio.wait(
+                    [rt_task, control_plane_src_task], return_when=asyncio.FIRST_COMPLETED
+                )
+                for t in done:
+                    try:
+                        exc = t.exception()
+                        LOGGER.error(f"Fumarole task '{t.get_name()}' failed: {exc}")
+                    except asyncio.CancelledError:
+                        pass
+                    if exc is not None:
+                        try:
+                            await dragonsmouth_outlet.put(exc)
+                        except asyncio.QueueShutdown:
+                            pass
+                for t in pending:
+                    t.cancel()
+            finally:
+                await rt.aclose()
+
 
         fumarole_handle = asyncio.create_task(fumarole_overseer())
 
@@ -281,6 +295,8 @@ class FumaroleClient:
             try:
                 while True:
                     update = await dragonsmouth_outlet.get()
+                    if issubclass(type(update), Exception):
+                        raise update
                     yield update
             except (asyncio.CancelledError, asyncio.QueueShutDown):
                 pass

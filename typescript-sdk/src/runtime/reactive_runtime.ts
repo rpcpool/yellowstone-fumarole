@@ -220,7 +220,7 @@ function onControlPlaneResponse(
   } else if (resp.commitOffset) {
     const commitOffset = resp.commitOffset;
     this.commitOffsetInflightFlag = false;
-    LOGGER.debug(`Received commit offset: ${JSON.stringify(commitOffset)}`);
+    LOGGER.info(`Received commit offset: ${commitOffset.offset}`);
     this.sm.updateCommittedOffset(commitOffset.offset);
   } else if (resp.pong) {
     LOGGER.debug("Received pong");
@@ -271,7 +271,7 @@ function commitOffsetIfRequired(this: FumaroleRuntimeCtx) {
     return;
   }
   if (this.sm.lastCommittedOffset < this.sm.committableOffset) {
-    LOGGER.debug(`Committing offset ${this.sm.committableOffset}`);
+    LOGGER.info(`Committing offset ${this.sm.committableOffset}`);
     this.controlPlaneObserver.next({
       commitOffset: {
         offset: this.sm.committableOffset,

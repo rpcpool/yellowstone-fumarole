@@ -2,7 +2,7 @@
 from abc import abstractmethod, ABC
 import asyncio
 import grpc
-from typing import Optional
+from typing import Literal, Mapping, Optional
 from collections import deque
 from dataclasses import dataclass
 import time
@@ -31,6 +31,7 @@ from yellowstone_fumarole_proto.fumarole_pb2_grpc import (
 )
 from yellowstone_fumarole_client.utils.aio import Interval
 from yellowstone_fumarole_client.grpc_connectivity import FumaroleGrpcConnector
+from yellowstone_fumarole_client.error import SubscribeError, DownloadSlotError
 import logging
 
 
@@ -51,13 +52,28 @@ class CompletedDownloadBlockTask:
     total_event_downloaded: int
 
 
+DownloadBlockErrorKind = Literal[
+    "Disconnected",
+    "OutletDisconnected",
+    "BlockShardNotFound",
+    "FailedDownload",
+    "Fatal",
+    "SessionDeprecated"
+]
+
 @dataclass
 class DownloadBlockError:
     """Represents an error that occurred during the download of a block."""
-
-    kind: str  # 'Disconnected', 'OutletDisconnected', 'BlockShardNotFound', 'FailedDownload', 'Fatal'
+    kind: DownloadBlockErrorKind
     message: str
+    ctx: Mapping[str, any]
 
+    def into_subscribe_error(self) -> SubscribeError:
+        """Convert the error into a SubscribeError."""
+        return DownloadSlotError(
+            f"{self.kind}: {self.message}",
+            ctx=self.ctx
+        )
 
 @dataclass
 class DownloadTaskResult:
@@ -139,6 +155,8 @@ class AsyncioFumeDragonsmouthRuntime:
         # holds metadata about the download task
         self.download_tasks = dict()
         self.inflight_tasks = dict()
+        self.successful_download_cnt = 0
+        self.is_closed = False
 
     async def __aenter__(self):
         return self
@@ -227,18 +245,26 @@ class AsyncioFumeDragonsmouthRuntime:
             self.inflight_tasks[download_task] = DOWNLOAD_TASK_TYPE_MARKER
             LOGGER.debug(f"Scheduling download task for slot {download_request.slot}")
 
-    def _handle_download_result(self, download_result: DownloadTaskResult):
+    async def _handle_download_result(self, download_result: DownloadTaskResult):
         """Handles the result of a download task."""
         if download_result.kind == "Ok":
+            self.successful_download_cnt += 1
             completed = download_result.completed
             LOGGER.debug(
-                f"Download completed for slot {completed.slot}, shard {completed.shard_idx}, {completed.total_event_downloaded} total events"
+                f"Download({self.successful_download_cnt}) completed for slot {completed.slot}, shard {completed.shard_idx}, {completed.total_event_downloaded} total events"
             )
             self.sm.make_slot_download_progress(completed.slot, completed.shard_idx)
         else:
             slot = download_result.slot
-            err = download_result.err
-            raise RuntimeError(f"Failed to download slot {slot}: {err.message}")
+            err_kind = download_result.err.kind
+            LOGGER.error(f"Download error for slot {slot}: {download_result.err}")  
+            # If the client queue is disconnected, we don't do anything, next run iteration will close anyway.
+            self.is_closed = True
+            if err_kind != "OutletDisconnected":
+                try:
+                    await self.dragonsmouth_outlet.put(download_result.err.into_subscribe_error())
+                except asyncio.QueueShutDown:
+                    pass
 
     async def _force_commit_offset(self):
         LOGGER.debug(f"Force committing offset {self.sm.committable_offset}")
@@ -328,7 +354,7 @@ class AsyncioFumeDragonsmouthRuntime:
             ): COMMIT_TICK_TYPE_MARKER,
         }
 
-        while self.inflight_tasks:
+        while self.inflight_tasks and not self.is_closed:
             ticks += 1
             LOGGER.debug(f"Runtime loop tick")
             if ticks % self.gc_interval == 0:
@@ -370,7 +396,7 @@ class AsyncioFumeDragonsmouthRuntime:
                 elif sigcode == DOWNLOAD_TASK_TYPE_MARKER:
                     LOGGER.debug("Download task result received")
                     assert self.download_tasks.pop(t)
-                    self._handle_download_result(result)
+                    await self._handle_download_result(result)
                 elif sigcode == COMMIT_TICK_TYPE_MARKER:
                     LOGGER.debug("Commit tick reached")
                     await self._commit_offset()
@@ -382,10 +408,7 @@ class AsyncioFumeDragonsmouthRuntime:
                     raise RuntimeError(f"Unexpected task name: {sigcode}")
 
             await self._drain_slot_status()
-
         await self.aclose()
-        LOGGER.debug("Fumarole runtime exiting")
-
 
 # DownloadTaskRunnerChannels
 @dataclass
@@ -456,15 +479,21 @@ class GrpcDownloadBlockTaskRun:
         self.dragonsmouth_oulet = dragonsmouth_oulet
 
     def map_tonic_error_code_to_download_block_error(
-        self, e: grpc.aio.AioRpcError
+        self, 
+        e: grpc.aio.AioRpcError
     ) -> DownloadBlockError:
         code = e.code()
+        ctx = {
+            "grpc_status_code": code,
+            "slot": self.download_request.slot,
+            "block_uid": self.download_request.block_uid,
+        }
         if code == grpc.StatusCode.NOT_FOUND:
             return DownloadBlockError(
-                kind="BlockShardNotFound", message="Block shard not found"
+                kind="BlockShardNotFound", message="Block shard not found", ctx=ctx,
             )
         elif code == grpc.StatusCode.UNAVAILABLE:
-            return DownloadBlockError(kind="Disconnected", message="Disconnected")
+            return DownloadBlockError(kind="Disconnected", message="Disconnected", ctx=ctx)
         elif code in (
             grpc.StatusCode.INTERNAL,
             grpc.StatusCode.ABORTED,
@@ -474,11 +503,13 @@ class GrpcDownloadBlockTaskRun:
             grpc.StatusCode.CANCELLED,
             grpc.StatusCode.DEADLINE_EXCEEDED,
         ):
-            return DownloadBlockError(kind="FailedDownload", message="Failed download")
+            return DownloadBlockError(kind="FailedDownload", message="Failed download", ctx=ctx)
         elif code == grpc.StatusCode.INVALID_ARGUMENT:
             raise ValueError("Invalid argument")
+        elif code == grpc.StatusCode.FAILED_PRECONDITION:
+            return DownloadBlockError(kind="SessionDeprecated", message="Session is deprecated", ctx=ctx)
         else:
-            return DownloadBlockError(kind="Fatal", message=f"Unknown error: {code}")
+            return DownloadBlockError(kind="Fatal", message=f"Unknown error: {code}", ctx=ctx)
 
     async def run(self) -> DownloadTaskResult:
         request = DownloadBlockShard(
@@ -535,13 +566,15 @@ class GrpcDownloadBlockTaskRun:
                             ),
                         )
                     case unknown:
-                        raise RuntimeError("Unexpected response kind: {unknown}")
+                        raise RuntimeError(f"Unexpected response kind: {unknown}")
+
         except grpc.aio.AioRpcError as e:
-            LOGGER.error(f"Download block error: {e}")
+            e2 = self.map_tonic_error_code_to_download_block_error(e)
+            LOGGER.error(f"Download block error: {e}, {e2}")
             return DownloadTaskResult(
                 kind="Err",
                 slot=self.download_request.slot,
-                err=self.map_tonic_error_code_to_download_block_error(e),
+                err=e2,
             )
 
         return DownloadTaskResult(

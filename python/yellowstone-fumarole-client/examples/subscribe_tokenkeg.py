@@ -6,6 +6,7 @@ from os import environ
 from yellowstone_fumarole_client.config import FumaroleConfig
 from yellowstone_fumarole_client import FumaroleClient, FumaroleSubscribeConfig
 from yellowstone_fumarole_proto.fumarole_pb2 import CreateConsumerGroupRequest
+from yellowstone_fumarole_client.error import FumaroleClientError
 from yellowstone_fumarole_proto.geyser_pb2 import (
     CommitmentLevel,
     SubscribeRequest,
@@ -39,7 +40,7 @@ def fumarole_config() -> FumaroleConfig:
     with open(path, "r") as f:
         return FumaroleConfig.from_yaml(f)
 
-TOKEN_ADDRESS = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+TOKEN_ADDRESS = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 # BGUM_ADDRESS = "BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY";
 
 async def main():
@@ -101,37 +102,41 @@ async def main():
     async with session:
         dragonsmouth_source = session.source
         block_map = dict()
-        async for result in dragonsmouth_source:
-            if result.HasField("block_meta"):
-                block_meta: SubscribeUpdateBlockMeta = result.block_meta
-                slot = block_meta.slot
-                block = block_map.setdefault(slot, BlockConstruction.default())
-                block.meta = block_meta
-            elif result.HasField("transaction"):
-                tx: SubscribeUpdateTransaction = result.transaction
-                slot = tx.slot
-                block = block_map.setdefault(slot, BlockConstruction.default())
-                block.tx_vec.append(tx)
-            elif result.HasField("account"):
-                account: SubscribeUpdateAccount = result.account
-                slot = account.slot
-                block = block_map.setdefault(slot, BlockConstruction.default())
-                block.account_vec.append(account)
-            elif result.HasField("entry"):
-                entry: SubscribeUpdateEntry = result.entry
-                slot = entry.slot
-                block = block_map.setdefault(slot, BlockConstruction.default())
-                block.entry_vec.append(entry)
-            elif result.HasField("slot"):
-                result: SubscribeUpdateSlot = result.slot
-                block = block_map.get(result.slot, None)
-                if block is not None:
-                    logging.info(f"slot {result.slot} end, account {len(block.account_vec)}, tx {len(block.tx_vec)}")
-                    continue
+        try:
+            async for result in dragonsmouth_source:
+                if result.HasField("block_meta"):
+                    block_meta: SubscribeUpdateBlockMeta = result.block_meta
+                    slot = block_meta.slot
+                    block = block_map.setdefault(slot, BlockConstruction.default())
+                    block.meta = block_meta
+                elif result.HasField("transaction"):
+                    tx: SubscribeUpdateTransaction = result.transaction
+                    slot = tx.slot
+                    block = block_map.setdefault(slot, BlockConstruction.default())
+                    block.tx_vec.append(tx)
+                elif result.HasField("account"):
+                    account: SubscribeUpdateAccount = result.account
+                    slot = account.slot
+                    block = block_map.setdefault(slot, BlockConstruction.default())
+                    block.account_vec.append(account)
+                elif result.HasField("entry"):
+                    entry: SubscribeUpdateEntry = result.entry
+                    slot = entry.slot
+                    block = block_map.setdefault(slot, BlockConstruction.default())
+                    block.entry_vec.append(entry)
+                elif result.HasField("slot"):
+                    result: SubscribeUpdateSlot = result.slot
+                    block = block_map.get(result.slot, None)
+                    if block is not None:
+                        logging.info(f"slot {result.slot} end, account {len(block.account_vec)}, tx {len(block.tx_vec)}")
+                        continue
+        except FumaroleClientError as e:
+            logging.error(f"Fumarole client error occurred: {e}")
         stats = session.stats()
         assert stats.max_slot_seen >= max(block_map.keys())
         assert stats.log_committable_offset >= stats.log_committed_offset
         assert stats.log_committable_offset > 0
+    logging.info(f"session ended, stats: {stats}")
     assert block_map, "No blocks received"
 
 

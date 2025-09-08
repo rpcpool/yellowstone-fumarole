@@ -30,7 +30,8 @@ function safeJsonStringify(obj: unknown): string {
 const FUMAROLE_ENDPOINT = process.env.FUMAROLE_ENDPOINT!;
 const FUMAROLE_X_TOKEN = process.env.FUMAROLE_X_TOKEN!;
 const TOKEN_ADDRESS = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-const BGUM_ADDRESS = "BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY";
+// const BGUM_ADDRESS = "BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY";
+// const KAMINO_ADDRESS = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
 
 let isShuttingDown = false;
 
@@ -48,13 +49,7 @@ async function main() {
 
   const request: SubscribeRequest = {
     commitment: CommitmentLevel.PROCESSED,
-    accounts: {
-      // token: {
-      //   account: [],
-      //   owner: [TOKEN_ADDRESS],
-      //   filters: [],
-      // },
-    },
+    accounts: {},
     transactions: {
       token: {
         accountInclude: [TOKEN_ADDRESS],
@@ -99,11 +94,7 @@ async function main() {
     slotMemoryRetention: 1000,
     gcInterval: 1000,
   };
-
-  console.log("Subscribe request:", safeJsonStringify(request));
-  console.log("Subscribe config:", safeJsonStringify(subscribeConfig));
-  console.log(`Starting subscription for group ${subscriberName}...`);
-
+  
   const { sink: _sink, source } = await client.dragonsmouthSubscribeWithConfig(
     subscriberName,
     request,
@@ -119,7 +110,6 @@ async function main() {
         started: Date.now(),
         account: [],
         tx: [],
-        tx_cnt: 0,
       };
     }
 
@@ -130,12 +120,11 @@ async function main() {
       delete block_map[slot];
       const e = Date.now() - block.started;
       console.log(
-        `Slot ${slot} account count: ${block.account.length}, tx count: ${block.tx_cnt} in ${e} ms`
+        `Slot ${slot} account count: ${block.account.length}, tx count: ${block.tx.length} in ${e} ms`
       );
     } else if (update.transaction) {
       const block = block_map[slot];
-      // block.tx.push(update.transaction);
-      block.tx_cnt += 1;
+      block.tx.push(update.transaction);
     }
   });
 }
