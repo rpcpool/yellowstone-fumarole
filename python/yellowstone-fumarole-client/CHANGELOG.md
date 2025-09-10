@@ -16,6 +16,12 @@ The minor version will be incremented upon a breaking change and the patch versi
 
 ### Breaking
 
+## [0.3.1]
+
+### Fixes
+
+- Fixed typos [see @Yolley PR](https://github.com/rpcpool/yellowstone-fumarole/pull/39).
+
 ## [0.3.0]
 
 ### Features
