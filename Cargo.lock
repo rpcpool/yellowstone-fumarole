@@ -4807,7 +4807,7 @@ dependencies = [
 
 [[package]]
 name = "yellowstone-fumarole-cli"
-version = "0.1.0+solana.2"
+version = "0.1.1+solana.2"
 dependencies = [
  "bs58",
  "clap",

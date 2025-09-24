@@ -14,18 +14,10 @@ The minor version will be incremented upon a breaking change and the patch versi
 
 ### Fixes
 
-## [0.1.1+solana.2.1.11]
+## [0.2.1+solana.2]
 
 ### Fixes
 
-- Fixed build error when download from crates.io: required proto folders during compilation are now included during `cargo package` using symlinks.
+- Add missing `mark_event_as_processed` in `pop_next_slot_status`
 
-### Features
 
-- Supports Gzip compression
-- Support custom metadata headers in yaml configuration file through `x-metadata` mapping.
-- Supports both `x_token` and `x-token` field in the configuration format.
-
-## [0.10.0+solana.2.1.11]
-
-Initial beta release of Fumarole
