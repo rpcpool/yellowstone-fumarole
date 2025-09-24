@@ -221,7 +221,7 @@ export class FumaroleSM {
         slotStatus.slot,
       );
 
-      if (!commitmentHistory) {
+      if (commitmentHistory === null || commitmentHistory === undefined) {
         throw new Error("Slot status should not be available here");
       }
 
