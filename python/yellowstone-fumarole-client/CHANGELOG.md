@@ -16,6 +16,13 @@ The minor version will be incremented upon a breaking change and the patch versi
 
 ### Breaking
 
+
+## [0.3.2]
+
+### Fixes
+
+- Fixed a conditional branch in `pop_next_slot_status` that could drop valuable session offset commitment.
+
 ## [0.3.1]
 
 ### Fixes

@@ -96,6 +96,8 @@ class FumaroleSubscribeStats:
     log_committable_offset: FumeOffset
     # Max slot seen by the in the current session - does not mean it has been processed.
     max_slot_seen: int
+    # Number of committable offsets blocked by an ancestor commit offset not yet processed.
+    processed_offset_queue_len: int = 0  
 
 
 # DragonsmouthAdapterSession
@@ -127,10 +129,12 @@ class DragonsmouthAdapterSession:
         commitable = self._sm.committable_offset
         committed = self._sm.last_committed_offset
         max_slot = self._sm.max_slot_detected
+        processed_offset_queue_len = len(self._sm.processed_offset)
         return FumaroleSubscribeStats(
             log_committed_offset=committed,
             log_committable_offset=commitable,
             max_slot_seen=max_slot,
+            processed_offset_queue_len=processed_offset_queue_len,
         )
 
 
