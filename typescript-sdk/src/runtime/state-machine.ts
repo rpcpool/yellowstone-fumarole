@@ -221,8 +221,11 @@ export class FumaroleSM {
         slotStatus.slot,
       );
 
+      if (!commitmentHistory) {
+        throw new Error("Slot status should not be available here");
+      }
+
       if (
-        commitmentHistory &&
         !commitmentHistory.processedCommitmentLevels.has(
           slotStatus.commitmentLevel,
         )
@@ -231,8 +234,9 @@ export class FumaroleSM {
           slotStatus.commitmentLevel,
         );
         return slotStatus;
-      } else if (!commitmentHistory) {
-        throw new Error("Slot status should not be available here");
+      } else {
+        // Already processed this commitment level
+        this.markEventAsProcessed(slotStatus.sessionSequence);
       }
     }
     return null;

@@ -292,6 +292,7 @@ class AsyncioFumeDragonsmouthRuntime:
 
         LOGGER.debug(f"Draining {len(slot_status_vec)} slot status")
         for slot_status in slot_status_vec:
+            self.sm.mark_event_as_processed(slot_status.session_sequence)
             matched_filters = []
             for filter_name, filter in self.subscribe_request.slots.items():
                 if (
@@ -317,7 +318,6 @@ class AsyncioFumeDragonsmouthRuntime:
                 )
                 await self.dragonsmouth_outlet.put(update)
 
-            self.sm.mark_event_as_processed(slot_status.session_sequence)
 
     async def _handle_control_plane_resp(
         self, result: ControlResponse | Exception

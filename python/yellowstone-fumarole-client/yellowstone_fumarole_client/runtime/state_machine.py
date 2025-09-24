@@ -1,4 +1,4 @@
-from typing import Optional, Set, Deque, Sequence
+from typing import Mapping, Optional, Set, Deque, Sequence
 from collections import deque, defaultdict
 from yellowstone_fumarole_proto.fumarole_pb2 import (
     CommitmentLevel,
@@ -106,13 +106,13 @@ class FumaroleSM:
 
     def __init__(self, last_committed_offset: FumeOffset, slot_memory_retention: int):
         self.last_committed_offset = last_committed_offset
-        self.slot_commitment_progression = dict()  # Slot -> SlotCommitmentProgression
+        self.slot_commitment_progression: dict[Slot, SlotCommitmentProgression] = dict()  # Slot -> SlotCommitmentProgression
         self.downloaded_slot = OrderedSet()  # Set of downloaded slots
         self.inflight_slot_shard_download = {}  # Slot -> SlotDownloadProgress
         self.blocked_slot_status_update = defaultdict(
             deque
         )  # Slot -> Deque[FumeSlotStatus]
-        self.slot_status_update_queue = deque()  # Deque[FumeSlotStatus]
+        self.slot_status_update_queue: Deque[FumeSlotStatus] = deque()  # Deque[FumeSlotStatus]
         self.processed_offset = []  # Min-heap for (sequence, offset)
         self.committable_offset = last_committed_offset
         self.max_slot_detected = 0
@@ -203,17 +203,16 @@ class FumaroleSM:
         while self.slot_status_update_queue:
             slot_status = self.slot_status_update_queue.popleft()
             commitment_history = self.slot_commitment_progression.get(slot_status.slot)
-            if (
-                commitment_history
-                and slot_status.commitment_level
-                not in commitment_history.processed_commitment_levels
-            ):
+            if commitment_history is None:
+                raise RuntimeError("Slot status should not be available here")
+            if slot_status.commitment_level not in commitment_history.processed_commitment_levels:
                 commitment_history.processed_commitment_levels.add(
                     slot_status.commitment_level
                 )
                 return slot_status
-            elif not commitment_history:
-                raise RuntimeError("Slot status should not be available here")
+            else:
+                # Already processed this commitment level
+                self.mark_event_as_processed(slot_status.session_sequence)
         return None
 
     def make_sure_slot_commitment_progression_exists(

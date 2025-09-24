@@ -306,6 +306,13 @@ impl FumaroleSM {
                     {
                         return Some(slot_status);
                     } else {
+                        tracing::warn!(
+                            "Deduped slot status for slot {}, commitment level {:?}, fuamrole offset {:?}",
+                            slot_status.slot,
+                            slot_status.commitment_level,
+                            slot_status.offset
+                        );
+                        self.mark_event_as_processed(slot_status.session_sequence);
                         // We already processed this commitment level
                         continue;
                     }
