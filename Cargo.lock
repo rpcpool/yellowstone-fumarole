@@ -4878,16 +4878,14 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-subscriber",
- "yellowstone-fumarole-client 0.2.0+solana.2",
+ "yellowstone-fumarole-client 0.2.1+solana.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "yellowstone-grpc-client",
  "yellowstone-grpc-proto",
 ]
 
 [[package]]
 name = "yellowstone-fumarole-client"
-version = "0.2.0+solana.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "237c96d1a07fcf0d972b9fa4fa4591d3231f35bbce4119f3b0d717e8eb95d882"
+version = "0.2.1+solana.2"
 dependencies = [
  "async-trait",
  "bytesize",
@@ -4920,6 +4918,8 @@ dependencies = [
 [[package]]
 name = "yellowstone-fumarole-client"
 version = "0.2.1+solana.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cf20746db350fa8f563eb2700ee7a449c892381419e8e9f6b703c44b86abf50"
 dependencies = [
  "async-trait",
  "bytesize",
