@@ -728,6 +728,10 @@ impl GrpcDownloadTaskRunner {
                     .download_attempts
                     .get(&slot)
                     .expect("should track download attempt");
+                
+                let remaining_attempt = self
+                    .max_download_attempt_per_slot
+                    .saturating_sub(*download_attempt);
 
                 enum RetryDecision {
                     DontRetry(DownloadBlockError),
@@ -742,7 +746,7 @@ impl GrpcDownloadTaskRunner {
                         )
                     }
                     GrpcDownloadTaskError::IncompleteDownload => {
-                        if download_attempt >= &self.max_download_attempt_per_slot {
+                        if remaining_attempt == 0 {
                             tracing::error!(
                                 "download slot {slot} failed: IncompleteDownload, max attempts reached"
                             );
@@ -784,9 +788,7 @@ impl GrpcDownloadTaskRunner {
                 match retry_decision {
                     RetryDecision::Retry => {
                         // We need to retry it
-                        let remaining_attempt = self
-                            .max_download_attempt_per_slot
-                            .saturating_sub(*download_attempt);
+                       
                         tracing::debug!(
                             "download slot {slot} failed, remaining attempts: {remaining_attempt}"
                         );
@@ -818,6 +820,7 @@ impl GrpcDownloadTaskRunner {
                         self.spawn_grpc_download_task(task_meta.client_idx, task_spec);
                     }
                     RetryDecision::DontRetry(err) => {
+                        self.download_attempts.remove(&slot);
                         let _ = self
                             .outlet
                             .send(DownloadTaskResult::Err {
