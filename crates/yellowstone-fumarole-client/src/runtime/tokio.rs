@@ -93,6 +93,7 @@ pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub gc_interval: usize, // in ticks
     pub non_critical_background_jobs: JoinSet<BackgroundJobResult>,
     pub no_commit: bool,
+    pub(crate) stop: bool,
 }
 
 const DEFAULT_HISTORY_POLL_SIZE: i64 = 100;
@@ -234,7 +235,7 @@ impl TokioFumeDragonsmouthRuntime {
         }
     }
 
-    fn handle_download_result(&mut self, download_result: DownloadTaskResult) {
+    async fn handle_download_result(&mut self, download_result: DownloadTaskResult) {
         match download_result {
             DownloadTaskResult::Ok(completed) => {
                 let CompletedDownloadBlockTask {
@@ -247,7 +248,19 @@ impl TokioFumeDragonsmouthRuntime {
             }
             DownloadTaskResult::Err { slot, err } => {
                 // TODO add option to let user decide what to do, by default let it crash
-                panic!("Failed to download slot {slot}: {err:?}")
+                self.stop = true;
+                match err {
+                    DownloadBlockError::OutletDisconnected => {
+                        // Will be handled in the main loop.
+                    }
+                    DownloadBlockError::FailedDownload(h2_err) => {
+                        let _ = self.dragonsmouth_outlet.send(Err(h2_err)).await;
+                    }
+                    DownloadBlockError::IncompleteDownload => {
+                        // This should not happen, so we panic here.
+                        panic!("Incomplete download for slot {slot}");
+                    }
+                } 
             }
         }
     }
@@ -428,7 +441,7 @@ impl TokioFumeDragonsmouthRuntime {
             self.force_commit_offset().await;
         }
         let mut ticks = 0;
-        loop {
+        while !self.stop {
             ticks += 1;
             if ticks % self.gc_interval == 0 {
                 self.sm.gc();
@@ -488,10 +501,11 @@ impl TokioFumeDragonsmouthRuntime {
                 maybe = self.download_task_runner_chans.download_result_rx.recv() => {
                     match maybe {
                         Some(result) => {
-                            self.handle_download_result(result);
+                            self.handle_download_result(result).await;
                         },
                         None => {
-                            panic!("download task runner channel closed")
+                            tracing::info!("download task runner channel closed");
+                            break;
                         }
                     }
                 }
@@ -506,6 +520,7 @@ impl TokioFumeDragonsmouthRuntime {
             }
             self.drain_slot_status().await;
         }
+        self.stop = true;
         tracing::debug!("fumarole runtime exiting");
         Ok(())
     }
@@ -557,9 +572,6 @@ pub(crate) struct DataPlaneTaskMeta {
 /// download result to the requestor.
 ///
 pub struct GrpcDownloadTaskRunner {
-    /// Tokio runtime handle to spawn download task on.
-    rt: tokio::runtime::Handle,
-
     ///
     /// Pool of gRPC channels
     ///
@@ -573,7 +585,7 @@ pub struct GrpcDownloadTaskRunner {
     ///
     /// Sets of inflight download tasks
     ///
-    tasks: JoinSet<Result<CompletedDownloadBlockTask, DownloadBlockError>>,
+    tasks: JoinSet<Result<CompletedDownloadBlockTask, GrpcDownloadTaskError>>,
     ///
     /// Inflight download task metadata index
     ///
@@ -629,7 +641,6 @@ impl GrpcDownloadTaskRunner {
 
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        rt: tokio::runtime::Handle,
         data_plane_channel_vec: Vec<DataPlaneConn>,
         connector: FumaroleGrpcConnector,
         cnc_rx: mpsc::Receiver<DownloadTaskRunnerCommand>,
@@ -639,7 +650,6 @@ impl GrpcDownloadTaskRunner {
         subscribe_request: SubscribeRequest,
     ) -> Self {
         Self {
-            rt,
             data_plane_channel_vec,
             connector,
             tasks: JoinSet::new(),
@@ -668,7 +678,7 @@ impl GrpcDownloadTaskRunner {
     async fn handle_data_plane_task_result(
         &mut self,
         task_id: task::Id,
-        result: Result<CompletedDownloadBlockTask, DownloadBlockError>,
+        result: Result<CompletedDownloadBlockTask, GrpcDownloadTaskError>,
     ) -> Result<(), DownloadBlockError> {
         let Some(task_meta) = self.task_meta.remove(&task_id) else {
             panic!("missing task meta")
@@ -719,20 +729,66 @@ impl GrpcDownloadTaskRunner {
                     .get(&slot)
                     .expect("should track download attempt");
 
-                match e {
-                    x @ (DownloadBlockError::Disconnected | DownloadBlockError::FailedDownload) => {
-                        // We need to retry it
-                        if *download_attempt >= self.max_download_attempt_per_slot {
+                enum RetryDecision {
+                    DontRetry(DownloadBlockError),
+                    Retry,
+                }
+
+                let retry_decision = match e {
+                    GrpcDownloadTaskError::OutletDisconnected => {
+                        // Will naturally stop the runtime loop.
+                        RetryDecision::DontRetry(
+                            DownloadBlockError::OutletDisconnected,
+                        )
+                    }
+                    GrpcDownloadTaskError::IncompleteDownload => {
+                        if download_attempt >= &self.max_download_attempt_per_slot {
                             tracing::error!(
-                                "download slot {slot} failed: {x:?}, max attempts reached"
+                                "download slot {slot} failed: IncompleteDownload, max attempts reached"
                             );
-                            return Err(x);
+                            RetryDecision::DontRetry(DownloadBlockError::IncompleteDownload)
+                        } else {
+                            RetryDecision::Retry
                         }
+                    }
+                    GrpcDownloadTaskError::TonicError(h2_err) => {
+                        if matches!(
+                            h2_err.code(),
+                            Code::Unavailable | 
+                            Code::Internal | 
+                            Code::Aborted | 
+                            Code::ResourceExhausted | 
+                            Code::DataLoss | 
+                            Code::Unknown | 
+                            Code::Cancelled | 
+                            Code::DeadlineExceeded
+                        ) {
+                            if download_attempt >= &self.max_download_attempt_per_slot {
+                                tracing::error!(
+                                    "download slot {slot} failed with tonic error: {h2_err:?}, max attempts reached"
+                                );
+                                RetryDecision::DontRetry(DownloadBlockError::FailedDownload(h2_err))
+                            } else {
+                                tracing::warn!(
+                                    "download slot {slot} failed with tonic error: {h2_err:?}, retrying..."
+                                );
+                                RetryDecision::Retry
+                            }
+                        } else {
+                            RetryDecision::DontRetry(DownloadBlockError::FailedDownload(h2_err))
+                        }
+                    }
+                };
+                
+
+                match retry_decision {
+                    RetryDecision::Retry => {
+                        // We need to retry it
                         let remaining_attempt = self
                             .max_download_attempt_per_slot
                             .saturating_sub(*download_attempt);
                         tracing::debug!(
-                            "download slot {slot} failed: {x:?}, remaining attempts: {remaining_attempt}"
+                            "download slot {slot} failed, remaining attempts: {remaining_attempt}"
                         );
                         // Recreate the data plane bidi
                         let t = Instant::now();
@@ -761,23 +817,15 @@ impl GrpcDownloadTaskRunner {
                         // Reschedule download immediately
                         self.spawn_grpc_download_task(task_meta.client_idx, task_spec);
                     }
-                    DownloadBlockError::OutletDisconnected => {
-                        // Will automatically be handled in the `run` main loop.
-                        // so nothing to do.
-                        tracing::debug!("dragonsmouth outlet disconnected");
-                    }
-                    DownloadBlockError::BlockShardNotFound => {
-                        // TODO: I don't think it should ever happen, but lets panic first so we get notified by client if it ever happens.
-                        tracing::error!("Slot {slot} not found");
+                    RetryDecision::DontRetry(err) => {
                         let _ = self
                             .outlet
                             .send(DownloadTaskResult::Err {
                                 slot,
-                                err: DownloadBlockError::BlockShardNotFound,
+                                err,
                             })
                             .await;
                     }
-                    DownloadBlockError::Fatal(e) => return Err(DownloadBlockError::Fatal(e)),
                 }
             }
         }
@@ -803,9 +851,9 @@ impl GrpcDownloadTaskRunner {
             download_request: download_request.clone(),
             client,
             filters: Some(self.subscribe_request.clone().into()),
-            dragonsmouth_oulet: dragonsmouth_outlet.clone(),
+            dragonsmouth_outlet: dragonsmouth_outlet.clone(),
         };
-        let ah = self.tasks.spawn_on(task.run(), &self.rt);
+        let ah = self.tasks.spawn(task.run());
         let task_meta = DataPlaneTaskMeta {
             client_idx,
             request: download_request.clone(),
@@ -904,43 +952,39 @@ pub(crate) struct GrpcDownloadBlockTaskRun {
     download_request: FumeDownloadRequest,
     client: GrpcFumaroleClient,
     filters: Option<BlockFilters>,
-    dragonsmouth_oulet: mpsc::Sender<Result<SubscribeUpdate, tonic::Status>>,
+    dragonsmouth_outlet: mpsc::Sender<Result<SubscribeUpdate, tonic::Status>>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DownloadBlockError {
-    #[error("download block task disconnected")]
-    Disconnected,
     #[error("dragonsmouth outlet disconnected")]
     OutletDisconnected,
-    #[error("block shard not found")]
-    BlockShardNotFound,
-    #[error("error during transportation or processing")]
-    FailedDownload,
-    #[error("unknown error: {0}")]
-    Fatal(#[from] tonic::Status),
+    #[error(transparent)]
+    FailedDownload(#[from] tonic::Status),
+    #[error("download finished too early")]
+    IncompleteDownload,
 }
 
-fn map_tonic_error_code_to_download_block_error(code: Code) -> DownloadBlockError {
-    match code {
-        Code::NotFound => DownloadBlockError::BlockShardNotFound,
-        Code::Unavailable => DownloadBlockError::Disconnected,
-        Code::Internal
-        | Code::Aborted
-        | Code::DataLoss
-        | Code::ResourceExhausted
-        | Code::Unknown
-        | Code::Cancelled => DownloadBlockError::FailedDownload,
-        Code::Ok => {
-            unreachable!("ok")
-        }
-        Code::InvalidArgument => {
-            panic!("invalid argument");
-        }
-        Code::DeadlineExceeded => DownloadBlockError::FailedDownload,
-        rest => DownloadBlockError::Fatal(tonic::Status::new(rest, "unknown error")),
-    }
-}
+// fn map_tonic_error_code_to_download_block_error(code: Code) -> DownloadBlockError {
+//     match code {
+//         Code::NotFound => DownloadBlockError::BlockShardNotFound,
+//         Code::Unavailable => DownloadBlockError::Disconnected,
+//         Code::Internal
+//         | Code::Aborted
+//         | Code::DataLoss
+//         | Code::ResourceExhausted
+//         | Code::Unknown
+//         | Code::Cancelled => DownloadBlockError::FailedDownload,
+//         Code::Ok => {
+//             unreachable!("ok")
+//         }
+//         Code::InvalidArgument => {
+//             panic!("invalid argument");
+//         }
+//         Code::DeadlineExceeded => DownloadBlockError::FailedDownload,
+//         rest => DownloadBlockError::Unknown(tonic::Status::new(rest, "unknown error")),
+//     }
+// }
 
 pub(crate) struct CompletedDownloadBlockTask {
     slot: u64,
@@ -950,11 +994,21 @@ pub(crate) struct CompletedDownloadBlockTask {
     total_event_downloaded: usize,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum GrpcDownloadTaskError {
+    #[error("outlet disconnected")]
+    OutletDisconnected,
+    #[error(transparent)]
+    TonicError(#[from] tonic::Status),
+    #[error("incomplete download")]
+    IncompleteDownload,
+}
+
 impl GrpcDownloadBlockTaskRun {
     #[allow(dead_code)]
     const RUNTIME_NAME: &'static str = "tokio_grpc_task_run";
 
-    async fn run(mut self) -> Result<CompletedDownloadBlockTask, DownloadBlockError> {
+    async fn run(mut self) -> Result<CompletedDownloadBlockTask, GrpcDownloadTaskError> {
         let request = DownloadBlockShard {
             blockchain_id: self.download_request.blockchain_id.to_vec(),
             block_uid: self.download_request.block_uid.to_vec(),
@@ -966,17 +1020,17 @@ impl GrpcDownloadBlockTaskRun {
         let mut rx = match resp {
             Ok(resp) => resp.into_inner(),
             Err(e) => {
-                return Err(map_tonic_error_code_to_download_block_error(e.code()));
+                return Err(e.into());
             }
         };
         let mut total_event_downloaded = 0;
         while let Some(data) = rx.next().await {
-            let resp = data
-                .map_err(|e| {
-                    let code = e.code();
-                    tracing::error!("download block error: {code:?}");
-                    map_tonic_error_code_to_download_block_error(code)
-                })?
+            let resp = data?
+                // .map_err(|e| {
+                    // let code = e.code();
+                    // tracing::error!("download block error: {code:?}");
+                    // map_tonic_error_code_to_download_block_error(code)
+                // })?
                 .response
                 .expect("missing response");
 
@@ -989,8 +1043,8 @@ impl GrpcDownloadBlockTaskRun {
                         inc_total_event_downloaded(Self::RUNTIME_NAME, 1);
                     }
 
-                    if self.dragonsmouth_oulet.send(Ok(update)).await.is_err() {
-                        return Err(DownloadBlockError::OutletDisconnected);
+                    if self.dragonsmouth_outlet.send(Ok(update)).await.is_err() {
+                        return Err(GrpcDownloadTaskError::OutletDisconnected);
                     }
                 }
                 data_response::Response::BlockShardDownloadFinish(_) => {
@@ -1003,6 +1057,8 @@ impl GrpcDownloadBlockTaskRun {
                 }
             }
         }
-        Err(DownloadBlockError::FailedDownload)
+
+        Err(GrpcDownloadTaskError::IncompleteDownload)
     }
+
 }

@@ -743,7 +743,6 @@ impl FumaroleClient {
         let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(10);
         let (download_result_tx, download_result_rx) = mpsc::channel(10);
         let grpc_download_task_runner = GrpcDownloadTaskRunner::new(
-            handle.clone(),
             data_plane_channel_vec,
             self.connector.clone(),
             download_task_runner_cnc_rx,
@@ -778,6 +777,7 @@ impl FumaroleClient {
             non_critical_background_jobs: Default::default(),
             last_history_poll: Default::default(),
             no_commit: config.no_commit,
+            stop: false,
         };
         let download_task_runner_jh = handle.spawn(grpc_download_task_runner.run());
         let fumarole_rt_jh = handle.spawn(tokio_rt.run());

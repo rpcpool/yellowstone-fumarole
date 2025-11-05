@@ -51,7 +51,7 @@ tower = "~0.5.2"
 tracing = "~0.1.41"
 tracing-subscriber = { version = "~0.3.18", features = ["env-filter"] }
 uuid = { version = "1" }
-yellowstone-fumarole-client = { path = "crates/yellowstone-fumarole-client", version = "0.2.1+solana.2" }
+yellowstone-fumarole-client = { path = "crates/yellowstone-fumarole-client", version = "0.2.2+solana.2" }
 yellowstone-grpc-client = "9"
 yellowstone-grpc-proto = "9"
 
