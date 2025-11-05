@@ -260,7 +260,7 @@ impl TokioFumeDragonsmouthRuntime {
                         // This should not happen, so we panic here.
                         panic!("Incomplete download for slot {slot}");
                     }
-                } 
+                }
             }
         }
     }
@@ -728,7 +728,7 @@ impl GrpcDownloadTaskRunner {
                     .download_attempts
                     .get(&slot)
                     .expect("should track download attempt");
-                
+
                 let remaining_attempt = self
                     .max_download_attempt_per_slot
                     .saturating_sub(*download_attempt);
@@ -741,9 +741,7 @@ impl GrpcDownloadTaskRunner {
                 let retry_decision = match e {
                     GrpcDownloadTaskError::OutletDisconnected => {
                         // Will naturally stop the runtime loop.
-                        RetryDecision::DontRetry(
-                            DownloadBlockError::OutletDisconnected,
-                        )
+                        RetryDecision::DontRetry(DownloadBlockError::OutletDisconnected)
                     }
                     GrpcDownloadTaskError::IncompleteDownload => {
                         if remaining_attempt == 0 {
@@ -758,14 +756,14 @@ impl GrpcDownloadTaskRunner {
                     GrpcDownloadTaskError::TonicError(h2_err) => {
                         if matches!(
                             h2_err.code(),
-                            Code::Unavailable | 
-                            Code::Internal | 
-                            Code::Aborted | 
-                            Code::ResourceExhausted | 
-                            Code::DataLoss | 
-                            Code::Unknown | 
-                            Code::Cancelled | 
-                            Code::DeadlineExceeded
+                            Code::Unavailable
+                                | Code::Internal
+                                | Code::Aborted
+                                | Code::ResourceExhausted
+                                | Code::DataLoss
+                                | Code::Unknown
+                                | Code::Cancelled
+                                | Code::DeadlineExceeded
                         ) {
                             if download_attempt >= &self.max_download_attempt_per_slot {
                                 tracing::error!(
@@ -783,12 +781,11 @@ impl GrpcDownloadTaskRunner {
                         }
                     }
                 };
-                
 
                 match retry_decision {
                     RetryDecision::Retry => {
                         // We need to retry it
-                       
+
                         tracing::debug!(
                             "download slot {slot} failed, remaining attempts: {remaining_attempt}"
                         );
@@ -823,10 +820,7 @@ impl GrpcDownloadTaskRunner {
                         self.download_attempts.remove(&slot);
                         let _ = self
                             .outlet
-                            .send(DownloadTaskResult::Err {
-                                slot,
-                                err,
-                            })
+                            .send(DownloadTaskResult::Err { slot, err })
                             .await;
                     }
                 }
@@ -1030,9 +1024,9 @@ impl GrpcDownloadBlockTaskRun {
         while let Some(data) = rx.next().await {
             let resp = data?
                 // .map_err(|e| {
-                    // let code = e.code();
-                    // tracing::error!("download block error: {code:?}");
-                    // map_tonic_error_code_to_download_block_error(code)
+                // let code = e.code();
+                // tracing::error!("download block error: {code:?}");
+                // map_tonic_error_code_to_download_block_error(code)
                 // })?
                 .response
                 .expect("missing response");
@@ -1063,5 +1057,4 @@ impl GrpcDownloadBlockTaskRun {
 
         Err(GrpcDownloadTaskError::IncompleteDownload)
     }
-
 }
