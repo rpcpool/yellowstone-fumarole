@@ -14,6 +14,10 @@ The minor version will be incremented upon a breaking change and the patch versi
 
 ### Fixes
 
+## [0.2.2+solana.2]
+
+- Removed panic when the grpc download task schedule closed due to organic reason.
+
 ## [0.2.1+solana.2]
 
 ### Fixes
