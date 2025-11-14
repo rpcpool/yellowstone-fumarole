@@ -1,6 +1,6 @@
 use {
     http_body_util::Full,
-    hyper::{Request, Response, body::Bytes, service::service_fn},
+    hyper::{body::Bytes, service::service_fn, Request, Response},
     hyper_util::{rt::TokioIo, server::conn::auto},
     prometheus::{Registry, TextEncoder},
     std::{convert::Infallible, net::SocketAddr},

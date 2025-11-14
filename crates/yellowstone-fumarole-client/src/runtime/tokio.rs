@@ -1,5 +1,3 @@
-use solana_sdk::clock::Slot;
-
 #[cfg(feature = "prometheus")]
 use crate::metrics::{
     dec_inflight_slot_download, inc_failed_slot_download_attempt, inc_inflight_slot_download,
@@ -18,6 +16,7 @@ use {
         FumaroleClient, FumaroleGrpcConnector, GrpcFumaroleClient,
     },
     futures::StreamExt,
+    solana_sdk::clock::Slot,
     std::{
         collections::{HashMap, VecDeque},
         time::{Duration, Instant},

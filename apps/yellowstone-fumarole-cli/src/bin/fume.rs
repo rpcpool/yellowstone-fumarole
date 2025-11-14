@@ -3,8 +3,10 @@ use tikv_jemallocator::Jemalloc;
 use {
     clap::Parser,
     futures::{future::BoxFuture, FutureExt},
-    solana_sdk::pubkey::{ParsePubkeyError, Pubkey},
-    solana_sdk::signature::Signature,
+    solana_sdk::{
+        pubkey::{ParsePubkeyError, Pubkey},
+        signature::Signature,
+    },
     std::{
         collections::{HashMap, HashSet},
         env,

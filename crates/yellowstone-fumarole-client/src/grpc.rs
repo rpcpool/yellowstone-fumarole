@@ -1,7 +1,7 @@
 use {
     crate::{
-        FumeInterceptor, config::FumaroleConfig, proto::fumarole_client::FumaroleClient,
-        string_pairs_to_metadata_header,
+        config::FumaroleConfig, proto::fumarole_client::FumaroleClient,
+        string_pairs_to_metadata_header, FumeInterceptor,
     },
     tonic::{
         service::interceptor::InterceptedService,

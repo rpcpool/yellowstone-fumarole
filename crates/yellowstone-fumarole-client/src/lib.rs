@@ -277,13 +277,13 @@ pub(crate) mod util;
 use {
     crate::proto::GetSlotRangeRequest,
     config::FumaroleConfig,
-    futures::future::{Either, select},
+    futures::future::{select, Either},
     proto::control_response::Response,
     runtime::{
-        state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
+        state_machine::{FumaroleSM, DEFAULT_SLOT_MEMORY_RETENTION},
         tokio::{
-            DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, GrpcDownloadTaskRunner,
-            TokioFumeDragonsmouthRuntime,
+            DownloadTaskRunnerChannels, GrpcDownloadTaskRunner, TokioFumeDragonsmouthRuntime,
+            DEFAULT_GC_INTERVAL,
         },
     },
     std::{
@@ -295,10 +295,10 @@ use {
     tokio_stream::wrappers::ReceiverStream,
     tonic::{
         metadata::{
-            Ascii, MetadataKey, MetadataValue,
             errors::{InvalidMetadataKey, InvalidMetadataValue},
+            Ascii, MetadataKey, MetadataValue,
         },
-        service::{Interceptor, interceptor::InterceptedService},
+        service::{interceptor::InterceptedService, Interceptor},
         transport::{Channel, ClientTlsConfig},
     },
     util::grpc::into_bounded_mpsc_rx,
@@ -325,7 +325,7 @@ pub mod proto {
 
 use {
     crate::grpc::FumaroleGrpcConnector,
-    proto::{JoinControlPlane, fumarole_client::FumaroleClient as TonicFumaroleClient},
+    proto::{fumarole_client::FumaroleClient as TonicFumaroleClient, JoinControlPlane},
     runtime::tokio::DataPlaneConn,
     tonic::transport::Endpoint,
 };
