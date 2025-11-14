@@ -1,10 +1,10 @@
-import { CommitmentLevel } from "../grpc/geyser";
-import { BlockchainEvent } from "../grpc/fumarole";
+import { CommitmentLevel } from "../src/grpc/geyser";
+import { BlockchainEvent } from "../src/grpc/fumarole";
 import {
   FumaroleSM,
   DEFAULT_SLOT_MEMORY_RETENTION,
   SlotDownloadState,
-} from "../runtime/state-machine";
+} from "../src/runtime/state-machine";
 import { randomBytes } from "crypto";
 
 function randomBlockchainEvent(

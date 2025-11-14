@@ -14,5 +14,5 @@
     "incremental": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*"]
 }
