@@ -1,10 +1,10 @@
 use {
     crate::proto::{self, BlockchainEvent},
     fxhash::FxHashMap,
-    solana_clock::Slot,
+    solana_sdk::clock::Slot,
     std::{
         cmp::Reverse,
-        collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque, hash_map},
+        collections::{hash_map, BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque},
     },
     yellowstone_grpc_proto::geyser::{self, CommitmentLevel},
 };
@@ -43,6 +43,7 @@ pub(crate) struct FumeSlotStatus {
     pub slot: Slot,
     pub parent_slot: Option<Slot>,
     pub commitment_level: geyser::CommitmentLevel,
+    #[allow(dead_code)]
     pub dead_error: Option<String>,
 }
 

@@ -20,11 +20,10 @@ clap-verbosity-flag = { workspace = true, features = ["tracing"] }
 futures = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["http1"] }
-hyper-util = { workspace = true, features = ["http1"] }
+hyper-util = { workspace = true, features = ["http1", "tokio", "server"] }
 prometheus = { workspace = true }
 serde_yaml = { workspace = true }
-solana-pubkey = { workspace = true }
-solana-signature = { workspace = true }
+solana-sdk = { workspace = true }
 tabled = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
@@ -32,7 +31,7 @@ tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-yellowstone-fumarole-client = { version = "~0.2.0", features = ["prometheus"] }
+yellowstone-fumarole-client = { workspace = true, features = ["prometheus"] }
 yellowstone-grpc-client = { workspace = true }
 yellowstone-grpc-proto = { workspace = true }
 

@@ -590,7 +590,7 @@ impl FumaroleClient {
             .try_into()
             .expect("initial_stream_window_size must fit in u32");
         let endpoint = Endpoint::from_shared(config.endpoint.clone())?
-            .tls_config(ClientTlsConfig::new().with_native_roots())?
+            .tls_config(ClientTlsConfig::new())?
             .initial_connection_window_size(connection_window_size)
             .initial_stream_window_size(stream_window_size)
             .http2_adaptive_window(config.enable_http2_adaptive_window);

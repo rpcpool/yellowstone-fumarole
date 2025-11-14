@@ -1,7 +1,7 @@
 use {
     http_body_util::Full,
-    hyper::{Request, Response, body::Bytes, server::conn::http1, service::service_fn},
-    hyper_util::rt::TokioIo,
+    hyper::{Request, Response, body::Bytes, service::service_fn},
+    hyper_util::{rt::TokioIo, server::conn::auto},
     prometheus::{Registry, TextEncoder},
     std::{convert::Infallible, net::SocketAddr},
     tokio::net::TcpListener,
@@ -29,6 +29,7 @@ pub async fn prometheus_server(bind_addr: SocketAddr, registry: Registry) {
         .expect("Failed to bind TCP listener");
     let addr = listener.local_addr().expect("Failed to get local address");
     println!("Prometheus listening on http://{}", addr);
+
     // We start a loop to continuously accept incoming connections
     loop {
         let (stream, _) = listener
@@ -47,10 +48,8 @@ pub async fn prometheus_server(bind_addr: SocketAddr, registry: Registry) {
                 async move { prometheus_service_fn(&registry, req).await }
             };
 
-            let result = http1::Builder::new()
-                // `service_fn` converts our function in a `Service`
-                .serve_connection(io, service_fn(svc_fn))
-                .await;
+            let builder = auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+            let result = builder.serve_connection(io, service_fn(svc_fn)).await;
 
             if let Err(err) = result {
                 eprintln!("Error serving connection: {:?}", err);

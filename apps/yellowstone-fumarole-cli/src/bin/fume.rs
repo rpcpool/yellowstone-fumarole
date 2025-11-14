@@ -2,43 +2,43 @@
 use tikv_jemallocator::Jemalloc;
 use {
     clap::Parser,
-    futures::{FutureExt, future::BoxFuture},
-    solana_pubkey::{ParsePubkeyError, Pubkey},
-    solana_signature::Signature,
+    futures::{future::BoxFuture, FutureExt},
+    solana_sdk::pubkey::{ParsePubkeyError, Pubkey},
+    solana_sdk::signature::Signature,
     std::{
         collections::{HashMap, HashSet},
         env,
         fmt::{self, Debug},
         fs::File,
         hash::Hash,
-        io::{Write, stdout},
+        io::{stdout, Write},
         net::{AddrParseError, SocketAddr},
         num::{NonZeroU8, NonZeroUsize},
         path::PathBuf,
         str::FromStr,
         time::Duration,
     },
-    tabled::{Table, builder::Builder},
+    tabled::{builder::Builder, Table},
     tokio::{
         io::{self, AsyncBufReadExt, BufReader},
-        signal::unix::{SignalKind, signal},
+        signal::unix::{signal, SignalKind},
     },
     tonic::Code,
     tracing_subscriber::EnvFilter,
     yellowstone_fumarole_cli::prom::prometheus_server,
     yellowstone_fumarole_client::{
-        DragonsmouthAdapterSession, FumaroleClient, FumaroleSubscribeConfig,
         config::FumaroleConfig,
         proto::{
             ConsumerGroupInfo, CreateConsumerGroupRequest, DeleteConsumerGroupRequest,
             GetConsumerGroupInfoRequest, InitialOffsetPolicy, ListConsumerGroupsRequest,
         },
+        DragonsmouthAdapterSession, FumaroleClient, FumaroleSubscribeConfig,
     },
     yellowstone_grpc_proto::geyser::{
-        CommitmentLevel, SubscribeRequest, SubscribeRequestFilterAccounts,
-        SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterSlots,
-        SubscribeRequestFilterTransactions, SubscribeUpdateAccount, SubscribeUpdateBlockMeta,
-        SubscribeUpdateSlot, SubscribeUpdateTransaction, subscribe_update::UpdateOneof,
+        subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
+        SubscribeRequestFilterAccounts, SubscribeRequestFilterBlocksMeta,
+        SubscribeRequestFilterSlots, SubscribeRequestFilterTransactions, SubscribeUpdateAccount,
+        SubscribeUpdateBlockMeta, SubscribeUpdateSlot, SubscribeUpdateTransaction,
     },
 };
 
@@ -627,7 +627,6 @@ impl SubscribeArgs {
                     request.slots = HashMap::from([(
                         self.default_filter_name(),
                         SubscribeRequestFilterSlots {
-                            interslot_updates: Some(true),
                             ..Default::default()
                         },
                     )]);
@@ -721,7 +720,6 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
                                 slot,
                                 parent,
                                 status,
-                                dead_error: _
                             } = slot;
                             let cl = CommitmentLevel::try_from(status).unwrap();
                             Some(format!("slot={slot}, parent={parent:?}, status={cl:?}"))

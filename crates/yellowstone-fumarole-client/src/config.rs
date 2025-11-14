@@ -82,7 +82,6 @@ impl FumaroleConfig {
         let value: Option<String> = Option::deserialize(deserializer)?;
         match value {
             Some(ref s) if s == "gzip" => Ok(Some(CompressionEncoding::Gzip)),
-            Some(ref s) if s == "zstd" => Ok(Some(CompressionEncoding::Zstd)),
             Some(_) => Err(serde::de::Error::custom("Invalid compression encoding")),
             None => Ok(None),
         }

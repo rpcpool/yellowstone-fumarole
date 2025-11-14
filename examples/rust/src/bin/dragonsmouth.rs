@@ -1,7 +1,9 @@
 use {
     clap::Parser,
-    solana_pubkey::{ParsePubkeyError, Pubkey},
-    solana_signature::Signature,
+    solana_sdk::{
+        pubkey::{ParsePubkeyError, Pubkey},
+        signature::Signature,
+    },
     std::{
         collections::{HashMap, HashSet},
         fmt, fs,
@@ -10,14 +12,14 @@ use {
         str::FromStr,
     },
     tokio_stream::{Stream, StreamExt},
-    tonic::Status,
+    tonic::{transport::ClientTlsConfig, Status},
     yellowstone_fumarole_client::config::FumaroleConfig,
-    yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcBuilder, GeyserGrpcClient, Interceptor},
+    yellowstone_grpc_client::{GeyserGrpcBuilder, GeyserGrpcClient, Interceptor},
     yellowstone_grpc_proto::geyser::{
-        CommitmentLevel, SlotStatus, SubscribeRequest, SubscribeRequestFilterAccounts,
-        SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterSlots,
-        SubscribeRequestFilterTransactions, SubscribeUpdate, SubscribeUpdateAccount,
-        SubscribeUpdateBlockMeta, SubscribeUpdateTransaction, subscribe_update::UpdateOneof,
+        subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
+        SubscribeRequestFilterAccounts, SubscribeRequestFilterBlocksMeta,
+        SubscribeRequestFilterSlots, SubscribeRequestFilterTransactions, SubscribeUpdate,
+        SubscribeUpdateAccount, SubscribeUpdateBlockMeta, SubscribeUpdateTransaction,
     },
 };
 
@@ -349,10 +351,7 @@ where
                 }
             }
             UpdateOneof::Slot(slot) => {
-                if matches!(
-                    slot.status(),
-                    SlotStatus::SlotFirstShredReceived | SlotStatus::SlotCreatedBank
-                ) {
+                if matches!(slot.status(), CommitmentLevel::Processed) {
                     let slot = slot.slot;
                     block_map.entry(slot).or_default();
                 }
@@ -377,7 +376,6 @@ async fn block_stats_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, ar
     request.slots.insert(
         args.default_filter_name(),
         SubscribeRequestFilterSlots {
-            interslot_updates: Some(true),
             ..Default::default()
         },
     );
@@ -491,7 +489,6 @@ impl SubscribeArgs {
                     request.slots = HashMap::from([(
                         self.default_filter_name(),
                         SubscribeRequestFilterSlots {
-                            interslot_updates: Some(true),
                             ..Default::default()
                         },
                     )]);
@@ -555,9 +552,9 @@ async fn main() {
         .expect("Failed to parse endpoint")
         .x_token(config.x_token)
         .expect("x_token")
-        .tls_config(ClientTlsConfig::new().with_native_roots())
+        .tls_config(ClientTlsConfig::new())
         .expect("tls_config")
-        .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
+        .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
         .http2_adaptive_window(true)
         .initial_stream_window_size(9_000_000)
         .initial_connection_window_size(100_000_000)

@@ -26,7 +26,7 @@ futures = { workspace = true }
 fxhash = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true }
-solana-clock = { workspace = true }
+solana-sdk = { workspace = true }
 lazy_static = { workspace = true }
 prometheus = { workspace = true, optional = true }
 prost = { workspace = true }
@@ -37,8 +37,7 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tokio-stream = { workspace = true }
-tonic = { workspace = true, features = ["tls-native-roots", "tls-ring", "gzip", "zstd"] }
-tonic-prost = { workspace = true }
+tonic = { workspace = true, features = ["tls", "gzip"] }
 tower = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
@@ -46,7 +45,6 @@ yellowstone-grpc-proto = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }
-tonic-prost-build = { workspace = true }
 protobuf-src = { workspace = true }
 
 [lints]

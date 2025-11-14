@@ -9,8 +9,8 @@ fn main() {
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { env::set_var("PROTOC", protobuf_src::protoc()) };
 
-    tonic_prost_build::configure()
+    tonic_build::configure()
         .build_server(false)
-        .compile_protos(&[proto_dir.join("fumarole.proto")], &[proto_dir])
+        .compile(&[proto_dir.join("fumarole.proto")], &[proto_dir])
         .expect("Failed to compile protos");
 }

@@ -1,3 +1,5 @@
+use solana_sdk::clock::Slot;
+
 #[cfg(feature = "prometheus")]
 use crate::metrics::{
     dec_inflight_slot_download, inc_failed_slot_download_attempt, inc_inflight_slot_download,
@@ -9,14 +11,13 @@ use crate::metrics::{
 use {
     super::state_machine::{FumaroleSM, FumeDownloadRequest, FumeOffset, FumeShardIdx},
     crate::{
-        FumaroleClient, FumaroleGrpcConnector, GrpcFumaroleClient,
         proto::{
-            self, BlockFilters, CommitOffset, ControlCommand, DownloadBlockShard,
-            GetChainTipResponse, PollBlockchainHistory, data_response,
+            self, data_response, BlockFilters, CommitOffset, ControlCommand, DownloadBlockShard,
+            GetChainTipResponse, PollBlockchainHistory,
         },
+        FumaroleClient, FumaroleGrpcConnector, GrpcFumaroleClient,
     },
     futures::StreamExt,
-    solana_clock::Slot,
     std::{
         collections::{HashMap, VecDeque},
         time::{Duration, Instant},
@@ -314,13 +315,11 @@ impl TokioFumeDragonsmouthRuntime {
             if !matched_filters.is_empty() {
                 let update = SubscribeUpdate {
                     filters: matched_filters,
-                    created_at: None,
                     update_oneof: Some(geyser::subscribe_update::UpdateOneof::Slot(
                         SubscribeUpdateSlot {
                             slot: slot_status.slot,
                             parent: slot_status.parent_slot,
                             status: slot_status.commitment_level.into(),
-                            dead_error: slot_status.dead_error,
                         },
                     )),
                 };

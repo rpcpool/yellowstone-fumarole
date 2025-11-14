@@ -1,6 +1,6 @@
 use {
     clap::Parser,
-    solana_pubkey::Pubkey,
+    solana_sdk::pubkey::Pubkey,
     std::{collections::HashMap, path::PathBuf},
     yellowstone_fumarole_client::{
         DragonsmouthAdapterSession, FumaroleClient, config::FumaroleConfig,
