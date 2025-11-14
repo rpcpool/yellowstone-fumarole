@@ -1,17 +1,26 @@
 {
   "name": "@triton-one/yellowstone-fumarole",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "license": "Apache-2.0",
   "author": "Triton One",
   "description": "Yellowstone gRPC Fumarole Node.js Client",
   "type": "module",
-  "main": "./dist/cjs/index.js",
-  "module": "./dist/esm/index.js",
+  "main": "./dist/cjs/index.cjs",
   "types": "./dist/types/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js",
+      "types": "./dist/types/index.d.ts"
+    }
+  },
   "scripts": {
     "clean": "rm -rf dist",
     "prebuild": "npm run clean",
-    "build": "npm run grpc-generate && tsc --project tsconfig.esm.json && tsc --project tsconfig.cjs.json && node add-js-extensions.mjs",
+    "build": "npm run grpc-generate && tsc --project tsconfig.esm.json && tsc --project tsconfig.cjs.json && node add-js-extensions.cjs",
     "grpc-generate": "mkdir -p src/grpc && protoc -I../yellowstone-grpc/yellowstone-grpc-proto/proto -I../proto --plugin=node_modules/.bin/protoc-gen-ts_proto --ts_proto_opt=forceLong=bigint --ts_proto_opt=outputServices=grpc-js --experimental_allow_proto3_optional --ts_proto_out=src/grpc fumarole.proto --ts_proto_opt=esModuleInterop=true",
     "test": "jest --config jest.config.mjs"
   },
@@ -37,6 +46,7 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^22.17.1",
     "jest": "^30.0.5",
+    "recast": "^0.23.11",
     "ts-jest": "^29.4.1",
     "ts-proto": "^2.7.7",
     "typescript": "^5.2.2"
