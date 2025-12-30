@@ -987,7 +987,7 @@ pub(crate) struct CompletedDownloadBlockTask {
     slot: u64,
     #[allow(dead_code)]
     block_uid: [u8; 16],
-    shard_idx: FumeShardIdx,
+    shard_idx: Option<FumeShardIdx>,
     total_event_downloaded: usize,
 }
 
@@ -1048,7 +1048,7 @@ impl GrpcDownloadBlockTaskRun {
                     return Ok(CompletedDownloadBlockTask {
                         slot: self.download_request.slot,
                         block_uid: self.download_request.block_uid,
-                        shard_idx: 0,
+                        shard_idx: None,
                         total_event_downloaded,
                     });
                 }

@@ -12,6 +12,8 @@ service Fumarole {
 
   rpc DownloadBlock(DownloadBlockShard) returns (stream DataResponse) {}
 
+  rpc DownloadBlockDataShard(DownloadBlockShard) returns (stream DataResponse) {}
+
   // Represents subscription to the data plane
   rpc SubscribeData(stream DataCommand) returns (stream DataResponse) {}
 
@@ -19,6 +21,8 @@ service Fumarole {
 
   // Represents subscription to the control plane
   rpc Subscribe(stream ControlCommand) returns (stream ControlResponse) {}
+
+  rpc SubscribeV2(stream ControlCommand) returns (stream ControlResponse) {}
 
   rpc Version(VersionRequest) returns (VersionResponse) {}
   
