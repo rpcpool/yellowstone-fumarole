@@ -578,6 +578,7 @@ fn string_pairs_to_metadata_header(
 }
 
 impl FumaroleClient {
+    #[allow(deprecated)]
     pub async fn connect(config: FumaroleConfig) -> Result<FumaroleClient, ConnectError> {
         let connection_window_size: u32 = config
             .initial_connection_window_size
@@ -589,15 +590,30 @@ impl FumaroleClient {
             .as_u64()
             .try_into()
             .expect("initial_stream_window_size must fit in u32");
-        let endpoint = Endpoint::from_shared(config.endpoint.clone())?
-            .tls_config(ClientTlsConfig::new().with_native_roots())?
-            .initial_connection_window_size(connection_window_size)
-            .initial_stream_window_size(stream_window_size)
-            .http2_adaptive_window(config.enable_http2_adaptive_window);
+
+        if config.endpoints.is_none() {
+            eprintln!(
+                "WARNING: `endpoint` field is deprecated, please use `endpoints` field instead"
+            );
+        }
+
+        let endpoints = config
+            .endpoints
+            .clone()
+            .unwrap_or_else(|| vec![config.endpoint.clone()]);
+        let mut tonic_endpoints = Vec::with_capacity(endpoints.len());
+        for endpoint_str in endpoints {
+            let endpoints = Endpoint::from_shared(endpoint_str)?
+                .tls_config(ClientTlsConfig::new().with_native_roots())?
+                .initial_connection_window_size(connection_window_size)
+                .initial_stream_window_size(stream_window_size)
+                .http2_adaptive_window(config.enable_http2_adaptive_window);
+            tonic_endpoints.push(endpoints);
+        }
 
         let connector = FumaroleGrpcConnector {
             config: config.clone(),
-            endpoint: endpoint.clone(),
+            endpoints: tonic_endpoints,
         };
 
         let client = connector.connect().await?;

@@ -9,7 +9,12 @@ use {
 #[derive(Debug, Clone, Deserialize)]
 pub struct FumaroleConfig {
     /// Endpoint to connect to the fumarole service
+    #[deprecated(note = "use `endpoints` instead")]
     pub endpoint: String,
+
+    /// Optional list of endpoints
+    /// Note: if both `endpoint` and `endpoints` are set, `endpoints` takes precedence
+    pub endpoints: Option<Vec<String>>,
 
     /// Optional token to use for authentication
     #[serde(default, alias = "x-token")]

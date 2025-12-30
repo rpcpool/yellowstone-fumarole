@@ -549,7 +549,12 @@ async fn main() {
     let config: FumaroleConfig =
         serde_yaml::from_str(&config).expect("Failed to parse config file");
 
-    let endpoint = config.endpoint.clone();
+    let endpoint = config
+        .endpoints
+        .expect("endpoints not defined")
+        .first()
+        .cloned()
+        .expect("No endpoints provided");
 
     let geyser = GeyserGrpcBuilder::from_shared(endpoint)
         .expect("Failed to parse endpoint")
