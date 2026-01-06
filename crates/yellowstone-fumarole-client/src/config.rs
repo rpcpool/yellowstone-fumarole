@@ -10,7 +10,7 @@ use {
 pub struct FumaroleConfig {
     /// Endpoint to connect to the fumarole service
     #[deprecated(note = "use `endpoints` instead")]
-    pub endpoint: String,
+    pub endpoint: Option<String>,
 
     /// Optional list of endpoints
     /// Note: if both `endpoint` and `endpoints` are set, `endpoints` takes precedence
@@ -58,9 +58,17 @@ pub struct FumaroleConfig {
 
     #[serde(default = "FumaroleConfig::default_enable_http2_adaptive_window")]
     pub enable_http2_adaptive_window: bool,
+
+    #[serde(default = "FumaroleConfig::default_connection_per_host")]
+    pub connection_per_host: std::num::NonZeroUsize,
 }
 
 impl FumaroleConfig {
+    const fn default_connection_per_host() -> std::num::NonZeroUsize {
+        // Default to 4 connections per host
+        std::num::NonZeroUsize::new(8).unwrap()
+    }
+
     const fn default_enable_http2_adaptive_window() -> bool {
         true
     }

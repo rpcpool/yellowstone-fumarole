@@ -27,7 +27,27 @@ impl FumaroleGrpcConnector {
             .endpoints
             .choose(&mut rng)
             .expect("at least one endpoint must be provided");
-        let channel = endpoint.connect().await?;
+        let (channel, tx_channel) =
+            Channel::balance_channel::<String>(self.config.connection_per_host.get());
+        tracing::debug!("Connecting to fumarole endpoint: {}", endpoint.uri());
+
+        for (i, endpoint) in self
+            .endpoints
+            .iter()
+            .cycle()
+            .take(self.config.connection_per_host.get())
+            .enumerate()
+        {
+            let key = format!("{}-{}", endpoint.uri(), i);
+            tx_channel
+                .send(tonic::transport::channel::Change::Insert(
+                    key,
+                    endpoint.clone(),
+                ))
+                .await
+                .expect("service closed");
+        }
+
         let interceptor = FumeInterceptor {
             x_token: self
                 .config

@@ -397,7 +397,7 @@ pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: usize = 3;
 ///
 /// MAXIMUM number of parallel data streams (TCP connections) to open to fumarole.
 ///
-const MAX_PARA_DATA_STREAMS: u8 = 4;
+const MAX_PARA_DATA_STREAMS: u8 = 10;
 
 ///
 /// Default number of parallel data streams (TCP connections) to open to fumarole.
@@ -494,6 +494,8 @@ pub struct FumaroleSubscribeConfig {
     /// This mean the current session will never commit progression.
     /// If set to `true`, [`FumaroleSubscribeConfig::commit_interval`] will be ignored.
     pub no_commit: bool,
+
+    pub experimental_enable_sharded_block_download: bool,
 }
 
 impl Default for FumaroleSubscribeConfig {
@@ -511,6 +513,7 @@ impl Default for FumaroleSubscribeConfig {
             slot_memory_retention: DEFAULT_SLOT_MEMORY_RETENTION,
             refresh_tip_stats_interval: DEFAULT_REFRESH_TIP_INTERVAL, // Default to 5 seconds
             no_commit: false,
+            experimental_enable_sharded_block_download: false,
         }
     }
 }
@@ -600,7 +603,7 @@ impl FumaroleClient {
         let endpoints = config
             .endpoints
             .clone()
-            .unwrap_or_else(|| vec![config.endpoint.clone()]);
+            .unwrap_or_else(|| vec![config.endpoint.clone().expect("endpoint must be set")]);
         let mut tonic_endpoints = Vec::with_capacity(endpoints.len());
         for endpoint_str in endpoints {
             let endpoints = Endpoint::from_shared(endpoint_str)?
@@ -711,10 +714,15 @@ impl FumaroleClient {
             .await
             .expect("failed to send initial join");
 
-        let resp = self
-            .inner
-            .subscribe(ReceiverStream::new(fume_control_plane_rx))
-            .await?;
+        let resp = if config.experimental_enable_sharded_block_download {
+            self.inner
+                .subscribe_v2(ReceiverStream::new(fume_control_plane_rx))
+                .await?
+        } else {
+            self.inner
+                .subscribe(ReceiverStream::new(fume_control_plane_rx))
+                .await?
+        };
 
         let mut streaming = resp.into_inner();
         let fume_control_plane_tx = fume_control_plane_tx.clone();
@@ -758,6 +766,7 @@ impl FumaroleClient {
         // Make sure the channel capacity is really low, since the grpc runner already implements its own concurrency control
         let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(10);
         let (download_result_tx, download_result_rx) = mpsc::channel(10);
+
         let grpc_download_task_runner = GrpcDownloadTaskRunner::new(
             data_plane_channel_vec,
             self.connector.clone(),
@@ -766,6 +775,7 @@ impl FumaroleClient {
             download_result_tx,
             config.max_failed_slot_download_attempt,
             request.clone(),
+            config.experimental_enable_sharded_block_download,
         );
 
         let download_task_runner_chans = DownloadTaskRunnerChannels {

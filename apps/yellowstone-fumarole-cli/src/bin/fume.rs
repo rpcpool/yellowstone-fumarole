@@ -3,6 +3,7 @@ use tikv_jemallocator::Jemalloc;
 use {
     clap::Parser,
     futures::{FutureExt, future::BoxFuture},
+    serde::Deserialize,
     solana_pubkey::{ParsePubkeyError, Pubkey},
     solana_signature::Signature,
     std::{
@@ -47,6 +48,16 @@ use {
 static GLOBAL: Jemalloc = Jemalloc;
 
 const FUMAROLE_CONFIG_ENV: &str = "FUMAROLE_CONFIG";
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FumeConfig {
+    #[serde(default, flatten)]
+    fumarole: FumaroleConfig,
+
+    // Experimental(xx) feature to enable sharded downloads
+    #[serde(default)]
+    xx_enable_sharded_download: bool,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct PrometheusBindAddr(SocketAddr);
@@ -648,7 +659,11 @@ impl SubscribeArgs {
     }
 }
 
-async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
+async fn subscribe(
+    mut client: FumaroleClient,
+    args: SubscribeArgs,
+    xx_enable_sharded_download: bool,
+) {
     let mut out: Box<dyn Write> = if let Some(out) = &args.out {
         Box::new(
             File::options()
@@ -680,6 +695,7 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
         commit_interval: Duration::from_secs(1),
         num_data_plane_tcp_connections: args.para,
         no_commit: args.no_commit,
+        experimental_enable_sharded_block_download: xx_enable_sharded_download,
         ..Default::default()
     };
     let dragonsmouth_session = client
@@ -747,7 +763,11 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     }
 }
 
-async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
+async fn block_stats(
+    mut client: FumaroleClient,
+    args: SubscribeArgs,
+    xx_enable_sharded_download: bool,
+) {
     let mut out: Box<dyn Write> = if let Some(out) = &args.out {
         Box::new(
             File::options()
@@ -795,6 +815,7 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
         commit_interval: Duration::from_secs(1),
         num_data_plane_tcp_connections: args.para,
         no_commit: args.no_commit,
+        experimental_enable_sharded_block_download: xx_enable_sharded_download,
         ..Default::default()
     };
     let dragonsmouth_session = client
@@ -835,11 +856,18 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
     };
 
     let mut block_map: HashMap<u64, BlockInfo> = HashMap::new();
+    let mut one_sec_tick = tokio::time::interval(Duration::from_secs(1));
+    let mut block_count_per_tick = 0u64;
+    let mut block_rate = 0;
     loop {
         tokio::select! {
             _ = &mut shutdown => {
                 println!("Shutting down...");
                 break;
+            }
+            _ = one_sec_tick.tick() => {
+                block_rate = block_count_per_tick;
+                block_count_per_tick = 0;
             }
             result = source.recv() => {
                 let Some(result) = result else {
@@ -887,7 +915,8 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
                             let mut block = block_map.remove(&slot).expect("Failed to get block info");
                             block.block_meta = Some(block_meta);
                             let msg = summarized_block(&block);
-                            writeln!(out, "{slot} -- {msg}").expect("Failed to write to output file");
+                            block_count_per_tick += 1;
+                            writeln!(out, "{slot} ({block_rate}/s) -- {msg}").expect("Failed to write to output file");
                             if let Some(tx_out) = &mut tx_out {
                                 for sig in block.success_tx.iter() {
                                     writeln!(tx_out, "{slot} -- {sig}").expect("Failed to write to transaction output file");
@@ -988,12 +1017,12 @@ async fn main() {
         std::fs::File::open(config_path.clone())
             .unwrap_or_else(|_| panic!("Failed to read config file at {config_path:?}"))
     };
-    let config: FumaroleConfig =
+    let config: FumeConfig =
         serde_yaml::from_reader(config_file).expect("failed to parse fumarole config");
 
     tracing::debug!("Using config: {config:?}");
 
-    let fumarole_client = FumaroleClient::connect(config.clone())
+    let fumarole_client = FumaroleClient::connect(config.fumarole.clone())
         .await
         .expect("Failed to connect to fumarole");
 
@@ -1017,13 +1046,23 @@ async fn main() {
             delete_all_cg(fumarole_client).await;
         }
         Action::Subscribe(subscribe_args) => {
-            subscribe(fumarole_client, subscribe_args).await;
+            subscribe(
+                fumarole_client,
+                subscribe_args,
+                config.xx_enable_sharded_download,
+            )
+            .await;
         }
         Action::SlotRange => {
             slot_range(fumarole_client).await;
         }
         Action::Block(blocks_args) => {
-            block_stats(fumarole_client, blocks_args).await;
+            block_stats(
+                fumarole_client,
+                blocks_args,
+                config.xx_enable_sharded_download,
+            )
+            .await;
         }
     }
 }

@@ -4803,6 +4803,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "prometheus",
+ "serde",
  "serde_yaml",
  "solana-pubkey",
  "solana-signature",
