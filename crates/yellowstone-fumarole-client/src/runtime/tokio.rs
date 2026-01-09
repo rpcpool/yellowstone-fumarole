@@ -251,15 +251,22 @@ impl TokioFumeDragonsmouthRuntime {
             }
             DownloadTaskResult::Err { slot, err } => {
                 // TODO add option to let user decide what to do, by default let it crash
-                self.stop = true;
                 match err {
                     DownloadBlockError::OutletDisconnected => {
                         // Will be handled in the main loop.
+                        self.stop = true;
                     }
                     DownloadBlockError::FailedDownload(h2_err) => {
-                        let _ = self.dragonsmouth_outlet.send(Err(h2_err)).await;
+                        if h2_err.code() == Code::NotFound {
+                            self.sm.make_slot_download_progress(slot, None);
+                            tracing::error!("slot {slot} not found, skipping...");
+                        } else {
+                            self.stop = true;
+                            let _ = self.dragonsmouth_outlet.send(Err(h2_err)).await;
+                        }
                     }
                     DownloadBlockError::IncompleteDownload => {
+                        self.stop = true;
                         // This should not happen, so we panic here.
                         panic!("Incomplete download for slot {slot}");
                     }

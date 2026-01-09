@@ -382,7 +382,7 @@ pub enum ConnectError {
 ///
 /// Default gRPC buffer capacity
 ///
-pub const DEFAULT_DRAGONSMOUTH_CAPACITY: usize = 100000;
+pub const DEFAULT_DRAGONSMOUTH_CAPACITY: usize = 10_000_000;
 
 ///
 /// Default Fumarole commit offset interval
@@ -397,12 +397,12 @@ pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: usize = 3;
 ///
 /// MAXIMUM number of parallel data streams (TCP connections) to open to fumarole.
 ///
-const MAX_PARA_DATA_STREAMS: u8 = 10;
+const MAX_PARA_DATA_STREAMS: u8 = 20;
 
 ///
 /// Default number of parallel data streams (TCP connections) to open to fumarole.
 ///
-pub const DEFAULT_PARA_DATA_STREAMS: u8 = 4;
+pub const DEFAULT_PARA_DATA_STREAMS: u8 = 10;
 
 ///
 /// Default maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.

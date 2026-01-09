@@ -2,6 +2,7 @@
 use tikv_jemallocator::Jemalloc;
 use {
     clap::Parser,
+    core::net,
     futures::{FutureExt, future::BoxFuture},
     serde::Deserialize,
     solana_pubkey::{ParsePubkeyError, Pubkey},
@@ -221,6 +222,32 @@ pub struct SubscribeInclude {
     set: HashSet<SubscribeDataType>,
 }
 
+pub struct SMA {
+    n: usize,
+    periods: Vec<f64>,
+    i: usize,
+}
+
+impl SMA {
+    fn new(n: usize) -> Self {
+        Self {
+            n,
+            periods: vec![0.0; n],
+            i: 0,
+        }
+    }
+
+    fn record(&mut self, value: f64) {
+        self.periods[self.i % self.n] = value;
+        self.i = (self.i + 1) % self.n;
+    }
+
+    fn average(&self) -> f64 {
+        let sum: f64 = self.periods.iter().sum();
+        sum / self.n as f64
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("Invalid include type {0}")]
 pub struct FromStrSubscribeIncludeErr(String);
@@ -234,7 +261,7 @@ impl FromStr for SubscribeInclude {
             .map(|s| s.trim())
             .map(|s| match s {
                 "account" => Ok(vec![SubscribeDataType::Account]),
-                "tx" => Ok(vec![SubscribeDataType::Transaction]),
+                "tx" | "txn" => Ok(vec![SubscribeDataType::Transaction]),
                 "meta" => Ok(vec![SubscribeDataType::BlockMeta]),
                 "slot" => Ok(vec![SubscribeDataType::Slot]),
                 "all" => Ok(vec![
@@ -858,7 +885,7 @@ async fn block_stats(
     let mut block_map: HashMap<u64, BlockInfo> = HashMap::new();
     let mut one_sec_tick = tokio::time::interval(Duration::from_secs(1));
     let mut block_count_per_tick = 0u64;
-    let mut block_rate = 0;
+    let mut block_rate_sma = SMA::new(5);
     loop {
         tokio::select! {
             _ = &mut shutdown => {
@@ -866,7 +893,7 @@ async fn block_stats(
                 break;
             }
             _ = one_sec_tick.tick() => {
-                block_rate = block_count_per_tick;
+                block_rate_sma.record(block_count_per_tick as f64);
                 block_count_per_tick = 0;
             }
             result = source.recv() => {
@@ -916,7 +943,8 @@ async fn block_stats(
                             block.block_meta = Some(block_meta);
                             let msg = summarized_block(&block);
                             block_count_per_tick += 1;
-                            writeln!(out, "{slot} ({block_rate}/s) -- {msg}").expect("Failed to write to output file");
+                            let block_rate_avg = block_rate_sma.average();
+                            writeln!(out, "{slot} ({block_rate_avg}/s) -- {msg}").expect("Failed to write to output file");
                             if let Some(tx_out) = &mut tx_out {
                                 for sig in block.success_tx.iter() {
                                     writeln!(tx_out, "{slot} -- {sig}").expect("Failed to write to transaction output file");
