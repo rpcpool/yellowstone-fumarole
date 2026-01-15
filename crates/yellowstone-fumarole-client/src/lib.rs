@@ -617,6 +617,7 @@ impl FumaroleClient {
         let connector = FumaroleGrpcConnector {
             config: config.clone(),
             endpoints: tonic_endpoints,
+            connect_cnt: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
 
         let client = connector.connect().await?;
@@ -745,13 +746,13 @@ impl FumaroleClient {
 
         let sm = FumaroleSM::new(*last_committed_offset, config.slot_memory_retention);
 
-        let (dm_tx, dm_rx) = mpsc::channel(100);
+        let (dm_tx, dm_rx) = mpsc::channel(config.data_channel_capacity.get());
         let dm_bidi = DragonsmouthSubscribeRequestBidi {
             tx: dm_tx.clone(),
             rx: dm_rx,
         };
 
-        let mut data_plane_channel_vec = Vec::with_capacity(1);
+        let mut data_plane_channel_vec = Vec::with_capacity(config.num_data_plane_tcp_connections.get() as usize);
         // TODO: support config.num_data_plane_tcp_connections
         for _ in 0..config.num_data_plane_tcp_connections.get() {
             let client = self
@@ -759,13 +760,13 @@ impl FumaroleClient {
                 .connect()
                 .await
                 .expect("failed to connect to fumarole");
-            let conn = DataPlaneConn::new(client, config.concurrent_download_limit_per_tcp.get());
+            let conn = DataPlaneConn::new(client);
             data_plane_channel_vec.push(conn);
         }
         let (download_task_runner_cnc_tx, download_task_runner_cnc_rx) = mpsc::channel(10);
         // Make sure the channel capacity is really low, since the grpc runner already implements its own concurrency control
-        let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(10);
-        let (download_result_tx, download_result_rx) = mpsc::channel(10);
+        let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(1000);
+        let (download_result_tx, download_result_rx) = mpsc::channel(1000);
 
         let grpc_download_task_runner = GrpcDownloadTaskRunner::new(
             data_plane_channel_vec,
@@ -776,6 +777,7 @@ impl FumaroleClient {
             config.max_failed_slot_download_attempt,
             request.clone(),
             config.experimental_enable_sharded_block_download,
+            5,
         );
 
         let download_task_runner_chans = DownloadTaskRunnerChannels {

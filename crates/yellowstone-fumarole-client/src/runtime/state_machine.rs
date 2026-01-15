@@ -443,7 +443,6 @@ impl FumaroleSM {
                         num_shards,
                         commitment_level: event_cl,
                     };
-                    tracing::debug!("num shards for slot {}: {}", slot, num_shards);
                     let download_progress = SlotDownloadProgress {
                         num_shards,
                         shard_remaining: vec![false; num_shards as usize],

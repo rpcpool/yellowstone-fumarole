@@ -45,16 +45,12 @@ pub struct DragonsmouthSubscribeRequestBidi {
 }
 
 impl DataPlaneConn {
-    pub const fn new(client: GrpcFumaroleClient, concurrency_limit: usize) -> Self {
+    pub const fn new(client: GrpcFumaroleClient) -> Self {
         Self {
-            permits: concurrency_limit,
+            used_cnt: 0,
             client,
             rev: 0,
         }
-    }
-
-    const fn has_permit(&self) -> bool {
-        self.permits > 0
     }
 }
 
@@ -632,6 +628,9 @@ pub struct GrpcDownloadTaskRunner {
 
     /// Whether to use experimental sharded download
     experimental_sharded_download: bool,
+
+    /// The maximum concurrent downloads allowed
+    max_concurrent_downloads: usize,
 }
 
 ///
@@ -644,7 +643,7 @@ pub struct DownloadTaskArgs {
 }
 
 pub(crate) struct DataPlaneConn {
-    permits: usize,
+    used_cnt: usize,
     client: GrpcFumaroleClient,
     rev: u64,
 }
@@ -673,6 +672,7 @@ impl GrpcDownloadTaskRunner {
         max_download_attempt_by_slot: usize,
         subscribe_request: SubscribeRequest,
         experimental_sharded_download: bool,
+        max_concurrent_downloads: usize,
     ) -> Self {
         Self {
             data_plane_channel_vec,
@@ -686,6 +686,7 @@ impl GrpcDownloadTaskRunner {
             max_download_attempt_per_slot: max_download_attempt_by_slot,
             subscribe_request,
             experimental_sharded_download,
+            max_concurrent_downloads,
         }
     }
 
@@ -696,8 +697,7 @@ impl GrpcDownloadTaskRunner {
         self.data_plane_channel_vec
             .iter()
             .enumerate()
-            .max_by_key(|(_, conn)| conn.permits)
-            .filter(|(_, conn)| conn.has_permit())
+            .min_by_key(|(_, conn)| conn.used_cnt)
             .map(|(idx, _)| idx)
     }
 
@@ -773,7 +773,7 @@ impl GrpcDownloadTaskRunner {
             .data_plane_channel_vec
             .get_mut(task_meta.client_idx)
             .expect("should not be none");
-        state.permits += 1;
+        state.used_cnt = state.used_cnt.checked_sub(1).expect("underflow");
 
         match result {
             Ok(completed) => {
@@ -877,7 +877,7 @@ impl GrpcDownloadTaskRunner {
             .data_plane_channel_vec
             .get_mut(task_meta.client_idx)
             .expect("should not be none");
-        state.permits += 1;
+        state.used_cnt = state.used_cnt.checked_sub(1).expect("underflow");
 
         let mut remaining_shard_to_download = task_meta.remaining_shard_idx_to_download.clone();
         // Handle any completed shards
@@ -1019,7 +1019,7 @@ impl GrpcDownloadTaskRunner {
             .entry(slot)
             .and_modify(|e| *e += 1)
             .or_insert(1);
-        conn.permits = conn.permits.checked_sub(1).expect("underflow");
+        conn.used_cnt += 1;
 
         #[cfg(feature = "prometheus")]
         {
@@ -1037,27 +1037,17 @@ impl GrpcDownloadTaskRunner {
         }
     }
 
-    #[allow(dead_code)]
-    fn available_download_permit(&self) -> usize {
-        self.data_plane_channel_vec
-            .iter()
-            .map(|conn| conn.permits)
-            .sum()
-    }
 
     pub(crate) async fn run(mut self) -> Result<(), DownloadBlockError> {
         while !self.outlet.is_closed() {
             let maybe_available_client_idx = self.find_least_use_client();
 
-            #[cfg(feature = "prometheus")]
-            {
-                use crate::metrics::set_available_download_permit;
-                set_available_download_permit(
-                    Self::RUNTIME_NAME,
-                    self.available_download_permit() as i64,
-                );
-            }
-
+            let has_avail_download_permit = self.tasks.len() < self.max_concurrent_downloads;
+            tracing::debug!(
+                "GrpcDownloadTaskRunner loop: has_avail_download_permit={}, inflight_tasks={}",
+                has_avail_download_permit,
+                self.tasks.len()
+            );
             tokio::select! {
                 maybe = self.cnc_rx.recv() => {
                     match maybe {
@@ -1070,7 +1060,7 @@ impl GrpcDownloadTaskRunner {
                         }
                     }
                 }
-                maybe_download_task = self.download_task_queue.recv(), if maybe_available_client_idx.is_some() => {
+                maybe_download_task = self.download_task_queue.recv(), if has_avail_download_permit => {
                     match maybe_download_task {
                         Some(download_task) => {
                             let Some(client_idx) = maybe_available_client_idx else {
@@ -1204,7 +1194,12 @@ impl GrpcDownloadBlockTaskRun {
                     };
                     let mut total_event_downloaded = 0;
                     let mut block_meta: Option<SubscribeUpdate> = None;
+                    let t = Instant::now();
+                    let mut ts_next = Instant::now();
+                    let mut cumu_next_wait = Duration::ZERO;
                     while let Some(data) = rx.next().await {
+                        let next_e = ts_next.elapsed();
+                        cumu_next_wait += next_e;
                         let resp = data?.response.expect("missing response");
 
                         match resp {
@@ -1224,14 +1219,18 @@ impl GrpcDownloadBlockTaskRun {
                                 }
                             }
                             data_response::Response::BlockShardDownloadFinish(_) => {
+
                                 tracing::debug!(
-                                    "shard {} download finished with {} events",
+                                    "shard {} download finished with {} events in {:?}, cumu_wait: {:?}",
                                     shard_id,
-                                    total_event_downloaded
+                                    total_event_downloaded,
+                                    t.elapsed(),
+                                    cumu_next_wait,
                                 );
                                 return Ok(block_meta);
                             }
                         }
+                        ts_next = Instant::now();
                     }
 
                     Err(GrpcDownloadTaskError::IncompleteDownload)

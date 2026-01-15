@@ -2,18 +2,17 @@ use {
     crate::{
         FumeInterceptor, config::FumaroleConfig, proto::fumarole_client::FumaroleClient,
         string_pairs_to_metadata_header,
-    },
-    rand::{SeedableRng, seq::IndexedRandom},
-    tonic::{
+    }, rand::{SeedableRng, seq::IndexedRandom}, std::sync::{Arc, atomic::AtomicU64}, tonic::{
         service::interceptor::InterceptedService,
         transport::{Channel, Endpoint},
-    },
+    }
 };
 
 #[derive(Clone)]
 pub struct FumaroleGrpcConnector {
     pub config: FumaroleConfig,
     pub endpoints: Vec<Endpoint>,
+    pub connect_cnt: Arc<AtomicU64>,
 }
 
 impl FumaroleGrpcConnector {
@@ -28,17 +27,18 @@ impl FumaroleGrpcConnector {
             .choose(&mut rng)
             .expect("at least one endpoint must be provided");
         let (channel, tx_channel) =
-            Channel::balance_channel::<String>(self.config.connection_per_host.get());
+            Channel::balance_channel::<String>(self.config.connection_per_host.get() *  self.endpoints.len());
         tracing::debug!("Connecting to fumarole endpoint: {}", endpoint.uri());
+        let endpoint_len = self.endpoints.len() as u64;
+        let mut idx = self.connect_cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % endpoint_len;
+        let mut i = 0;
+        while i < self.config.connection_per_host.get() * endpoint_len as usize {
 
-        for (i, endpoint) in self
-            .endpoints
-            .iter()
-            .cycle()
-            .take(self.config.connection_per_host.get())
-            .enumerate()
-        {
-            let key = format!("{}-{}", endpoint.uri(), i);
+            let endpoint = self.endpoints
+                .get(idx as usize)
+                .expect("at least one endpoint must be provided");
+            let key = format!("{}-{}", endpoint.uri(), idx);
+            tracing::debug!("Adding channel endpoint: {} with key {}", endpoint.uri(), key);
             tx_channel
                 .send(tonic::transport::channel::Change::Insert(
                     key,
@@ -46,6 +46,8 @@ impl FumaroleGrpcConnector {
                 ))
                 .await
                 .expect("service closed");
+            idx = self.connect_cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % endpoint_len;
+            i += 1;
         }
 
         let interceptor = FumeInterceptor {
