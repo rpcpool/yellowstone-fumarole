@@ -16,7 +16,7 @@ use {
         },
         runtime::state_machine::{FumeBlockUID, FumeBlockchainId, FumeNumShards},
     },
-    futures::{StreamExt, future::join_all},
+    futures::{StreamExt},
     solana_clock::Slot,
     std::{
         collections::{HashMap, VecDeque},
@@ -842,7 +842,11 @@ impl GrpcDownloadTaskRunner {
                             dragonsmouth_outlet: task_meta.dragonsmouth_outlet,
                         };
                         // Reschedule download immediately
-                        self.spawn_grpc_download_task(task_meta.client_idx, task_spec, None);
+                        if self.experimental_sharded_download {
+                            self.spawn_grpc_download_task(task_spec, None);
+                        } else {
+                            self.spawn_grpc_download_task_legacy(task_spec);
+                        }
                     }
                     RetryDecision::DontRetry(err) => {
                         self.download_attempts.remove(&slot);
@@ -959,15 +963,89 @@ impl GrpcDownloadTaskRunner {
             dragonsmouth_outlet: task_meta.dragonsmouth_outlet,
         };
         // Reschedule download immediately
-        self.spawn_grpc_download_task(task_meta.client_idx, task_spec, Some(shard_idx_to_retry));
+        if self.experimental_sharded_download {
+            self.spawn_grpc_download_task(task_spec, Some(shard_idx_to_retry));
+        } else {
+
+            self.spawn_grpc_download_task_legacy(task_spec);
+        }
+
     }
+
+    fn spawn_grpc_download_task_legacy(
+        &mut self,
+        task_spec: DownloadTaskArgs,
+    ) {
+        let client_idx = self
+            .find_least_use_client()
+            .expect("no available data plane client");
+        let conn = self
+            .data_plane_channel_vec
+            .get_mut(client_idx)
+            .expect("should not be none");
+
+        let client = conn.client.clone();
+        let client_rev = conn.rev;
+
+        let DownloadTaskArgs {
+            download_request,
+            // filters,
+            dragonsmouth_outlet,
+        } = task_spec;
+        let slot = download_request.slot;
+        let shard_idx_to_download = (0..download_request.num_shards).collect::<Vec<_>>();
+        let task = GrpcDownloadBlockTaskRun {
+            download_request: download_request.clone(),
+            slot: download_request.slot,
+            blockchain_id: download_request.blockchain_id.clone(),
+            block_uid: download_request.block_uid,
+            num_shards: download_request.num_shards,
+            shard_to_download: shard_idx_to_download.clone(),
+            client,
+            filters: Some(self.subscribe_request.clone().into()),
+            dragonsmouth_outlet: dragonsmouth_outlet.clone(),
+        };
+        let is_expiremental_sharded_download = self.experimental_sharded_download;
+        let ah = self.tasks.spawn(async move {
+            if is_expiremental_sharded_download {
+                let (completed, failed) = task.run_expiremental_sharded_download().await;
+                GrpcDownloadTaskResultKind::Sharded((completed, failed))
+            } else {
+                let result = task.run_legacy_download_block().await;
+                GrpcDownloadTaskResultKind::Legacy(result)
+            }
+        });
+        let task_meta = DataPlaneTaskMeta {
+            client_idx,
+            request: download_request.clone(),
+            dragonsmouth_outlet,
+            scheduled_at: Instant::now(),
+            client_rev,
+            remaining_shard_idx_to_download: shard_idx_to_download.clone(),
+        };
+        self.download_attempts
+            .entry(slot)
+            .and_modify(|e| *e += 1)
+            .or_insert(1);
+        conn.used_cnt += 1;
+
+        #[cfg(feature = "prometheus")]
+        {
+            inc_inflight_slot_download(Self::RUNTIME_NAME);
+        }
+
+        self.task_meta.insert(ah.id(), task_meta);
+    }
+
 
     fn spawn_grpc_download_task(
         &mut self,
-        client_idx: usize,
         task_spec: DownloadTaskArgs,
         shard_idx_to_download: Option<Vec<FumeShardIdx>>,
     ) {
+        let client_idx = self
+            .find_least_use_client()
+            .expect("no available data plane client");
         let conn = self
             .data_plane_channel_vec
             .get_mut(client_idx)
@@ -1029,6 +1107,7 @@ impl GrpcDownloadTaskRunner {
         self.task_meta.insert(ah.id(), task_meta);
     }
 
+
     fn handle_control_command(&mut self, cmd: DownloadTaskRunnerCommand) {
         match cmd {
             DownloadTaskRunnerCommand::UpdateSubscribeRequest(subscribe_request) => {
@@ -1040,8 +1119,6 @@ impl GrpcDownloadTaskRunner {
 
     pub(crate) async fn run(mut self) -> Result<(), DownloadBlockError> {
         while !self.outlet.is_closed() {
-            let maybe_available_client_idx = self.find_least_use_client();
-
             let has_avail_download_permit = self.tasks.len() < self.max_concurrent_downloads;
             tracing::debug!(
                 "GrpcDownloadTaskRunner loop: has_avail_download_permit={}, inflight_tasks={}",
@@ -1063,10 +1140,13 @@ impl GrpcDownloadTaskRunner {
                 maybe_download_task = self.download_task_queue.recv(), if has_avail_download_permit => {
                     match maybe_download_task {
                         Some(download_task) => {
-                            let Some(client_idx) = maybe_available_client_idx else {
-                                unreachable!("client idx is some")
-                            };
-                            self.spawn_grpc_download_task(client_idx, download_task, None);
+                            if self.experimental_sharded_download {
+                                tracing::debug!("spawning experimental sharded download task for slot {}", download_task.download_request.slot);
+                                self.spawn_grpc_download_task(download_task, None);
+                            } else {
+                                tracing::debug!("spawning legacy download task for slot {}", download_task.download_request.slot);
+                                self.spawn_grpc_download_task_legacy(download_task);
+                            }
                         }
                         None => {
                             tracing::debug!("download task queue disconnected");
@@ -1195,11 +1275,7 @@ impl GrpcDownloadBlockTaskRun {
                     let mut total_event_downloaded = 0;
                     let mut block_meta: Option<SubscribeUpdate> = None;
                     let t = Instant::now();
-                    let mut ts_next = Instant::now();
-                    let mut cumu_next_wait = Duration::ZERO;
                     while let Some(data) = rx.next().await {
-                        let next_e = ts_next.elapsed();
-                        cumu_next_wait += next_e;
                         let resp = data?.response.expect("missing response");
 
                         match resp {
@@ -1219,30 +1295,45 @@ impl GrpcDownloadBlockTaskRun {
                                 }
                             }
                             data_response::Response::BlockShardDownloadFinish(_) => {
+                                let download_time = t.elapsed();
+                                #[cfg(feature = "prometheus")]
+                                {
+                                    use crate::metrics::observe_download_shard_download_time;
 
+                                    observe_download_shard_download_time(download_time);
+                                }
                                 tracing::debug!(
-                                    "shard {} download finished with {} events in {:?}, cumu_wait: {:?}",
+                                    "shard {} download finished with {} events in {:?}",
                                     shard_id,
                                     total_event_downloaded,
-                                    t.elapsed(),
-                                    cumu_next_wait,
+                                    download_time,
                                 );
                                 return Ok(block_meta);
                             }
                         }
-                        ts_next = Instant::now();
                     }
 
                     Err(GrpcDownloadTaskError::IncompleteDownload)
                 }
             });
 
-        let (succ, failures): (Vec<_>, Vec<_>) = join_all(futs)
-            .await
-            .into_iter()
-            .enumerate()
-            .map(|(idx, res)| (self.shard_to_download[idx], res))
-            .partition(|pair| pair.1.is_ok());
+        let mut succ: Vec<(u32, Result<Option<SubscribeUpdate>, GrpcDownloadTaskError>)> = Vec::new();
+        let mut failures: Vec<(u32, Result<Option<SubscribeUpdate>, GrpcDownloadTaskError>)> = Vec::new();
+
+        for (i, fut) in futs.into_iter().enumerate() {
+            let shard_idx = self.shard_to_download[i];
+            match fut.await {
+                Ok(ok) => succ.push((shard_idx, Ok(ok))),
+                Err(e) => failures.push((shard_idx, Err(e))),
+            }
+        }
+
+        // let (succ, failures): (Vec<_>, Vec<_>) = join_all(futs)
+        //     .await
+        //     .into_iter()
+        //     .enumerate()
+        //     .map(|(idx, res)| (self.shard_to_download[idx], res))
+        //     .partition(|pair| pair.1.is_ok());
 
         let mut completed = CompletedDownloadBlockTask {
             slot: self.slot,

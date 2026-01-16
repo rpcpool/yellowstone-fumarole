@@ -397,7 +397,7 @@ pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: usize = 3;
 ///
 /// MAXIMUM number of parallel data streams (TCP connections) to open to fumarole.
 ///
-const MAX_PARA_DATA_STREAMS: u8 = 20;
+const MAX_PARA_DATA_STREAMS: u8 = 100;
 
 ///
 /// Default number of parallel data streams (TCP connections) to open to fumarole.
@@ -455,6 +455,7 @@ pub struct FumaroleSubscribeConfig {
     ///
     /// Maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
     ///
+    #[deprecated(note = "this parameter is ignored")]
     pub concurrent_download_limit_per_tcp: NonZeroUsize,
 
     ///
@@ -500,6 +501,7 @@ pub struct FumaroleSubscribeConfig {
 
 impl Default for FumaroleSubscribeConfig {
     fn default() -> Self {
+        #[allow(deprecated)]
         Self {
             num_data_plane_tcp_connections: NonZeroU8::new(DEFAULT_PARA_DATA_STREAMS).unwrap(),
             concurrent_download_limit_per_tcp: NonZeroUsize::new(
@@ -777,7 +779,7 @@ impl FumaroleClient {
             config.max_failed_slot_download_attempt,
             request.clone(),
             config.experimental_enable_sharded_block_download,
-            5,
+            30,
         );
 
         let download_task_runner_chans = DownloadTaskRunnerChannels {

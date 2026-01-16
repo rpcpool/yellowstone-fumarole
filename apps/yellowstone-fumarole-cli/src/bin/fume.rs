@@ -2,7 +2,6 @@
 use tikv_jemallocator::Jemalloc;
 use {
     clap::Parser,
-    core::net,
     futures::{FutureExt, future::BoxFuture},
     serde::Deserialize,
     solana_pubkey::{ParsePubkeyError, Pubkey},
@@ -718,7 +717,6 @@ async fn subscribe(
 
     println!("Subscribing to consumer group {}", cg_name);
     let subscribe_config = FumaroleSubscribeConfig {
-        concurrent_download_limit_per_tcp: NonZeroUsize::new(1).unwrap(),
         commit_interval: Duration::from_secs(1),
         num_data_plane_tcp_connections: args.para,
         no_commit: args.no_commit,
@@ -838,8 +836,7 @@ async fn block_stats(
     let cg_name = args.name.clone();
     println!("Subscribing to consumer group {}", cg_name);
     let subscribe_config = FumaroleSubscribeConfig {
-        concurrent_download_limit_per_tcp: NonZeroUsize::new(1).unwrap(),
-        commit_interval: Duration::from_secs(1),
+        commit_interval: Duration::from_secs(5),
         num_data_plane_tcp_connections: args.para,
         no_commit: args.no_commit,
         experimental_enable_sharded_block_download: xx_enable_sharded_download,

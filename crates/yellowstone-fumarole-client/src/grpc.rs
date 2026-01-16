@@ -26,29 +26,39 @@ impl FumaroleGrpcConnector {
             .endpoints
             .choose(&mut rng)
             .expect("at least one endpoint must be provided");
-        let (channel, tx_channel) =
-            Channel::balance_channel::<String>(self.config.connection_per_host.get() *  self.endpoints.len());
-        tracing::debug!("Connecting to fumarole endpoint: {}", endpoint.uri());
-        let endpoint_len = self.endpoints.len() as u64;
-        let mut idx = self.connect_cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % endpoint_len;
-        let mut i = 0;
-        while i < self.config.connection_per_host.get() * endpoint_len as usize {
+        // let (channel, tx_channel) =
+        //     Channel::balance_channel::<String>(self.config.connection_per_host.get() *  self.endpoints.len());
+        // tracing::debug!("Connecting to fumarole endpoint: {}", endpoint.uri());
+        // let endpoint_len = self.endpoints.len() as u64;
+        // let mut idx = self.connect_cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % endpoint_len;
+        // let mut i = 0;
+        // while i < self.config.connection_per_host.get() * endpoint_len as usize {
 
-            let endpoint = self.endpoints
-                .get(idx as usize)
-                .expect("at least one endpoint must be provided");
-            let key = format!("{}-{}", endpoint.uri(), idx);
-            tracing::debug!("Adding channel endpoint: {} with key {}", endpoint.uri(), key);
-            tx_channel
-                .send(tonic::transport::channel::Change::Insert(
-                    key,
-                    endpoint.clone(),
-                ))
-                .await
-                .expect("service closed");
-            idx = self.connect_cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % endpoint_len;
-            i += 1;
-        }
+        //     let endpoint = self.endpoints
+        //         .get(idx as usize)
+        //         .expect("at least one endpoint must be provided");
+        //     let key = format!("{}-{}", endpoint.uri(), idx);
+        //     tracing::debug!("Adding channel endpoint: {} with key {}", endpoint.uri(), key);
+        //     tx_channel
+        //         .send(tonic::transport::channel::Change::Insert(
+        //             key,
+        //             endpoint.clone(),
+        //         ))
+        //         .await
+        //         .expect("service closed");
+        //     idx = self.connect_cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % endpoint_len;
+        //     i += 1;
+        // }
+        let endpoint_idx = self.connect_cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % (self.endpoints.len() as u64);
+        
+        let endpoint = self
+            .endpoints
+            .get(endpoint_idx as usize)
+            .expect("at least one endpoint must be provided");
+
+        let channel = endpoint.connect().await?;
+
 
         let interceptor = FumeInterceptor {
             x_token: self

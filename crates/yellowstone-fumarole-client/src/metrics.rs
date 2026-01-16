@@ -1,6 +1,6 @@
 use {
     lazy_static::lazy_static,
-    prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts},
+    prometheus::{Histogram, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts},
     std::time::Duration,
 };
 
@@ -131,14 +131,6 @@ lazy_static! {
     ).unwrap();
 
 
-    pub(crate) static ref AVAILABLE_DOWNLOAD_PERMIT: IntGaugeVec = IntGaugeVec::new(
-        Opts::new(
-            "fumarole_available_data_plane_connection",
-            "The number of available data plane connection to Fumarole runtime",
-        ),
-        &["runtime"],
-    ).unwrap();
-
     pub(crate) static ref DOWNLOAD_QUEUE_FULL_DETECTION_COUNT: IntCounterVec = IntCounterVec::new(
         Opts::new(
             "fumarole_download_queue_full_detection_count",
@@ -154,6 +146,30 @@ lazy_static! {
         ),
         &["runtime"],
     ).unwrap();
+
+    pub(crate) static ref DOWNLOAD_SHARD_DOWNLOAD_TIME: Histogram = Histogram::with_opts(
+        HistogramOpts::new(
+            "fumarole_download_shard_download_time_ms",
+            "Cumulative wait duration distribution for download shard recv in milliseconds",
+        )
+        .buckets(vec![
+            20.0,
+            40.0,
+            60.0,
+            80.0,
+            160.0,
+            320.0,
+            400.0,
+            500.0,
+            600.0,
+            700.0,
+            800.0,
+            1000.0,
+            2000.0,
+            4000.0,
+            f64::INFINITY
+        ]),
+    ).unwrap();
 }
 
 pub(crate) fn inc_poll_history_call_count(name: impl AsRef<str>) {
@@ -168,10 +184,8 @@ pub(crate) fn incr_download_queue_full_detection_count(name: impl AsRef<str>) {
         .inc();
 }
 
-pub(crate) fn set_available_download_permit(name: impl AsRef<str>, count: i64) {
-    AVAILABLE_DOWNLOAD_PERMIT
-        .with_label_values(&[name.as_ref()])
-        .set(count);
+pub(crate) fn observe_download_shard_download_time(duration: Duration) {
+    DOWNLOAD_SHARD_DOWNLOAD_TIME.observe(duration.as_millis() as f64);
 }
 
 pub(crate) fn set_fumarole_blockchain_offset_tip(name: impl AsRef<str>, offset: i64) {
@@ -327,12 +341,12 @@ pub fn register_metrics(registry: &prometheus::Registry) {
         .register(Box::new(FUMAROLE_OFFSET_LAG_FROM_TIP.clone()))
         .unwrap();
     registry
-        .register(Box::new(AVAILABLE_DOWNLOAD_PERMIT.clone()))
-        .unwrap();
-    registry
         .register(Box::new(DOWNLOAD_QUEUE_FULL_DETECTION_COUNT.clone()))
         .unwrap();
     registry
         .register(Box::new(POLL_HISTORY_CALL_COUNT.clone()))
+        .unwrap();
+    registry
+        .register(Box::new(DOWNLOAD_SHARD_DOWNLOAD_TIME.clone()))
         .unwrap();
 }
