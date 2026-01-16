@@ -2,10 +2,12 @@ use {
     crate::{
         FumeInterceptor, config::FumaroleConfig, proto::fumarole_client::FumaroleClient,
         string_pairs_to_metadata_header,
-    }, rand::{SeedableRng, seq::IndexedRandom}, std::sync::{Arc, atomic::AtomicU64}, tonic::{
+    },
+    std::sync::{Arc, atomic::AtomicU64},
+    tonic::{
         service::interceptor::InterceptedService,
         transport::{Channel, Endpoint},
-    }
+    },
 };
 
 #[derive(Clone)]
@@ -21,11 +23,11 @@ impl FumaroleGrpcConnector {
     ) -> Result<FumaroleClient<InterceptedService<Channel, FumeInterceptor>>, tonic::transport::Error>
     {
         // Pick a random endpoint from the list
-        let mut rng = rand::rngs::StdRng::from_os_rng();
-        let endpoint = self
-            .endpoints
-            .choose(&mut rng)
-            .expect("at least one endpoint must be provided");
+        // let mut rng = rand::rngs::StdRng::from_os_rng();
+        // let endpoint = self
+        //     .endpoints
+        //     .choose(&mut rng)
+        //     .expect("at least one endpoint must be provided");
         // let (channel, tx_channel) =
         //     Channel::balance_channel::<String>(self.config.connection_per_host.get() *  self.endpoints.len());
         // tracing::debug!("Connecting to fumarole endpoint: {}", endpoint.uri());
@@ -49,16 +51,22 @@ impl FumaroleGrpcConnector {
         //     idx = self.connect_cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % endpoint_len;
         //     i += 1;
         // }
-        let endpoint_idx = self.connect_cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        let endpoint_idx = self
+            .connect_cnt
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             % (self.endpoints.len() as u64);
-        
+
         let endpoint = self
             .endpoints
             .get(endpoint_idx as usize)
             .expect("at least one endpoint must be provided");
 
-        let channel = endpoint.connect().await?;
+        #[cfg(feature = "prometheus")]
+        {
+            crate::metrics::inc_endpoint_connection_count(endpoint.uri().to_string().as_str());
+        }
 
+        let channel = endpoint.connect().await?;
 
         let interceptor = FumeInterceptor {
             x_token: self

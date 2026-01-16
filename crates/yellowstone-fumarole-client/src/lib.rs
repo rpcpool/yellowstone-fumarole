@@ -282,7 +282,7 @@ use {
     runtime::{
         state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
         tokio::{
-            DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, GrpcDownloadTaskRunner,
+            DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, LegacyGrpcDownloadTaskRunner,
             TokioFumeDragonsmouthRuntime,
         },
     },
@@ -754,7 +754,8 @@ impl FumaroleClient {
             rx: dm_rx,
         };
 
-        let mut data_plane_channel_vec = Vec::with_capacity(config.num_data_plane_tcp_connections.get() as usize);
+        let mut data_plane_channel_vec =
+            Vec::with_capacity(config.num_data_plane_tcp_connections.get() as usize);
         // TODO: support config.num_data_plane_tcp_connections
         for _ in 0..config.num_data_plane_tcp_connections.get() {
             let client = self
@@ -770,17 +771,33 @@ impl FumaroleClient {
         let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(1000);
         let (download_result_tx, download_result_rx) = mpsc::channel(1000);
 
-        let grpc_download_task_runner = GrpcDownloadTaskRunner::new(
-            data_plane_channel_vec,
-            self.connector.clone(),
-            download_task_runner_cnc_rx,
-            download_task_queue_rx,
-            download_result_tx,
-            config.max_failed_slot_download_attempt,
-            request.clone(),
-            config.experimental_enable_sharded_block_download,
-            30,
-        );
+        let download_task_runner_jh = if config.experimental_enable_sharded_block_download {
+            let grpc_download_task_runner = runtime::tokio::GrpcShardedDownloadTaskRunner::new(
+                data_plane_channel_vec,
+                self.connector.clone(),
+                download_task_runner_cnc_rx,
+                download_task_queue_rx,
+                download_result_tx,
+                config.max_failed_slot_download_attempt,
+                request.clone(),
+                dragonsmouth_outlet.clone(),
+            );
+            handle.spawn(grpc_download_task_runner.run())
+        } else {
+            let grpc_download_task_runner = LegacyGrpcDownloadTaskRunner::new(
+                data_plane_channel_vec,
+                self.connector.clone(),
+                download_task_runner_cnc_rx,
+                download_task_queue_rx,
+                download_result_tx,
+                config.max_failed_slot_download_attempt,
+                request.clone(),
+                30,
+                dragonsmouth_outlet.clone(),
+            );
+
+            handle.spawn(grpc_download_task_runner.run())
+        };
 
         let download_task_runner_chans = DownloadTaskRunnerChannels {
             download_task_queue_tx,
@@ -809,7 +826,6 @@ impl FumaroleClient {
             no_commit: config.no_commit,
             stop: false,
         };
-        let download_task_runner_jh = handle.spawn(grpc_download_task_runner.run());
         let fumarole_rt_jh = handle.spawn(tokio_rt.run());
         let fut = async move {
             let either = select(download_task_runner_jh, fumarole_rt_jh).await;
