@@ -22,6 +22,7 @@ include = [
 [dependencies]
 async-trait = { workspace = true }
 bytesize = { workspace = true, features = ["serde"] }
+flume = { workspace = true }
 futures = { workspace = true }
 fxhash = { workspace = true }
 http = { workspace = true }
@@ -30,6 +31,7 @@ solana-clock = { workspace = true }
 lazy_static = { workspace = true }
 prometheus = { workspace = true, optional = true }
 prost = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_with = { workspace = true }

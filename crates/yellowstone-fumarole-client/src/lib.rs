@@ -282,13 +282,14 @@ use {
     runtime::{
         state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
         tokio::{
-            DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, GrpcDownloadTaskRunner,
+            DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, LegacyGrpcDownloadTaskRunner,
             TokioFumeDragonsmouthRuntime,
         },
     },
     std::{
         collections::HashMap,
         num::{NonZeroU8, NonZeroUsize},
+        sync::Arc,
         time::{Duration, Instant},
     },
     tokio::sync::mpsc,
@@ -382,7 +383,7 @@ pub enum ConnectError {
 ///
 /// Default gRPC buffer capacity
 ///
-pub const DEFAULT_DRAGONSMOUTH_CAPACITY: usize = 100000;
+pub const DEFAULT_DRAGONSMOUTH_CAPACITY: usize = 10_000_000;
 
 ///
 /// Default Fumarole commit offset interval
@@ -397,12 +398,12 @@ pub const DEFAULT_MAX_SLOT_DOWNLOAD_ATTEMPT: usize = 3;
 ///
 /// MAXIMUM number of parallel data streams (TCP connections) to open to fumarole.
 ///
-const MAX_PARA_DATA_STREAMS: u8 = 4;
+const MAX_PARA_DATA_STREAMS: u8 = 20;
 
 ///
 /// Default number of parallel data streams (TCP connections) to open to fumarole.
 ///
-pub const DEFAULT_PARA_DATA_STREAMS: u8 = 4;
+pub const DEFAULT_PARA_DATA_STREAMS: u8 = 10;
 
 ///
 /// Default maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
@@ -412,7 +413,7 @@ pub const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP: usize = 1;
 ///
 /// Default refresh tip interval for the fumarole client.
 /// Only useful if you enable `prometheus` feature flags.
-///
+///grpc_tx
 pub const DEFAULT_REFRESH_TIP_INTERVAL: Duration = Duration::from_secs(5); // seconds
 
 pub(crate) type GrpcFumaroleClient =
@@ -451,7 +452,6 @@ pub struct FumaroleSubscribeConfig {
     ///
     pub num_data_plane_tcp_connections: NonZeroU8,
 
-    ///
     ///
     /// Maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
     ///
@@ -494,10 +494,13 @@ pub struct FumaroleSubscribeConfig {
     /// This mean the current session will never commit progression.
     /// If set to `true`, [`FumaroleSubscribeConfig::commit_interval`] will be ignored.
     pub no_commit: bool,
+
+    pub experimental_enable_sharded_block_download: bool,
 }
 
 impl Default for FumaroleSubscribeConfig {
     fn default() -> Self {
+        #[allow(deprecated)]
         Self {
             num_data_plane_tcp_connections: NonZeroU8::new(DEFAULT_PARA_DATA_STREAMS).unwrap(),
             concurrent_download_limit_per_tcp: NonZeroUsize::new(
@@ -511,6 +514,7 @@ impl Default for FumaroleSubscribeConfig {
             slot_memory_retention: DEFAULT_SLOT_MEMORY_RETENTION,
             refresh_tip_stats_interval: DEFAULT_REFRESH_TIP_INTERVAL, // Default to 5 seconds
             no_commit: false,
+            experimental_enable_sharded_block_download: false,
         }
     }
 }
@@ -589,15 +593,22 @@ impl FumaroleClient {
             .as_u64()
             .try_into()
             .expect("initial_stream_window_size must fit in u32");
-        let endpoint = Endpoint::from_shared(config.endpoint.clone())?
-            .tls_config(ClientTlsConfig::new().with_native_roots())?
-            .initial_connection_window_size(connection_window_size)
-            .initial_stream_window_size(stream_window_size)
-            .http2_adaptive_window(config.enable_http2_adaptive_window);
+
+        let mut tonic_endpoints = Vec::with_capacity(1);
+        #[allow(clippy::single_element_loop)]
+        for endpoint_str in [config.endpoint.clone()] {
+            let endpoints = Endpoint::from_shared(endpoint_str)?
+                .tls_config(ClientTlsConfig::new().with_native_roots())?
+                .initial_connection_window_size(connection_window_size)
+                .initial_stream_window_size(stream_window_size)
+                .http2_adaptive_window(config.enable_http2_adaptive_window);
+            tonic_endpoints.push(endpoints);
+        }
 
         let connector = FumaroleGrpcConnector {
             config: config.clone(),
-            endpoint: endpoint.clone(),
+            endpoints: tonic_endpoints,
+            connect_cnt: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
 
         let client = connector.connect().await?;
@@ -665,6 +676,7 @@ impl FumaroleClient {
     where
         S: AsRef<str>,
     {
+        let request = Arc::new(request);
         assert!(
             config.num_data_plane_tcp_connections.get() <= MAX_PARA_DATA_STREAMS,
             "num_data_plane_tcp_connections must be less than or equal to {MAX_PARA_DATA_STREAMS}"
@@ -695,10 +707,15 @@ impl FumaroleClient {
             .await
             .expect("failed to send initial join");
 
-        let resp = self
-            .inner
-            .subscribe(ReceiverStream::new(fume_control_plane_rx))
-            .await?;
+        let resp = if config.experimental_enable_sharded_block_download {
+            self.inner
+                .subscribe_v2(ReceiverStream::new(fume_control_plane_rx))
+                .await?
+        } else {
+            self.inner
+                .subscribe(ReceiverStream::new(fume_control_plane_rx))
+                .await?
+        };
 
         let mut streaming = resp.into_inner();
         let fume_control_plane_tx = fume_control_plane_tx.clone();
@@ -721,13 +738,14 @@ impl FumaroleClient {
 
         let sm = FumaroleSM::new(*last_committed_offset, config.slot_memory_retention);
 
-        let (dm_tx, dm_rx) = mpsc::channel(100);
+        let (dm_tx, dm_rx) = mpsc::channel(config.data_channel_capacity.get());
         let dm_bidi = DragonsmouthSubscribeRequestBidi {
             tx: dm_tx.clone(),
             rx: dm_rx,
         };
 
-        let mut data_plane_channel_vec = Vec::with_capacity(1);
+        let mut data_plane_channel_vec =
+            Vec::with_capacity(config.num_data_plane_tcp_connections.get() as usize);
         // TODO: support config.num_data_plane_tcp_connections
         for _ in 0..config.num_data_plane_tcp_connections.get() {
             let client = self
@@ -735,22 +753,41 @@ impl FumaroleClient {
                 .connect()
                 .await
                 .expect("failed to connect to fumarole");
-            let conn = DataPlaneConn::new(client, config.concurrent_download_limit_per_tcp.get());
+            let conn = DataPlaneConn::new(client);
             data_plane_channel_vec.push(conn);
         }
         let (download_task_runner_cnc_tx, download_task_runner_cnc_rx) = mpsc::channel(10);
         // Make sure the channel capacity is really low, since the grpc runner already implements its own concurrency control
-        let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(10);
-        let (download_result_tx, download_result_rx) = mpsc::channel(10);
-        let grpc_download_task_runner = GrpcDownloadTaskRunner::new(
-            data_plane_channel_vec,
-            self.connector.clone(),
-            download_task_runner_cnc_rx,
-            download_task_queue_rx,
-            download_result_tx,
-            config.max_failed_slot_download_attempt,
-            request.clone(),
-        );
+        let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(100);
+        let (download_result_tx, download_result_rx) = mpsc::channel(1000);
+
+        let download_task_runner_jh = if config.experimental_enable_sharded_block_download {
+            let grpc_download_task_runner = runtime::tokio::GrpcShardedDownloadOrchestrator::new(
+                data_plane_channel_vec,
+                self.connector.clone(),
+                download_task_runner_cnc_rx,
+                download_task_queue_rx,
+                download_result_tx,
+                config.max_failed_slot_download_attempt,
+                Arc::clone(&request),
+                dragonsmouth_outlet.clone(),
+            );
+            handle.spawn(grpc_download_task_runner.run())
+        } else {
+            let grpc_download_task_runner = LegacyGrpcDownloadTaskRunner::new(
+                data_plane_channel_vec,
+                self.connector.clone(),
+                download_task_runner_cnc_rx,
+                download_task_queue_rx,
+                download_result_tx,
+                config.max_failed_slot_download_attempt,
+                Arc::clone(&request),
+                config.concurrent_download_limit_per_tcp.get(),
+                dragonsmouth_outlet.clone(),
+            );
+
+            handle.spawn(grpc_download_task_runner.run())
+        };
 
         let download_task_runner_chans = DownloadTaskRunnerChannels {
             download_task_queue_tx,
@@ -765,7 +802,7 @@ impl FumaroleClient {
             dragonsmouth_bidi: dm_bidi,
             subscribe_request: request,
             download_task_runner_chans,
-            consumer_group_name: subscriber_name.as_ref().to_string(),
+            persistent_subscriber_name: subscriber_name.as_ref().to_string(),
             control_plane_tx: fume_control_plane_tx,
             control_plane_rx: fume_control_plane_rx,
             dragonsmouth_outlet,
@@ -778,8 +815,9 @@ impl FumaroleClient {
             last_history_poll: Default::default(),
             no_commit: config.no_commit,
             stop: false,
+            experimental_enable_sharded_block_download: config
+                .experimental_enable_sharded_block_download,
         };
-        let download_task_runner_jh = handle.spawn(grpc_download_task_runner.run());
         let fumarole_rt_jh = handle.spawn(tokio_rt.run());
         let fut = async move {
             let either = select(download_task_runner_jh, fumarole_rt_jh).await;

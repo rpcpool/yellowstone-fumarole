@@ -3,6 +3,7 @@ use {
         FumeInterceptor, config::FumaroleConfig, proto::fumarole_client::FumaroleClient,
         string_pairs_to_metadata_header,
     },
+    std::sync::{Arc, atomic::AtomicU64},
     tonic::{
         service::interceptor::InterceptedService,
         transport::{Channel, Endpoint},
@@ -12,7 +13,8 @@ use {
 #[derive(Clone)]
 pub struct FumaroleGrpcConnector {
     pub config: FumaroleConfig,
-    pub endpoint: Endpoint,
+    pub endpoints: Vec<Endpoint>,
+    pub connect_cnt: Arc<AtomicU64>,
 }
 
 impl FumaroleGrpcConnector {
@@ -20,7 +22,23 @@ impl FumaroleGrpcConnector {
         &self,
     ) -> Result<FumaroleClient<InterceptedService<Channel, FumeInterceptor>>, tonic::transport::Error>
     {
-        let channel = self.endpoint.connect().await?;
+        let endpoint_idx = self
+            .connect_cnt
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % (self.endpoints.len() as u64);
+
+        let endpoint = self
+            .endpoints
+            .get(endpoint_idx as usize)
+            .expect("at least one endpoint must be provided");
+
+        #[cfg(feature = "prometheus")]
+        {
+            crate::metrics::inc_endpoint_connection_count(endpoint.uri().to_string().as_str());
+        }
+
+        let channel = endpoint.connect().await?;
+
         let interceptor = FumeInterceptor {
             x_token: self
                 .config
