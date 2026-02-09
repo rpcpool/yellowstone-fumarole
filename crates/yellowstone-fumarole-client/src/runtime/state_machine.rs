@@ -1,6 +1,6 @@
 use {
     crate::proto::{self, BlockchainEvent},
-    fxhash::FxHashMap,
+    rustc_hash::FxHashMap,
     solana_clock::Slot,
     std::{
         cmp::Reverse,
@@ -63,7 +63,7 @@ pub enum SlotDownloadState {
 }
 
 impl SlotDownloadProgress {
-    pub fn do_progress(&mut self, shard_idx: FumeShardIdx) -> SlotDownloadState {
+    fn do_progress(&mut self, shard_idx: FumeShardIdx) -> SlotDownloadState {
         self.shard_remaining[shard_idx as usize % self.num_shards as usize] = true;
 
         if self.shard_remaining.iter().all(|b| *b) {
@@ -71,6 +71,20 @@ impl SlotDownloadProgress {
         } else {
             SlotDownloadState::Downloading
         }
+    }
+
+    // This function is only used temporarly during version transition
+    unsafe fn finish_all(&mut self) -> SlotDownloadState {
+        for b in self.shard_remaining.iter_mut() {
+            *b = true;
+        }
+        SlotDownloadState::Done
+    }
+
+    #[allow(dead_code)]
+    fn filled_ratio(&self) -> (usize, usize) {
+        let filled = self.shard_remaining.iter().filter(|b| **b).count();
+        (filled, self.num_shards as usize)
     }
 }
 
@@ -163,7 +177,7 @@ pub(crate) struct FumaroleSM {
     pub max_slot_detected: Slot,
 
     /// Unprocessed blockchain events
-    unprocessed_blockchain_event: VecDeque<(FumeSessionSequence, proto::BlockchainEvent)>,
+    pub unprocessed_blockchain_event: VecDeque<(FumeSessionSequence, proto::BlockchainEvent)>,
 
     sequence: u64,
 
@@ -271,14 +285,19 @@ impl FumaroleSM {
     pub fn make_slot_download_progress(
         &mut self,
         slot: Slot,
-        shard_idx: FumeShardIdx,
+        shard_idx: Option<FumeShardIdx>,
     ) -> SlotDownloadState {
         let download_progress = self
             .inflight_slot_shard_download
             .get_mut(&slot)
             .expect("slot not in download");
 
-        let download_state = download_progress.do_progress(shard_idx);
+        let download_state = if let Some(shard_idx) = shard_idx {
+            download_progress.do_progress(shard_idx)
+        } else {
+            // This is only used temporarly during version transition
+            unsafe { download_progress.finish_all() }
+        };
 
         if matches!(download_state, SlotDownloadState::Done) {
             // all shards downloaded
@@ -291,6 +310,8 @@ impl FumaroleSM {
                 .remove(&slot)
                 .unwrap_or_default();
             self.slot_status_update_queue.extend(blocked_slot_status);
+        } else {
+            // let (filled, total) = download_progress.filled_ratio();
         }
         download_state
     }
@@ -306,7 +327,7 @@ impl FumaroleSM {
                     {
                         return Some(slot_status);
                     } else {
-                        tracing::warn!(
+                        tracing::debug!(
                             "Deduped slot status for slot {}, commitment level {:?}, fuamrole offset {:?}",
                             slot_status.slot,
                             slot_status.commitment_level,
@@ -522,7 +543,7 @@ mod tests {
         assert!(sm.pop_slot_to_download(None).is_none());
         assert!(sm.pop_next_slot_status().is_none());
 
-        let download_state = sm.make_slot_download_progress(1, 0);
+        let download_state = sm.make_slot_download_progress(1, Some(0));
         assert_eq!(download_state, SlotDownloadState::Done);
 
         let status = sm.pop_next_slot_status().unwrap();
@@ -564,7 +585,7 @@ mod tests {
 
         assert!(sm.pop_slot_to_download(None).is_none());
 
-        sm.make_slot_download_progress(1, 0);
+        sm.make_slot_download_progress(1, Some(0));
 
         let status = sm.pop_next_slot_status().unwrap();
 

@@ -258,12 +258,16 @@ class AsyncioFumeDragonsmouthRuntime:
         else:
             slot = download_result.slot
             err_kind = download_result.err.kind
-            LOGGER.error(f"Download error for slot {slot}: {download_result.err}")
-            # If the client queue is disconnected, we don't do anything, next run iteration will close anyway.
-            self.is_closed = True
-            if err_kind != "OutletDisconnected":
-                with suppress(asyncio.QueueShutDown):
-                    await self.dragonsmouth_outlet.put(download_result.err.into_subscribe_error())
+            if err_kind == "BlockShardNotFound":
+                LOGGER.warning(f"Block shard not found for slot {slot}, marking slot as dead")
+                self.sm.make_slot_download_progress(slot, None)
+            else:
+                LOGGER.error(f"Download error for slot {slot}: {download_result.err}")
+                # If the client queue is disconnected, we don't do anything, next run iteration will close anyway.
+                self.is_closed = True
+                if err_kind != "OutletDisconnected":
+                    with suppress(asyncio.QueueShutDown):
+                        await self.dragonsmouth_outlet.put(download_result.err.into_subscribe_error())
 
     async def _force_commit_offset(self):
         LOGGER.debug(f"Force committing offset {self.sm.committable_offset}")

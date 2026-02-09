@@ -3,6 +3,7 @@ use tikv_jemallocator::Jemalloc;
 use {
     clap::Parser,
     futures::{FutureExt, future::BoxFuture},
+    serde::Deserialize,
     solana_pubkey::{ParsePubkeyError, Pubkey},
     solana_signature::Signature,
     std::{
@@ -13,7 +14,7 @@ use {
         hash::Hash,
         io::{Write, stdout},
         net::{AddrParseError, SocketAddr},
-        num::{NonZeroU8, NonZeroUsize},
+        num::NonZeroU8,
         path::PathBuf,
         str::FromStr,
         time::Duration,
@@ -47,6 +48,16 @@ use {
 static GLOBAL: Jemalloc = Jemalloc;
 
 const FUMAROLE_CONFIG_ENV: &str = "FUMAROLE_CONFIG";
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FumeConfig {
+    #[serde(default, flatten)]
+    fumarole: FumaroleConfig,
+
+    // Experimental(xx) feature to enable sharded downloads
+    #[serde(default)]
+    xx_enable_sharded_download: bool,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct PrometheusBindAddr(SocketAddr);
@@ -210,6 +221,32 @@ pub struct SubscribeInclude {
     set: HashSet<SubscribeDataType>,
 }
 
+pub struct SMA {
+    n: usize,
+    periods: Vec<f64>,
+    i: usize,
+}
+
+impl SMA {
+    fn new(n: usize) -> Self {
+        Self {
+            n,
+            periods: vec![0.0; n],
+            i: 0,
+        }
+    }
+
+    fn record(&mut self, value: f64) {
+        self.periods[self.i % self.n] = value;
+        self.i = (self.i + 1) % self.n;
+    }
+
+    fn average(&self) -> f64 {
+        let sum: f64 = self.periods.iter().sum();
+        sum / self.n as f64
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("Invalid include type {0}")]
 pub struct FromStrSubscribeIncludeErr(String);
@@ -223,7 +260,7 @@ impl FromStr for SubscribeInclude {
             .map(|s| s.trim())
             .map(|s| match s {
                 "account" => Ok(vec![SubscribeDataType::Account]),
-                "tx" => Ok(vec![SubscribeDataType::Transaction]),
+                "tx" | "txn" => Ok(vec![SubscribeDataType::Transaction]),
                 "meta" => Ok(vec![SubscribeDataType::BlockMeta]),
                 "slot" => Ok(vec![SubscribeDataType::Slot]),
                 "all" => Ok(vec![
@@ -648,7 +685,11 @@ impl SubscribeArgs {
     }
 }
 
-async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
+async fn subscribe(
+    mut client: FumaroleClient,
+    args: SubscribeArgs,
+    xx_enable_sharded_download: bool,
+) {
     let mut out: Box<dyn Write> = if let Some(out) = &args.out {
         Box::new(
             File::options()
@@ -676,10 +717,10 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
 
     println!("Subscribing to consumer group {}", cg_name);
     let subscribe_config = FumaroleSubscribeConfig {
-        concurrent_download_limit_per_tcp: NonZeroUsize::new(1).unwrap(),
         commit_interval: Duration::from_secs(1),
         num_data_plane_tcp_connections: args.para,
         no_commit: args.no_commit,
+        experimental_enable_sharded_block_download: xx_enable_sharded_download,
         ..Default::default()
     };
     let dragonsmouth_session = client
@@ -747,7 +788,11 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     }
 }
 
-async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
+async fn block_stats(
+    mut client: FumaroleClient,
+    args: SubscribeArgs,
+    xx_enable_sharded_download: bool,
+) {
     let mut out: Box<dyn Write> = if let Some(out) = &args.out {
         Box::new(
             File::options()
@@ -791,10 +836,10 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
     let cg_name = args.name.clone();
     println!("Subscribing to consumer group {}", cg_name);
     let subscribe_config = FumaroleSubscribeConfig {
-        concurrent_download_limit_per_tcp: NonZeroUsize::new(1).unwrap(),
-        commit_interval: Duration::from_secs(1),
+        commit_interval: Duration::from_secs(5),
         num_data_plane_tcp_connections: args.para,
         no_commit: args.no_commit,
+        experimental_enable_sharded_block_download: xx_enable_sharded_download,
         ..Default::default()
     };
     let dragonsmouth_session = client
@@ -835,11 +880,18 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
     };
 
     let mut block_map: HashMap<u64, BlockInfo> = HashMap::new();
+    let mut one_sec_tick = tokio::time::interval(Duration::from_secs(1));
+    let mut block_count_per_tick = 0u64;
+    let mut block_rate_sma = SMA::new(5);
     loop {
         tokio::select! {
             _ = &mut shutdown => {
                 println!("Shutting down...");
                 break;
+            }
+            _ = one_sec_tick.tick() => {
+                block_rate_sma.record(block_count_per_tick as f64);
+                block_count_per_tick = 0;
             }
             result = source.recv() => {
                 let Some(result) = result else {
@@ -887,7 +939,9 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
                             let mut block = block_map.remove(&slot).expect("Failed to get block info");
                             block.block_meta = Some(block_meta);
                             let msg = summarized_block(&block);
-                            writeln!(out, "{slot} -- {msg}").expect("Failed to write to output file");
+                            block_count_per_tick += 1;
+                            let block_rate_avg = block_rate_sma.average();
+                            writeln!(out, "{slot} ({block_rate_avg}/s) -- {msg}").expect("Failed to write to output file");
                             if let Some(tx_out) = &mut tx_out {
                                 for sig in block.success_tx.iter() {
                                     writeln!(tx_out, "{slot} -- {sig}").expect("Failed to write to transaction output file");
@@ -988,12 +1042,12 @@ async fn main() {
         std::fs::File::open(config_path.clone())
             .unwrap_or_else(|_| panic!("Failed to read config file at {config_path:?}"))
     };
-    let config: FumaroleConfig =
+    let config: FumeConfig =
         serde_yaml::from_reader(config_file).expect("failed to parse fumarole config");
 
     tracing::debug!("Using config: {config:?}");
 
-    let fumarole_client = FumaroleClient::connect(config.clone())
+    let fumarole_client = FumaroleClient::connect(config.fumarole.clone())
         .await
         .expect("Failed to connect to fumarole");
 
@@ -1017,13 +1071,23 @@ async fn main() {
             delete_all_cg(fumarole_client).await;
         }
         Action::Subscribe(subscribe_args) => {
-            subscribe(fumarole_client, subscribe_args).await;
+            subscribe(
+                fumarole_client,
+                subscribe_args,
+                config.xx_enable_sharded_download,
+            )
+            .await;
         }
         Action::SlotRange => {
             slot_range(fumarole_client).await;
         }
         Action::Block(blocks_args) => {
-            block_stats(fumarole_client, blocks_args).await;
+            block_stats(
+                fumarole_client,
+                blocks_args,
+                config.xx_enable_sharded_download,
+            )
+            .await;
         }
     }
 }
