@@ -1,10 +1,10 @@
 # Fumarole API Guide
 
-This document is a guide to understand how Fumarole API works.
+This document serves as a guide to understanding how the Fumarole API works.
 
 ## Control vs Data Plane
 
-Fumarole API has two plane the client must managed:
+Fumarole API has two planes that the client must manage:
 
 1. The control plane:
     - Commit the consumer group offset
@@ -27,18 +27,16 @@ Here is an example:
 
 ![](images/blockchain_history.png.crdownload)
 
-Note:
-- The message offset : 1,2,..,N are ordered.
-- The message are NOT SORTED by slot : you may receive a message about slot 11 before slot 10.
+> [!NOTE]
+> - The message offset: 1,2,...,N are ordered.
+> - The messages are NOT SORTED by slot: you may receive a message about slot 11 before slot 10.
 
+I deliberately plotted a sequence where slots are disordered because that will happen, so do not assume slots happen in order, because this is not the case.
+They will mostly happen in order, but the order you see is the fumarole processed slot ordering.
 
-I debarately plotted a sequence where slot are disordered because that will happen, so do not assume slot happens in order because this is not the case.
-They will mostly happen in order but the order you see is the fumarole processed slot ordering.
+## Initiate a connection
 
-
-## Inititate a connection
-
-Upon connecting to `Subscribe` method in `Fumarole` service, the first message you need to send is a control-plane command called `JoinControlPlane`
+Upon connecting to the `Subscribe` method in the `Fumarole` service, the first message you need to send is a control-plane command called `JoinControlPlane`
 
 ```rust
 let initial_join = JoinControlPlane {
@@ -49,7 +47,7 @@ let initial_join_command = ControlCommand {
 };
 ```
 
-Once you sent the command, you should receive back `ControlResponse::InitialConsumerGroupState`:
+Once you send the command, you should receive back `ControlResponse::InitialConsumerGroupState`:
 
 ```proto
 message InitialConsumerGroupState {
@@ -78,10 +76,10 @@ message PollBlockchainHistory {
 }
 ```
 
-Technically speeaking, you don't need to provide the `from` or `limit` as the remote server remember where you leftoff.
-If you want to force a specific offset you can fill the `from` field.
+Technically speaking, you don't need to provide the `from` or `limit` parameters, as the remote server remembers where you left off.
+If you want to force a specific offset, you can fill the `from` field.
 
-The return result is a set of historical event:
+The return result is a set of historical events:
 
 ```proto
 message BlockchainEvent {
@@ -97,11 +95,11 @@ message BlockchainEvent {
 }
 ```
 
-The `block_uid` is the unique identifier use to download the slot content in the data-plane.
+The `block_uid` is the unique identifier used to download the slot content in the data-plane.
 
-## Offset committment
+## Offset commitment
 
-It's the client responsability to "commit" its offset, stating it fully process a specific slot event in our history. Next time the client connect, Fumarole service will remember where the user left at.
+It's the client's responsibility to "commit" its offset, stating that it has fully processed a specific slot event in our history. Next time the client connects, the Fumarole service will remember where the user left off.
 
 Still inside the control plane `Fumarole.Subscribe` bidi-stream, to commit your offset you need to send:
 
@@ -114,7 +112,7 @@ message CommitOffset {
 
 ## Stream Slot data rows
 
-Using the data-plane unary-stream method `Fumarole.DownloadBlock` you can download a slot using the following request :
+Using the data-plane unary-stream method `Fumarole.DownloadBlock`, you can download a slot using the following request :
 
 ```proto
 message DownloadBlockShard {
@@ -148,13 +146,11 @@ message DataResponse {
   }
 }
 ```
-It either a `geyser.SubscribeUpdate` or a signal that the slot data have been fully streamed out, so can you stop your streaming process.
+It is either a `geyser.SubscribeUpdate` or a signal that the slot data has been fully streamed out, so you can stop your streaming process.
 
-If you don't receive `block_shard_download_finish`, then the stream is done yet. If the stream closed before receiving `block_shard_download_finish`, then something must be wrong and you should throw an Exception or crash the download process.
-
+If you don't receive `block_shard_download_finish`, then the stream is not yet complete. If the stream closed before receiving `block_shard_download_finish`, then something must be wrong, and you should throw an Exception or crash the download process.
 
 ## Simple Loop
-
 
 ```python
 
@@ -169,16 +165,13 @@ loop:
     taskset.wait_for_next()
 ```
 
-
-This is a really "simplified" process loop, your client has to keep tracking which slot to download and download any slot that ready to be download.
-
+This is a really "simplified" process loop; your client has to keep tracking which slot to download and download any slot that is ready to be downloaded.
 
 ## Fumarole State Machine
 
-The State of Fumarole and its business logic that decide what to download should be handled by a state machine.
+The State of Fumarole and its business logic, which decides what to download, should be handled by a state machine.
 
 Use the [python SDK implementation](../python//yellowstone-fumarole-client/yellowstone_fumarole_client/runtime/state_machine.py) as a reference.
-
 
 Here's the API spec of the Fumarole state-machine:
 
@@ -220,23 +213,23 @@ class FumaroleSM:
         """Check if new blockchain events are needed."""
 ```
 
-As you poll history event from the fumarole service, you first register them through `queue_blockchain_event`.
+As you poll historical events from the fumarole service, you first register them through `queue_blockchain_event`.
 
-If you have register historical blockchain event to your state machine, new slot to download should become available to you via `pop_slot_to_download`. You driver implementation should do the actual slot download and
+If you have registered a historical blockchain event in your state machine, a new slot to download should become available to you via `pop_slot_to_download`. Your driver implementation should do the actual slot download and
 track the download progress through `make_slot_download_progress`.
 
-As you complete slot download, you should be able to pop slot status update through `pop_next_slot_status`.
-Essentially, we only send slot commitment update if you have seen the entire slot. 
-By "seeing" the entire slot I mean downloading the entire slot locally.
+As you complete the slot download, you should be able to retrieve the slot status update through `pop_next_slot_status`.
+Essentially, we only send a slot commitment update if you have seen the entire slot. 
+By "seeing" the entire slot, I mean downloading the entire slot locally.
 
-Once you downloaded the slot and sent the slot status to the enduser, you can then mark slot status as "processed" through `mark_event_as_processed`.
+Once you have downloaded the slot and sent the slot status to the end user, you can then mark the slot status as "processed" through `mark_event_as_processed`.
 
 Recap of the loop:
 
-1. Poll new historical events if no left.
+1. Poll new historical events if none are left.
     - Register events to `queue_blockchain_event`
 2. call `pop_slot_to_download`
-    - if not Null, do the actual download.
+    - If not Null, do the actual download.
 3. On slot download completed: `make_slot_download_progress`
 4. Call `pop_next_slot_status`
-5. Once you sent the slot status to the consumer, call `mark_event_as_processed`
+5. Once you have sent the slot status to the consumer, call `mark_event_as_processed`
