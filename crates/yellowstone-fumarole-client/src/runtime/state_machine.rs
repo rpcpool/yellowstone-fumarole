@@ -1,6 +1,6 @@
 use {
     crate::proto::{self, BlockchainEvent},
-    fxhash::FxHashMap,
+    rustc_hash::FxHashMap,
     solana_clock::Slot,
     std::{
         cmp::Reverse,
