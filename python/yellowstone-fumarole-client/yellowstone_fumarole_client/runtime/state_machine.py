@@ -178,14 +178,17 @@ class FumaroleSM:
                 self.unprocessed_blockchain_event.append((sequence, event))
 
     def make_slot_download_progress(
-        self, slot: Slot, shard_idx: FumeShardIdx
+        self, slot: Slot, shard_idx: Optional[FumeShardIdx]
     ) -> SlotDownloadState:
         """Update download progress for a given slot."""
         download_progress = self.inflight_slot_shard_download.get(slot)
         if not download_progress:
             raise ValueError("Slot not in download")
 
-        download_state = download_progress.do_progress(shard_idx)
+        if shard_idx is None:
+            download_state = SlotDownloadState.Done
+        else:
+            download_state = download_progress.do_progress(shard_idx)
 
         if download_state == SlotDownloadState.Done:
             self.inflight_slot_shard_download.pop(slot)
