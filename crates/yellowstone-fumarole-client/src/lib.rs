@@ -403,12 +403,12 @@ const MAX_PARA_DATA_STREAMS: u8 = 20;
 ///
 /// Default number of parallel data streams (TCP connections) to open to fumarole.
 ///
-pub const DEFAULT_PARA_DATA_STREAMS: u8 = 10;
+pub const DEFAULT_PARA_DATA_STREAMS: u8 = 4;
 
 ///
 /// Default maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
 ///
-pub const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP: usize = 1;
+pub const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP: usize = 2;
 
 ///
 /// Default refresh tip interval for the fumarole client.
@@ -782,7 +782,8 @@ impl FumaroleClient {
                 download_result_tx,
                 config.max_failed_slot_download_attempt,
                 Arc::clone(&request),
-                config.concurrent_download_limit_per_tcp.get(),
+                config.concurrent_download_limit_per_tcp.get()
+                    * config.num_data_plane_tcp_connections.get() as usize,
                 dragonsmouth_outlet.clone(),
             );
 
