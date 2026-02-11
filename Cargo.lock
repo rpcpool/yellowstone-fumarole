@@ -4843,7 +4843,7 @@ dependencies = [
 
 [[package]]
 name = "yellowstone-fumarole-client"
-version = "0.2.3+solana.2"
+version = "0.2.4-rc1+solana.2"
 dependencies = [
  "async-trait",
  "bytesize",
