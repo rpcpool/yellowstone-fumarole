@@ -123,6 +123,7 @@ class AsyncioFumeDragonsmouthRuntime:
         commit_interval: float,  # in seconds
         gc_interval: int,
         max_concurrent_download: int = 10,
+        on_slot_not_found: Optional[callable] = None,
     ):
         """Initialize the runtime with the given parameters.
 
@@ -158,6 +159,7 @@ class AsyncioFumeDragonsmouthRuntime:
         self.inflight_tasks = dict()
         self.successful_download_cnt = 0
         self.is_closed = False
+        self.on_slot_not_found = on_slot_not_found
 
     async def __aenter__(self):
         return self
@@ -259,6 +261,13 @@ class AsyncioFumeDragonsmouthRuntime:
             slot = download_result.slot
             err_kind = download_result.err.kind
             if err_kind == "BlockShardNotFound":
+                if self.on_slot_not_found:
+                    try:
+                        self.on_slot_not_found(slot)
+                        LOGGER.debug(f"on_slot_not_found callback executed for slot {slot}")
+                    except Exception as e:
+                        LOGGER.error(f"Error in on_slot_not_found callback for slot {slot}: {e}")
+
                 LOGGER.warning(f"Block shard not found for slot {slot}, marking slot as dead")
                 self.sm.make_slot_download_progress(slot, None)
             else:
