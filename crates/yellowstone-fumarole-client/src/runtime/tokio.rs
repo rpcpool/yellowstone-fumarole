@@ -121,12 +121,6 @@ const fn build_commit_offset_cmd(offset: FumeOffset) -> ControlCommand {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum RuntimeError {
-    #[error(transparent)]
-    GrpcError(#[from] tonic::Status),
-}
-
 impl From<SubscribeRequest> for BlockFilters {
     fn from(val: SubscribeRequest) -> Self {
         BlockFilters {
