@@ -200,16 +200,18 @@ class BlockFilters(_message.Message):
     def __init__(self, accounts: _Optional[_Mapping[str, _geyser_pb2.SubscribeRequestFilterAccounts]] = ..., transactions: _Optional[_Mapping[str, _geyser_pb2.SubscribeRequestFilterTransactions]] = ..., entries: _Optional[_Mapping[str, _geyser_pb2.SubscribeRequestFilterEntry]] = ..., blocks_meta: _Optional[_Mapping[str, _geyser_pb2.SubscribeRequestFilterBlocksMeta]] = ...) -> None: ...
 
 class DownloadBlockShard(_message.Message):
-    __slots__ = ("blockchain_id", "block_uid", "shard_idx", "blockFilters")
+    __slots__ = ("blockchain_id", "block_uid", "shard_idx", "blockFilters", "slot")
     BLOCKCHAIN_ID_FIELD_NUMBER: _ClassVar[int]
     BLOCK_UID_FIELD_NUMBER: _ClassVar[int]
     SHARD_IDX_FIELD_NUMBER: _ClassVar[int]
     BLOCKFILTERS_FIELD_NUMBER: _ClassVar[int]
+    SLOT_FIELD_NUMBER: _ClassVar[int]
     blockchain_id: bytes
     block_uid: bytes
     shard_idx: int
     blockFilters: BlockFilters
-    def __init__(self, blockchain_id: _Optional[bytes] = ..., block_uid: _Optional[bytes] = ..., shard_idx: _Optional[int] = ..., blockFilters: _Optional[_Union[BlockFilters, _Mapping]] = ...) -> None: ...
+    slot: int
+    def __init__(self, blockchain_id: _Optional[bytes] = ..., block_uid: _Optional[bytes] = ..., shard_idx: _Optional[int] = ..., blockFilters: _Optional[_Union[BlockFilters, _Mapping]] = ..., slot: _Optional[int] = ...) -> None: ...
 
 class Ping(_message.Message):
     __slots__ = ("ping_id",)
@@ -232,8 +234,14 @@ class DataCommand(_message.Message):
     def __init__(self, download_block_shard: _Optional[_Union[DownloadBlockShard, _Mapping]] = ..., filter_update: _Optional[_Union[BlockFilters, _Mapping]] = ...) -> None: ...
 
 class BlockShardDownloadFinish(_message.Message):
-    __slots__ = ()
-    def __init__(self) -> None: ...
+    __slots__ = ("block_uid", "slot", "shard_indices")
+    BLOCK_UID_FIELD_NUMBER: _ClassVar[int]
+    SLOT_FIELD_NUMBER: _ClassVar[int]
+    SHARD_INDICES_FIELD_NUMBER: _ClassVar[int]
+    block_uid: bytes
+    slot: int
+    shard_indices: _containers.RepeatedScalarFieldContainer[int]
+    def __init__(self, block_uid: _Optional[bytes] = ..., slot: _Optional[int] = ..., shard_indices: _Optional[_Iterable[int]] = ...) -> None: ...
 
 class BlockNotFound(_message.Message):
     __slots__ = ("blockchain_id", "block_uid", "shard_idx")

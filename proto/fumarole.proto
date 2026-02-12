@@ -100,6 +100,7 @@ message DownloadBlockShard {
     bytes block_uid = 2;
     int32 shard_idx = 3;
     optional BlockFilters blockFilters = 4;
+    optional uint64 slot = 5;
 }
 
 

@@ -662,20 +662,6 @@ impl FumaroleClient {
             .await
     }
 
-    pub async fn dragonsmouth_subscribe_with_config_and_hooks<S>(
-        &mut self,
-        subscriber_name: S,
-        request: geyser::SubscribeRequest,
-        handle: tokio::runtime::Handle,
-    ) -> Result<DragonsmouthAdapterSession, tonic::Status>
-    where
-        S: AsRef<str>,
-    {
-        let config = FumaroleSubscribeConfig::default();
-        self.dragonsmouth_subscribe_with_config_on(subscriber_name, request, config, handle)
-            .await
-    }
-
     ///
     /// Same as [`FumaroleClient::dragonsmouth_subscribe`] but allows you to specify a custom runtime handle
     /// the underlying fumarole runtie will use

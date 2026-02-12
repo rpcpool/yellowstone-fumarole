@@ -529,6 +529,7 @@ class GrpcDownloadBlockTaskRun:
             block_uid=self.download_request.block_uid,
             shard_idx=0,
             blockFilters=self.filters,
+            slot=self.download_request.slot
         )
         try:
             LOGGER.debug(

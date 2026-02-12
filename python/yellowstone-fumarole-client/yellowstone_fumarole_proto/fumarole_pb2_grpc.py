@@ -59,6 +59,11 @@ class FumaroleStub(object):
                 request_serializer=fumarole__pb2.DownloadBlockShard.SerializeToString,
                 response_deserializer=fumarole__pb2.DataResponse.FromString,
                 _registered_method=True)
+        self.DownloadBlockDataShard = channel.unary_stream(
+                '/fumarole.Fumarole/DownloadBlockDataShard',
+                request_serializer=fumarole__pb2.DownloadBlockShard.SerializeToString,
+                response_deserializer=fumarole__pb2.DataResponse.FromString,
+                _registered_method=True)
         self.SubscribeData = channel.stream_stream(
                 '/fumarole.Fumarole/SubscribeData',
                 request_serializer=fumarole__pb2.DataCommand.SerializeToString,
@@ -71,6 +76,11 @@ class FumaroleStub(object):
                 _registered_method=True)
         self.Subscribe = channel.stream_stream(
                 '/fumarole.Fumarole/Subscribe',
+                request_serializer=fumarole__pb2.ControlCommand.SerializeToString,
+                response_deserializer=fumarole__pb2.ControlResponse.FromString,
+                _registered_method=True)
+        self.SubscribeV2 = channel.stream_stream(
+                '/fumarole.Fumarole/SubscribeV2',
                 request_serializer=fumarole__pb2.ControlCommand.SerializeToString,
                 response_deserializer=fumarole__pb2.ControlResponse.FromString,
                 _registered_method=True)
@@ -119,6 +129,12 @@ class FumaroleServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def DownloadBlockDataShard(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def SubscribeData(self, request_iterator, context):
         """Represents subscription to the data plane
         """
@@ -135,6 +151,12 @@ class FumaroleServicer(object):
     def Subscribe(self, request_iterator, context):
         """Represents subscription to the control plane
         """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeV2(self, request_iterator, context):
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -179,6 +201,11 @@ def add_FumaroleServicer_to_server(servicer, server):
                     request_deserializer=fumarole__pb2.DownloadBlockShard.FromString,
                     response_serializer=fumarole__pb2.DataResponse.SerializeToString,
             ),
+            'DownloadBlockDataShard': grpc.unary_stream_rpc_method_handler(
+                    servicer.DownloadBlockDataShard,
+                    request_deserializer=fumarole__pb2.DownloadBlockShard.FromString,
+                    response_serializer=fumarole__pb2.DataResponse.SerializeToString,
+            ),
             'SubscribeData': grpc.stream_stream_rpc_method_handler(
                     servicer.SubscribeData,
                     request_deserializer=fumarole__pb2.DataCommand.FromString,
@@ -191,6 +218,11 @@ def add_FumaroleServicer_to_server(servicer, server):
             ),
             'Subscribe': grpc.stream_stream_rpc_method_handler(
                     servicer.Subscribe,
+                    request_deserializer=fumarole__pb2.ControlCommand.FromString,
+                    response_serializer=fumarole__pb2.ControlResponse.SerializeToString,
+            ),
+            'SubscribeV2': grpc.stream_stream_rpc_method_handler(
+                    servicer.SubscribeV2,
                     request_deserializer=fumarole__pb2.ControlCommand.FromString,
                     response_serializer=fumarole__pb2.ControlResponse.SerializeToString,
             ),
@@ -351,6 +383,33 @@ class Fumarole(object):
             _registered_method=True)
 
     @staticmethod
+    def DownloadBlockDataShard(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/fumarole.Fumarole/DownloadBlockDataShard',
+            fumarole__pb2.DownloadBlockShard.SerializeToString,
+            fumarole__pb2.DataResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def SubscribeData(request_iterator,
             target,
             options=(),
@@ -419,6 +478,33 @@ class Fumarole(object):
             request_iterator,
             target,
             '/fumarole.Fumarole/Subscribe',
+            fumarole__pb2.ControlCommand.SerializeToString,
+            fumarole__pb2.ControlResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeV2(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            '/fumarole.Fumarole/SubscribeV2',
             fumarole__pb2.ControlCommand.SerializeToString,
             fumarole__pb2.ControlResponse.FromString,
             options,
