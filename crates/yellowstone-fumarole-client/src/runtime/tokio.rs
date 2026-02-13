@@ -1075,6 +1075,7 @@ impl LegacyGrpcDownloadBlockTaskRun {
             block_uid: self.download_request.block_uid.to_vec(),
             shard_idx: 0,
             block_filters: self.filters,
+            slot: Some(self.download_request.slot),
         };
         let resp = self.client.download_block(request).await;
 
@@ -1509,6 +1510,7 @@ impl GrpcShardedDownloadOrchestrator {
                 block_uid: task_spec.download_request.block_uid.clone().to_vec(),
                 shard_idx: *shard_idx as i32,
                 block_filters: None,
+                slot: Some(slot),
             };
             let queued_download = QueuedShardDownload {
                 slot,
@@ -1546,6 +1548,7 @@ impl GrpcShardedDownloadOrchestrator {
                             block_uid: scheduled_shard_download.block_uid,
                             shard_idx: scheduled_shard_download.shard_idx as i32,
                             block_filters: None,
+                            slot: Some(scheduled_shard_download.slot),
                         },
                         attempt: scheduled_shard_download.attempt,
                     };
@@ -1604,6 +1607,7 @@ impl GrpcShardedDownloadOrchestrator {
                                             block_uid: schedule_shard_download.block_uid,
                                             shard_idx: schedule_shard_download.shard_idx as i32,
                                             block_filters: None,
+                                            slot: Some(schedule_shard_download.slot),
                                         },
                                         attempt: attempt + 1,
                                     };

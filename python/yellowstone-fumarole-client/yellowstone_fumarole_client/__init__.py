@@ -138,7 +138,6 @@ class DragonsmouthAdapterSession:
         )
 
 
-# FumaroleClient
 class FumaroleClient:
     """Fumarole client for interacting with the Fumarole server."""
 
@@ -168,16 +167,23 @@ class FumaroleClient:
         return response
 
     async def dragonsmouth_subscribe(
-        self, consumer_group_name: str, request: SubscribeRequest
+        self, consumer_group_name: str, request: SubscribeRequest, *, on_slot_not_found: Optional[callable] = None
     ) -> DragonsmouthAdapterSession:
         """Subscribe to a dragonsmouth stream with default configuration.
 
         Args:
             consumer_group_name (str): The name of the consumer group.
             request (SubscribeRequest): The request to subscribe to the dragonsmouth stream.
+            on_slot_not_found (Optional[callable]): 
+                An optional callback function that will be called with the slot number when a slot is not found during download.
+                As Fumarole is designed, it aims at never losing blocks, but in the case this happen this hook allow you to recover the slot
+                using getBlock.
+
+                The callback should be a function that takes a single integer argument (the slot number) and returns None. It will be called in the context of the Fumarole runtime, so it should be non-blocking and thread-safe if it interacts with external systems.
         """
         return await self.dragonsmouth_subscribe_with_config(
-            consumer_group_name, request, FumaroleSubscribeConfig()
+            consumer_group_name, request, FumaroleSubscribeConfig(),
+            on_slot_not_found=on_slot_not_found
         )
 
     async def dragonsmouth_subscribe_with_config(
@@ -185,6 +191,8 @@ class FumaroleClient:
         consumer_group_name: str,
         request: SubscribeRequest,
         config: FumaroleSubscribeConfig,
+        *,
+        on_slot_not_found: Optional[callable] = None
     ) -> DragonsmouthAdapterSession:
         """Subscribe to a dragonsmouth stream with custom configuration.
 
@@ -192,6 +200,10 @@ class FumaroleClient:
             consumer_group_name (str): The name of the consumer group.
             request (SubscribeRequest): The request to subscribe to the dragonsmouth stream.
             config (FumaroleSubscribeConfig): The configuration for the dragonsmouth subscription.
+            on_slot_not_found (Optional[callable]): 
+                An optional callback function that will be called with the slot number when a slot is not found
+                during download. As Fumarole is designed, it aims at never losing blocks, but in the case this happen this hook allow you to recover the slot
+                using getBlock.
         """
         dragonsmouth_outlet = asyncio.Queue(maxsize=config.data_channel_capacity)
         fume_control_plane_q = asyncio.Queue(maxsize=100)
@@ -268,6 +280,7 @@ class FumaroleClient:
             commit_interval=config.commit_interval,
             gc_interval=config.gc_interval,
             max_concurrent_download=config.concurrent_download_limit,
+            on_slot_not_found=on_slot_not_found,
         )
 
         rt_task = asyncio.create_task(rt.run())
