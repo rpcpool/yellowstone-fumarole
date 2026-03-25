@@ -14,7 +14,7 @@ use {
         hash::Hash,
         io::{Write, stdout},
         net::{AddrParseError, SocketAddr},
-        num::NonZeroU8,
+        num::{NonZeroU8, NonZeroUsize},
         path::PathBuf,
         str::FromStr,
         time::Duration,
@@ -55,8 +55,17 @@ pub struct FumeConfig {
     fumarole: FumaroleConfig,
 
     // Experimental(xx) feature to enable sharded downloads
-    #[serde(default)]
-    xx_enable_sharded_download: bool,
+    #[serde(
+        default = "FumeConfig::default_enable_sharded_download",
+        alias = "xx_enable_sharded_download"
+    )]
+    enable_sharded_download: bool,
+}
+
+impl FumeConfig {
+    const fn default_enable_sharded_download() -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -371,6 +380,10 @@ struct SubscribeArgs {
     /// Number of parallel data streams (TCP connections) to open to fumarole.
     #[clap(long, short, default_value = "1")]
     para: NonZeroU8,
+
+    /// Number of concurrent shard download per TCP connection. Only applicable when xx_enable_sharded_download is true.
+    #[clap(long, default_value = "1")]
+    con: NonZeroUsize,
 
     /// If true, the fumarole client will not commit offsets to the fumarole service.
     #[clap(long, default_value = "false")]
@@ -720,7 +733,8 @@ async fn subscribe(
         commit_interval: Duration::from_secs(1),
         num_data_plane_tcp_connections: args.para,
         no_commit: args.no_commit,
-        experimental_enable_sharded_block_download: xx_enable_sharded_download,
+        enable_sharded_block_download: xx_enable_sharded_download,
+        concurrent_download_limit_per_tcp: args.con,
         ..Default::default()
     };
     let dragonsmouth_session = client
@@ -839,7 +853,7 @@ async fn block_stats(
         commit_interval: Duration::from_secs(5),
         num_data_plane_tcp_connections: args.para,
         no_commit: args.no_commit,
-        experimental_enable_sharded_block_download: xx_enable_sharded_download,
+        enable_sharded_block_download: xx_enable_sharded_download,
         ..Default::default()
     };
     let dragonsmouth_session = client
@@ -936,7 +950,9 @@ async fn block_stats(
                         }
                         UpdateOneof::BlockMeta(block_meta) => {
                             let slot = block_meta.slot;
-                            let mut block = block_map.remove(&slot).expect("Failed to get block info");
+                            let Some(mut block) = block_map.remove(&slot) else {
+                                continue;
+                            };
                             block.block_meta = Some(block_meta);
                             let msg = summarized_block(&block);
                             block_count_per_tick += 1;
@@ -1074,7 +1090,7 @@ async fn main() {
             subscribe(
                 fumarole_client,
                 subscribe_args,
-                config.xx_enable_sharded_download,
+                config.enable_sharded_download,
             )
             .await;
         }
@@ -1082,12 +1098,7 @@ async fn main() {
             slot_range(fumarole_client).await;
         }
         Action::Block(blocks_args) => {
-            block_stats(
-                fumarole_client,
-                blocks_args,
-                config.xx_enable_sharded_download,
-            )
-            .await;
+            block_stats(fumarole_client, blocks_args, config.enable_sharded_download).await;
         }
     }
 }

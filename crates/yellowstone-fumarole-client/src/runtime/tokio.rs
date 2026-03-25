@@ -22,6 +22,7 @@ use {
     solana_clock::Slot,
     std::{
         collections::{HashMap, VecDeque},
+        num::NonZeroUsize,
         sync::Arc,
         time::{Duration, Instant},
     },
@@ -94,7 +95,7 @@ pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub non_critical_background_jobs: JoinSet<BackgroundJobResult>,
     pub no_commit: bool,
     pub stop: bool,
-    pub experimental_enable_sharded_block_download: bool,
+    pub enable_sharded_block_download: bool,
 }
 
 const DEFAULT_HISTORY_POLL_SIZE: i64 = 100;
@@ -121,12 +122,6 @@ const fn build_commit_offset_cmd(offset: FumeOffset) -> ControlCommand {
             },
         )),
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum RuntimeError {
-    #[error(transparent)]
-    GrpcError(#[from] tonic::Status),
 }
 
 impl From<SubscribeRequest> for BlockFilters {
@@ -380,7 +375,7 @@ impl TokioFumeDragonsmouthRuntime {
             .await
             .expect("failed to send initial join");
 
-        let resp = if self.experimental_enable_sharded_block_download {
+        let resp = if self.enable_sharded_block_download {
             self.fumarole_client
                 .inner
                 .subscribe_v2(ReceiverStream::new(fume_control_plane_rx))
@@ -1245,7 +1240,7 @@ impl GrpcContinuousShardDownloader {
         ));
 
         let err = loop {
-            let poll_shared_queue = self.shard_scheduled_for_download.len() <= 1;
+            let poll_shared_queue = self.shard_scheduled_for_download.len() < 2;
             tokio::select! {
                 maybe = self.cnc_rx.recv() => {
                     match maybe {
@@ -1373,6 +1368,7 @@ pub(crate) struct GrpcShardedDownloadOrchestrator {
     max_download_attempt_per_slot: usize,
     subscribe_request: Arc<SubscribeRequest>,
     dragonsmouth_outlet: mpsc::Sender<Result<SubscribeUpdate, tonic::Status>>,
+    concurrent_shard_download_scaler: NonZeroUsize,
 }
 
 ///
@@ -1394,6 +1390,7 @@ impl GrpcShardedDownloadOrchestrator {
         outlet: mpsc::Sender<DownloadTaskResult>,
         max_download_attempt_by_slot: usize,
         subscribe_request: Arc<SubscribeRequest>,
+        concurrent_shard_download_scaler: NonZeroUsize,
         dragonsmouth_outlet: mpsc::Sender<Result<SubscribeUpdate, tonic::Status>>,
     ) -> Self {
         let num_data_plane_clients = data_plane_channel_vec.len();
@@ -1414,6 +1411,7 @@ impl GrpcShardedDownloadOrchestrator {
             shared_shard_download_queue_rx,
             slot_download_progression_map: HashMap::new(),
             dragonsmouth_outlet,
+            concurrent_shard_download_scaler,
             completed_tx,
             completed_rx,
         }
@@ -1662,7 +1660,15 @@ impl GrpcShardedDownloadOrchestrator {
     }
 
     pub(crate) async fn run(mut self) -> Result<(), DownloadBlockError> {
-        for (client_idx, client) in self.data_plane_channel_vec.iter().enumerate() {
+        let total_shard_downloader =
+            self.data_plane_channel_vec.len() * self.concurrent_shard_download_scaler.get();
+        for (client_idx, client) in self
+            .data_plane_channel_vec
+            .iter()
+            .enumerate()
+            .cycle()
+            .take(total_shard_downloader)
+        {
             let (cnc_tx, cnc_rx) = mpsc::channel(10);
             let shard_downloader = GrpcContinuousShardDownloader {
                 cnc_rx,

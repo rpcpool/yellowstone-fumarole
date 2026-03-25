@@ -108,6 +108,7 @@ function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
       this.totalDownloadedSlot += 1;
       this.downloadTaskResultObserver.next({
         kind: "Ok",
+        slot: args.downloadRequest.slot,
         completed: {
           slot: args.downloadRequest.slot,
           blockUid: args.downloadRequest.blockUid,
@@ -136,11 +137,11 @@ function do_download(this: GrpcSlotDownloader, args: DownloadTaskArgs) {
     } else {
       const result: DownloadTaskResult = {
         kind: "Err",
+        slot: args.downloadRequest.slot,
         err: {
           kind: err_kind,
           message: err,
         },
-        slot: args.downloadRequest.slot,
       };
       this.downloadTaskResultObserver.next(result);
     }
@@ -189,11 +190,11 @@ export function failingDownloadSlotObserverFactory(
       LOGGER.error("Download failed");
       ctx.downloadTaskResultObserver.next({
         kind: "Err",
+        slot: args.downloadRequest.slot,
         err: {
           kind: "FailedDownload",
           message: "Download failed",
         },
-        slot: args.downloadRequest.slot,
       });
     },
     error: (err: Error) => {

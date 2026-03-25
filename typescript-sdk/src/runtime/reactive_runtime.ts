@@ -82,8 +82,8 @@ export type DownloadTaskResultKind = "Ok" | "Err";
 export class DownloadTaskResult {
   constructor(
     public kind: DownloadTaskResultKind,
+    public slot: bigint,
     public completed?: CompletedDownloadBlockTask,
-    public slot?: bigint,
     public err?: DownloadBlockError,
   ) {}
 }
@@ -254,6 +254,15 @@ function onDownloadCompleted(
   } else {
     const slot = result.slot;
     const err = result.err;
+
+    if (err && err.kind === "BlockShardNotFound") {
+      LOGGER.warn(
+        `Block shard not found for slot ${slot}, treating as empty slot: ${err.message}`,
+      );
+      this.sm.makeSlotDownloadProgress(slot, 0);
+      return;
+    }
+
     throw new Error(`Failed to download slot ${slot}: ${err!.message}`);
   }
 }

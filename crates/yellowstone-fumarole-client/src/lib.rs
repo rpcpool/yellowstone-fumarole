@@ -286,6 +286,7 @@ use {
             TokioFumeDragonsmouthRuntime,
         },
     },
+    semver::Version,
     std::{
         collections::HashMap,
         num::{NonZeroU8, NonZeroUsize},
@@ -495,12 +496,15 @@ pub struct FumaroleSubscribeConfig {
     /// If set to `true`, [`FumaroleSubscribeConfig::commit_interval`] will be ignored.
     pub no_commit: bool,
 
-    pub experimental_enable_sharded_block_download: bool,
+    ///
+    /// Whether to enable sharded block download. If enabled, the fumarole will download block in shards and reassemble them in the client.
+    /// set to `true` by default.
+    ///
+    pub enable_sharded_block_download: bool,
 }
 
 impl Default for FumaroleSubscribeConfig {
     fn default() -> Self {
-        #[allow(deprecated)]
         Self {
             num_data_plane_tcp_connections: NonZeroU8::new(DEFAULT_PARA_DATA_STREAMS).unwrap(),
             concurrent_download_limit_per_tcp: NonZeroUsize::new(
@@ -514,7 +518,7 @@ impl Default for FumaroleSubscribeConfig {
             slot_memory_retention: DEFAULT_SLOT_MEMORY_RETENTION,
             refresh_tip_stats_interval: DEFAULT_REFRESH_TIP_INTERVAL, // Default to 5 seconds
             no_commit: false,
-            experimental_enable_sharded_block_download: false,
+            enable_sharded_block_download: true,
         }
     }
 }
@@ -676,6 +680,35 @@ impl FumaroleClient {
     where
         S: AsRef<str>,
     {
+        let version = self.version().await?;
+        let semver_version = Version::parse(&version.version).ok();
+        if let Some(semver_version) = &semver_version {
+            tracing::debug!("Fumarole service version: {}", semver_version);
+        } else {
+            tracing::warn!(
+                "Failed to parse fumarole service version: {}",
+                version.version
+            );
+        }
+        const SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION: u64 = 39;
+        let use_sharded_downlaod = config.enable_sharded_block_download
+            && semver_version
+                .filter(|v| v.minor > SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION)
+                .is_none();
+
+        if config.enable_sharded_block_download && !use_sharded_downlaod {
+            tracing::warn!(
+                "Sharded block download is enabled in the config, but the fumarole service version {} does not support it. Falling back to non-sharded download.",
+                version.version
+            );
+        }
+
+        if use_sharded_downlaod {
+            tracing::debug!("using sharded block download");
+        } else {
+            tracing::debug!("using non-sharded block download");
+        }
+
         let request = Arc::new(request);
         assert!(
             config.num_data_plane_tcp_connections.get() <= MAX_PARA_DATA_STREAMS,
@@ -707,7 +740,7 @@ impl FumaroleClient {
             .await
             .expect("failed to send initial join");
 
-        let resp = if config.experimental_enable_sharded_block_download {
+        let resp = if use_sharded_downlaod {
             self.inner
                 .subscribe_v2(ReceiverStream::new(fume_control_plane_rx))
                 .await?
@@ -761,7 +794,7 @@ impl FumaroleClient {
         let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(100);
         let (download_result_tx, download_result_rx) = mpsc::channel(1000);
 
-        let download_task_runner_jh = if config.experimental_enable_sharded_block_download {
+        let download_task_runner_jh = if use_sharded_downlaod {
             let grpc_download_task_runner = runtime::tokio::GrpcShardedDownloadOrchestrator::new(
                 data_plane_channel_vec,
                 self.connector.clone(),
@@ -770,6 +803,7 @@ impl FumaroleClient {
                 download_result_tx,
                 config.max_failed_slot_download_attempt,
                 Arc::clone(&request),
+                config.concurrent_download_limit_per_tcp,
                 dragonsmouth_outlet.clone(),
             );
             handle.spawn(grpc_download_task_runner.run())
@@ -816,8 +850,7 @@ impl FumaroleClient {
             last_history_poll: Default::default(),
             no_commit: config.no_commit,
             stop: false,
-            experimental_enable_sharded_block_download: config
-                .experimental_enable_sharded_block_download,
+            enable_sharded_block_download: use_sharded_downlaod,
         };
         let fumarole_rt_jh = handle.spawn(tokio_rt.run());
         let fut = async move {

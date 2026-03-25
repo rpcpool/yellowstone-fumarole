@@ -3,29 +3,4 @@ all-features = true
 
 [advisories]
 ignore = [
-    # Advisory: https://rustsec.org/advisories/RUSTSEC-2022-0093
-    # Versions of `ed25519-dalek` prior to v2.0 model private and public keys as
-    # separate types which can be assembled into a `Keypair`, and also provide APIs
-    # for serializing and deserializing 64-byte private/public keypairs.
-    # 
-    # Such APIs and serializations are inherently unsafe as the public key is one of
-    # the inputs used in the deterministic computation of the `S` part of the signature,
-    # but not in the `R` value. An adversary could somehow use the signing function as
-    # an oracle that allows arbitrary public keys as input can obtain two signatures
-    # for the same message sharing the same `R` and only differ on the `S` part.
-    # 
-    # Unfortunately, when this happens, one can easily extract the private key.
-    "RUSTSEC-2022-0093",
-
-    # Timing variability of any kind is problematic when working with  potentially secret values such as
-    # elliptic curve scalars, and such issues can potentially leak private keys and other secrets. Such a
-    # problem was recently discovered in `curve25519-dalek`.
-    "RUSTSEC-2024-0344",
-
-    # ID: RUSTSEC-2025-0141
-    # Advisory: https://rustsec.org/advisories/RUSTSEC-2025-0141
-    # Due to a doxxing and harassment incident, the bincode team has taken the decision to cease development permanently.
-    
-    # The team considers version 1.3.3 a complete version of bincode that is not in need of any updates.
-    "RUSTSEC-2025-0141",
 ]

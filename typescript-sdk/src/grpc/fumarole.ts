@@ -161,6 +161,7 @@ export interface DownloadBlockShard {
   blockUid: Uint8Array;
   shardIdx: number;
   blockFilters?: BlockFilters | undefined;
+  slot?: bigint | undefined;
 }
 
 export interface Ping {
@@ -177,6 +178,9 @@ export interface DataCommand {
 }
 
 export interface BlockShardDownloadFinish {
+  blockUid: Uint8Array;
+  slot: bigint;
+  shardIndices: number[];
 }
 
 export interface BlockNotFound {
@@ -1726,7 +1730,13 @@ export const BlockFilters_BlocksMetaEntry: MessageFns<BlockFilters_BlocksMetaEnt
 };
 
 function createBaseDownloadBlockShard(): DownloadBlockShard {
-  return { blockchainId: new Uint8Array(0), blockUid: new Uint8Array(0), shardIdx: 0, blockFilters: undefined };
+  return {
+    blockchainId: new Uint8Array(0),
+    blockUid: new Uint8Array(0),
+    shardIdx: 0,
+    blockFilters: undefined,
+    slot: undefined,
+  };
 }
 
 export const DownloadBlockShard: MessageFns<DownloadBlockShard> = {
@@ -1742,6 +1752,12 @@ export const DownloadBlockShard: MessageFns<DownloadBlockShard> = {
     }
     if (message.blockFilters !== undefined) {
       BlockFilters.encode(message.blockFilters, writer.uint32(34).fork()).join();
+    }
+    if (message.slot !== undefined) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
+      writer.uint32(40).uint64(message.slot);
     }
     return writer;
   },
@@ -1785,6 +1801,14 @@ export const DownloadBlockShard: MessageFns<DownloadBlockShard> = {
           message.blockFilters = BlockFilters.decode(reader, reader.uint32());
           continue;
         }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.slot = reader.uint64() as bigint;
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1800,6 +1824,7 @@ export const DownloadBlockShard: MessageFns<DownloadBlockShard> = {
       blockUid: isSet(object.blockUid) ? bytesFromBase64(object.blockUid) : new Uint8Array(0),
       shardIdx: isSet(object.shardIdx) ? globalThis.Number(object.shardIdx) : 0,
       blockFilters: isSet(object.blockFilters) ? BlockFilters.fromJSON(object.blockFilters) : undefined,
+      slot: isSet(object.slot) ? BigInt(object.slot) : undefined,
     };
   },
 
@@ -1817,6 +1842,9 @@ export const DownloadBlockShard: MessageFns<DownloadBlockShard> = {
     if (message.blockFilters !== undefined) {
       obj.blockFilters = BlockFilters.toJSON(message.blockFilters);
     }
+    if (message.slot !== undefined) {
+      obj.slot = message.slot.toString();
+    }
     return obj;
   },
 
@@ -1831,6 +1859,7 @@ export const DownloadBlockShard: MessageFns<DownloadBlockShard> = {
     message.blockFilters = (object.blockFilters !== undefined && object.blockFilters !== null)
       ? BlockFilters.fromPartial(object.blockFilters)
       : undefined;
+    message.slot = object.slot ?? undefined;
     return message;
   },
 };
@@ -2034,11 +2063,25 @@ export const DataCommand: MessageFns<DataCommand> = {
 };
 
 function createBaseBlockShardDownloadFinish(): BlockShardDownloadFinish {
-  return {};
+  return { blockUid: new Uint8Array(0), slot: 0n, shardIndices: [] };
 }
 
 export const BlockShardDownloadFinish: MessageFns<BlockShardDownloadFinish> = {
-  encode(_: BlockShardDownloadFinish, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+  encode(message: BlockShardDownloadFinish, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.blockUid.length !== 0) {
+      writer.uint32(10).bytes(message.blockUid);
+    }
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
+      writer.uint32(16).uint64(message.slot);
+    }
+    writer.uint32(26).fork();
+    for (const v of message.shardIndices) {
+      writer.uint32(v);
+    }
+    writer.join();
     return writer;
   },
 
@@ -2049,6 +2092,40 @@ export const BlockShardDownloadFinish: MessageFns<BlockShardDownloadFinish> = {
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.blockUid = reader.bytes();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.slot = reader.uint64() as bigint;
+          continue;
+        }
+        case 3: {
+          if (tag === 24) {
+            message.shardIndices.push(reader.uint32());
+
+            continue;
+          }
+
+          if (tag === 26) {
+            const end2 = reader.uint32() + reader.pos;
+            while (reader.pos < end2) {
+              message.shardIndices.push(reader.uint32());
+            }
+
+            continue;
+          }
+
+          break;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2058,20 +2135,38 @@ export const BlockShardDownloadFinish: MessageFns<BlockShardDownloadFinish> = {
     return message;
   },
 
-  fromJSON(_: any): BlockShardDownloadFinish {
-    return {};
+  fromJSON(object: any): BlockShardDownloadFinish {
+    return {
+      blockUid: isSet(object.blockUid) ? bytesFromBase64(object.blockUid) : new Uint8Array(0),
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
+      shardIndices: globalThis.Array.isArray(object?.shardIndices)
+        ? object.shardIndices.map((e: any) => globalThis.Number(e))
+        : [],
+    };
   },
 
-  toJSON(_: BlockShardDownloadFinish): unknown {
+  toJSON(message: BlockShardDownloadFinish): unknown {
     const obj: any = {};
+    if (message.blockUid.length !== 0) {
+      obj.blockUid = base64FromBytes(message.blockUid);
+    }
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
+    }
+    if (message.shardIndices?.length) {
+      obj.shardIndices = message.shardIndices.map((e) => Math.round(e));
+    }
     return obj;
   },
 
   create<I extends Exact<DeepPartial<BlockShardDownloadFinish>, I>>(base?: I): BlockShardDownloadFinish {
     return BlockShardDownloadFinish.fromPartial(base ?? ({} as any));
   },
-  fromPartial<I extends Exact<DeepPartial<BlockShardDownloadFinish>, I>>(_: I): BlockShardDownloadFinish {
+  fromPartial<I extends Exact<DeepPartial<BlockShardDownloadFinish>, I>>(object: I): BlockShardDownloadFinish {
     const message = createBaseBlockShardDownloadFinish();
+    message.blockUid = object.blockUid ?? new Uint8Array(0);
+    message.slot = object.slot ?? 0n;
+    message.shardIndices = object.shardIndices?.map((e) => e) || [];
     return message;
   },
 };
@@ -3520,6 +3615,15 @@ export const FumaroleService = {
     responseSerialize: (value: DataResponse): Buffer => Buffer.from(DataResponse.encode(value).finish()),
     responseDeserialize: (value: Buffer): DataResponse => DataResponse.decode(value),
   },
+  downloadBlockDataShard: {
+    path: "/fumarole.Fumarole/DownloadBlockDataShard",
+    requestStream: false,
+    responseStream: true,
+    requestSerialize: (value: DownloadBlockShard): Buffer => Buffer.from(DownloadBlockShard.encode(value).finish()),
+    requestDeserialize: (value: Buffer): DownloadBlockShard => DownloadBlockShard.decode(value),
+    responseSerialize: (value: DataResponse): Buffer => Buffer.from(DataResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): DataResponse => DataResponse.decode(value),
+  },
   /** Represents subscription to the data plane */
   subscribeData: {
     path: "/fumarole.Fumarole/SubscribeData",
@@ -3542,6 +3646,15 @@ export const FumaroleService = {
   /** Represents subscription to the control plane */
   subscribe: {
     path: "/fumarole.Fumarole/Subscribe",
+    requestStream: true,
+    responseStream: true,
+    requestSerialize: (value: ControlCommand): Buffer => Buffer.from(ControlCommand.encode(value).finish()),
+    requestDeserialize: (value: Buffer): ControlCommand => ControlCommand.decode(value),
+    responseSerialize: (value: ControlResponse): Buffer => Buffer.from(ControlResponse.encode(value).finish()),
+    responseDeserialize: (value: Buffer): ControlResponse => ControlResponse.decode(value),
+  },
+  subscribeV2: {
+    path: "/fumarole.Fumarole/SubscribeV2",
     requestStream: true,
     responseStream: true,
     requestSerialize: (value: ControlCommand): Buffer => Buffer.from(ControlCommand.encode(value).finish()),
@@ -3576,11 +3689,13 @@ export interface FumaroleServer extends UntypedServiceImplementation {
   deleteConsumerGroup: handleUnaryCall<DeleteConsumerGroupRequest, DeleteConsumerGroupResponse>;
   createConsumerGroup: handleUnaryCall<CreateConsumerGroupRequest, CreateConsumerGroupResponse>;
   downloadBlock: handleServerStreamingCall<DownloadBlockShard, DataResponse>;
+  downloadBlockDataShard: handleServerStreamingCall<DownloadBlockShard, DataResponse>;
   /** Represents subscription to the data plane */
   subscribeData: handleBidiStreamingCall<DataCommand, DataResponse>;
   getChainTip: handleUnaryCall<GetChainTipRequest, GetChainTipResponse>;
   /** Represents subscription to the control plane */
   subscribe: handleBidiStreamingCall<ControlCommand, ControlResponse>;
+  subscribeV2: handleBidiStreamingCall<ControlCommand, ControlResponse>;
   version: handleUnaryCall<VersionRequest, VersionResponse>;
   getSlotRange: handleUnaryCall<GetSlotRangeRequest, GetSlotRangeResponse>;
 }
@@ -3652,6 +3767,15 @@ export interface FumaroleClient extends Client {
     metadata?: Metadata,
     options?: Partial<CallOptions>,
   ): ClientReadableStream<DataResponse>;
+  downloadBlockDataShard(
+    request: DownloadBlockShard,
+    options?: Partial<CallOptions>,
+  ): ClientReadableStream<DataResponse>;
+  downloadBlockDataShard(
+    request: DownloadBlockShard,
+    metadata?: Metadata,
+    options?: Partial<CallOptions>,
+  ): ClientReadableStream<DataResponse>;
   /** Represents subscription to the data plane */
   subscribeData(): ClientDuplexStream<DataCommand, DataResponse>;
   subscribeData(options: Partial<CallOptions>): ClientDuplexStream<DataCommand, DataResponse>;
@@ -3675,6 +3799,9 @@ export interface FumaroleClient extends Client {
   subscribe(): ClientDuplexStream<ControlCommand, ControlResponse>;
   subscribe(options: Partial<CallOptions>): ClientDuplexStream<ControlCommand, ControlResponse>;
   subscribe(metadata: Metadata, options?: Partial<CallOptions>): ClientDuplexStream<ControlCommand, ControlResponse>;
+  subscribeV2(): ClientDuplexStream<ControlCommand, ControlResponse>;
+  subscribeV2(options: Partial<CallOptions>): ClientDuplexStream<ControlCommand, ControlResponse>;
+  subscribeV2(metadata: Metadata, options?: Partial<CallOptions>): ClientDuplexStream<ControlCommand, ControlResponse>;
   version(
     request: VersionRequest,
     callback: (error: ServiceError | null, response: VersionResponse) => void,
