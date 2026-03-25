@@ -176,7 +176,7 @@ export class FumaroleSM {
 
   makeSlotDownloadProgress(
     slot: Slot,
-    shardIdx: FumeShardIdx,
+    shardIdx: FumeShardIdx | null,
   ): SlotDownloadState {
     // Update download progress for a given slot.
     const downloadProgress = this.inflightSlotShardDownload.get(slot);
@@ -184,7 +184,13 @@ export class FumaroleSM {
       throw new Error("Slot not in download");
     }
 
-    const downloadState = downloadProgress.doProgress(shardIdx);
+    let downloadState: SlotDownloadState = SlotDownloadState.Downloading;
+    if (shardIdx !== null) {
+      downloadState = downloadProgress.doProgress(shardIdx);
+    } else {
+      // If shardIdx is null, mark all shards as downloaded
+      downloadState = SlotDownloadState.Done;
+    }
 
     if (downloadState === SlotDownloadState.Done) {
       this.inflightSlotShardDownload.delete(slot);
