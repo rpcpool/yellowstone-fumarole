@@ -274,6 +274,8 @@ pub(crate) mod grpc;
 pub(crate) mod runtime;
 pub(crate) mod util;
 
+pub use crate::runtime::tokio::{DataplaneErrorKind, DataplaneStreamError};
+
 use {
     crate::proto::GetSlotRangeRequest,
     config::FumaroleConfig,
@@ -328,7 +330,6 @@ pub mod proto {
 use {
     crate::grpc::FumaroleGrpcConnector,
     proto::{JoinControlPlane, fumarole_client::FumaroleClient as TonicFumaroleClient},
-    runtime::tokio::DataPlaneConn,
     tonic::transport::Endpoint,
 };
 
@@ -436,13 +437,22 @@ pub enum DragonsmouthSubscribeError {
     StreamClosed,
 }
 
+
 #[derive(Debug, thiserror::Error)]
-pub enum FumaroleStreamError {
+pub enum FumaroleSubscribeError {
+    #[error("control plane disconnected")]
+    ControlPlaneDisconnected,
+    #[error("slot not found")]
+    SlotNotFound,
+    #[error("invalid subscribe filter: {0}")]
+    InvalidSubscribeFilter(String),
     #[error(transparent)]
-    Custom(Box<dyn std::error::Error + Send + Sync>),
+    DataPlane(#[from] DataplaneStreamError),
     #[error("grpc stream closed")]
     StreamClosed,
 }
+
+pub type FumaroleStream = mpsc::Receiver<Result<geyser::SubscribeUpdate, FumaroleSubscribeError>>;
 
 ///
 /// Configuration for the Fumarole subscription session
@@ -501,6 +511,7 @@ pub struct FumaroleSubscribeConfig {
 }
 
 impl Default for FumaroleSubscribeConfig {
+    #[allow(deprecated)]
     fn default() -> Self {
         Self {
             num_data_plane_tcp_connections: NonZeroU8::new(DEFAULT_PARA_DATA_STREAMS).unwrap(),
@@ -534,16 +545,6 @@ pub enum FumaroleError {
     InvalidSubscribeRequest,
 }
 
-impl From<tonic::Status> for FumaroleError {
-    fn from(status: tonic::Status) -> Self {
-        match status.code() {
-            tonic::Code::Unavailable => FumaroleError::ControlPlaneDisconnected,
-            tonic::Code::Internal => FumaroleError::DataPlaneDisconnected,
-            _ => FumaroleError::InvalidSubscribeRequest,
-        }
-    }
-}
-
 ///
 /// Dragonsmouth flavor fumarole session.
 /// Mimics the same API as dragonsmouth but uses fumarole as the backend.
@@ -558,7 +559,7 @@ pub struct DragonsmouthAdapterSession {
     /// Channel to receive updates from the fumarole service.
     /// Dropping this channel will stop the fumarole session.
     ///
-    pub source: mpsc::Receiver<Result<geyser::SubscribeUpdate, tonic::Status>>,
+    pub source: FumaroleStream,
     ///
     /// Handle to the fumarole session client runtime.
     /// Dropping this handle does not stop the fumarole session.
@@ -756,32 +757,21 @@ impl FumaroleClient {
             rx: dm_rx,
         };
 
-        let mut data_plane_channel_vec =
-            Vec::with_capacity(config.num_data_plane_tcp_connections.get() as usize);
-        // TODO: support config.num_data_plane_tcp_connections
-        for _ in 0..config.num_data_plane_tcp_connections.get() {
-            let client = self
-                .connector
-                .connect()
-                .await
-                .expect("failed to connect to fumarole");
-            let conn = DataPlaneConn::new(client);
-            data_plane_channel_vec.push(conn);
-        }
+        let total_shard_downloaders = config.num_data_plane_tcp_connections.get() as usize
+            * config.concurrent_download_limit_per_tcp.get();
         let (download_task_runner_cnc_tx, download_task_runner_cnc_rx) = mpsc::channel(10);
         // Make sure the channel capacity is really low, since the grpc runner already implements its own concurrency control
         let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(100);
         let (download_result_tx, download_result_rx) = mpsc::channel(1000);
 
         let grpc_download_task_runner = runtime::tokio::ShardedDownloadOrchestrator::new(
-            data_plane_channel_vec,
             self.connector.clone(),
             download_task_runner_cnc_rx,
             download_task_queue_rx,
             download_result_tx,
             config.max_failed_slot_download_attempt,
             Arc::clone(&request),
-            config.concurrent_download_limit_per_tcp,
+            total_shard_downloaders,
             dragonsmouth_outlet.clone(),
         );
         let download_task_runner_jh = handle.spawn(grpc_download_task_runner.run());

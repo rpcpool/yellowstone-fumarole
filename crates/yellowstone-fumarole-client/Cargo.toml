@@ -40,6 +40,7 @@ semver = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tokio-stream = { workspace = true }
+tokio-util = "0.7"
 tonic = { workspace = true, features = ["tls-native-roots", "tls-ring", "gzip", "zstd"] }
 tonic-prost = { workspace = true }
 tower = { workspace = true }
