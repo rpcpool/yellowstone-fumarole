@@ -282,7 +282,7 @@ use {
     runtime::{
         state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
         tokio::{
-            DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, LegacyGrpcDownloadTaskRunner,
+            DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels,
             TokioFumeDragonsmouthRuntime,
         },
     },
@@ -496,10 +496,7 @@ pub struct FumaroleSubscribeConfig {
     /// If set to `true`, [`FumaroleSubscribeConfig::commit_interval`] will be ignored.
     pub no_commit: bool,
 
-    ///
-    /// Whether to enable sharded block download. If enabled, the fumarole will download block in shards and reassemble them in the client.
-    /// set to `true` by default.
-    ///
+    #[deprecated(note = "This field is deprecated and will be removed in a future version. Sharded block download is now always enabled if the fumarole service version supports it.")]
     pub enable_sharded_block_download: bool,
 }
 
@@ -691,23 +688,11 @@ impl FumaroleClient {
             );
         }
         const SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION: u64 = 39;
-        let use_sharded_downlaod = config.enable_sharded_block_download
-            && semver_version
+        let fumarole_frontend_version_supported = semver_version
                 .filter(|v| v.minor > SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION)
                 .is_none();
 
-        if config.enable_sharded_block_download && !use_sharded_downlaod {
-            tracing::warn!(
-                "Sharded block download is enabled in the config, but the fumarole service version {} does not support it. Falling back to non-sharded download.",
-                version.version
-            );
-        }
-
-        if use_sharded_downlaod {
-            tracing::debug!("using sharded block download");
-        } else {
-            tracing::debug!("using non-sharded block download");
-        }
+        assert!(fumarole_frontend_version_supported, "Fumarole service version {} is not supported", SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION);
 
         let request = Arc::new(request);
         assert!(
@@ -740,15 +725,9 @@ impl FumaroleClient {
             .await
             .expect("failed to send initial join");
 
-        let resp = if use_sharded_downlaod {
-            self.inner
-                .subscribe_v2(ReceiverStream::new(fume_control_plane_rx))
-                .await?
-        } else {
-            self.inner
-                .subscribe(ReceiverStream::new(fume_control_plane_rx))
-                .await?
-        };
+        let resp = self.inner
+            .subscribe_v2(ReceiverStream::new(fume_control_plane_rx))
+            .await?;
 
         let mut streaming = resp.into_inner();
         let fume_control_plane_tx = fume_control_plane_tx.clone();
@@ -794,35 +773,18 @@ impl FumaroleClient {
         let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(100);
         let (download_result_tx, download_result_rx) = mpsc::channel(1000);
 
-        let download_task_runner_jh = if use_sharded_downlaod {
-            let grpc_download_task_runner = runtime::tokio::GrpcShardedDownloadOrchestrator::new(
-                data_plane_channel_vec,
-                self.connector.clone(),
-                download_task_runner_cnc_rx,
-                download_task_queue_rx,
-                download_result_tx,
-                config.max_failed_slot_download_attempt,
-                Arc::clone(&request),
-                config.concurrent_download_limit_per_tcp,
-                dragonsmouth_outlet.clone(),
-            );
-            handle.spawn(grpc_download_task_runner.run())
-        } else {
-            let grpc_download_task_runner = LegacyGrpcDownloadTaskRunner::new(
-                data_plane_channel_vec,
-                self.connector.clone(),
-                download_task_runner_cnc_rx,
-                download_task_queue_rx,
-                download_result_tx,
-                config.max_failed_slot_download_attempt,
-                Arc::clone(&request),
-                config.concurrent_download_limit_per_tcp.get()
-                    * config.num_data_plane_tcp_connections.get() as usize,
-                dragonsmouth_outlet.clone(),
-            );
-
-            handle.spawn(grpc_download_task_runner.run())
-        };
+        let grpc_download_task_runner = runtime::tokio::ShardedDownloadOrchestrator::new(
+            data_plane_channel_vec,
+            self.connector.clone(),
+            download_task_runner_cnc_rx,
+            download_task_queue_rx,
+            download_result_tx,
+            config.max_failed_slot_download_attempt,
+            Arc::clone(&request),
+            config.concurrent_download_limit_per_tcp,
+            dragonsmouth_outlet.clone(),
+        );
+        let download_task_runner_jh = handle.spawn(grpc_download_task_runner.run());
 
         let download_task_runner_chans = DownloadTaskRunnerChannels {
             download_task_queue_tx,
@@ -850,7 +812,6 @@ impl FumaroleClient {
             last_history_poll: Default::default(),
             no_commit: config.no_commit,
             stop: false,
-            enable_sharded_block_download: use_sharded_downlaod,
         };
         let fumarole_rt_jh = handle.spawn(tokio_rt.run());
         let fut = async move {
