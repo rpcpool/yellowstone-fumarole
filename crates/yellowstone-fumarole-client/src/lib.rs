@@ -266,6 +266,7 @@
 //! [`HoL`]: https://en.wikipedia.org/wiki/Head-of-line_blocking
 
 pub mod config;
+pub mod error;
 
 #[cfg(feature = "prometheus")]
 pub mod metrics;
@@ -274,13 +275,15 @@ pub(crate) mod grpc;
 pub(crate) mod runtime;
 pub(crate) mod util;
 
-pub use crate::runtime::tokio::{DataplaneErrorKind, DataplaneStreamError};
-
+pub use crate::error::{
+    ConnectError, DataplaneErrorKind, DataplaneStreamError, FumaroleSubscribeError,
+    InvalidMetadataHeader,
+};
 use {
     crate::proto::GetSlotRangeRequest,
     config::FumaroleConfig,
     futures::{
-        StreamExt,
+        Sink, SinkExt, Stream, StreamExt,
         future::{Either, select},
     },
     proto::control_response::Response,
@@ -288,8 +291,7 @@ use {
         state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
         tokio::{
             ControlPlaneConnector, ControlPlaneStreamError, DEFAULT_GC_INTERVAL,
-            DownloadTaskRunnerChannels,
-            TokioFumeDragonsmouthRuntime,
+            DownloadTaskRunnerChannels, TokioFumeDragonsmouthRuntime,
         },
     },
     semver::Version,
@@ -301,14 +303,12 @@ use {
     },
     tokio::sync::mpsc,
     tonic::{
-        metadata::{
-            Ascii, MetadataKey, MetadataValue,
-            errors::{InvalidMetadataKey, InvalidMetadataValue},
-        },
+        metadata::{Ascii, MetadataKey, MetadataValue},
         service::{Interceptor, interceptor::InterceptedService},
         transport::{Channel, ClientTlsConfig},
     },
     uuid::Uuid,
+    yellowstone_grpc_proto::geyser::SubscribeRequest,
 };
 
 mod solana {
@@ -364,26 +364,6 @@ pub struct FumaroleClientBuilder {
     pub with_compression: bool,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum InvalidMetadataHeader {
-    #[error(transparent)]
-    InvalidMetadataKey(#[from] InvalidMetadataKey),
-    #[error(transparent)]
-    InvalidMetadataValue(#[from] InvalidMetadataValue),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ConnectError {
-    #[error(transparent)]
-    InvalidUri(#[from] http::uri::InvalidUri),
-    #[error(transparent)]
-    TransportError(#[from] tonic::transport::Error),
-    #[error(transparent)]
-    InvalidXToken(#[from] tonic::metadata::errors::InvalidMetadataValue),
-    #[error(transparent)]
-    InvalidMetadataHeader(#[from] InvalidMetadataHeader),
-}
-
 ///
 /// Default gRPC buffer capacity
 ///
@@ -431,30 +411,136 @@ pub struct FumaroleClient {
     inner: GrpcFumaroleClient,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum DragonsmouthSubscribeError {
-    #[error(transparent)]
-    GrpcStatus(#[from] tonic::Status),
-    #[error("grpc stream closed")]
-    StreamClosed,
+pub struct FumaroleSubscription {
+    stream: FumaroleStream,
+    sink: FumaroleSink,
 }
 
-
-#[derive(Debug, thiserror::Error)]
-pub enum FumaroleSubscribeError {
-    #[error("control plane disconnected")]
-    ControlPlaneDisconnected,
-    #[error("slot not found")]
-    SlotNotFound,
-    #[error("invalid subscribe filter: {0}")]
-    InvalidSubscribeFilter(String),
-    #[error(transparent)]
-    DataPlane(#[from] DataplaneStreamError),
-    #[error("grpc stream closed")]
-    StreamClosed,
+pub struct FumaroleSink {
+    inner: mpsc::Sender<geyser::SubscribeRequest>,
 }
 
-pub type FumaroleStream = mpsc::Receiver<Result<geyser::SubscribeUpdate, FumaroleSubscribeError>>;
+pub struct FumaroleStream {
+    inner: mpsc::Receiver<Result<geyser::SubscribeUpdate, FumaroleSubscribeError>>,
+}
+
+impl Stream for FumaroleStream {
+    type Item = Result<geyser::SubscribeUpdate, FumaroleSubscribeError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.inner.poll_recv(cx)
+    }
+}
+
+impl Sink<SubscribeRequest> for FumaroleSink {
+    type Error = tonic::Status;
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        if self.get_mut().inner.is_closed() {
+            std::task::Poll::Ready(Err(tonic::Status::unavailable(
+                "subscribe request channel is closed",
+            )))
+        } else {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    fn start_send(
+        self: std::pin::Pin<&mut Self>,
+        item: SubscribeRequest,
+    ) -> Result<(), Self::Error> {
+        match self.get_mut().inner.try_send(item) {
+            Ok(()) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Err(
+                tonic::Status::resource_exhausted("subscribe request channel is full"),
+            ),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(
+                tonic::Status::unavailable("subscribe request channel is closed"),
+            ),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        if self.get_mut().inner.is_closed() {
+            std::task::Poll::Ready(Err(tonic::Status::unavailable(
+                "subscribe request channel is closed",
+            )))
+        } else {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        if self.get_mut().inner.is_closed() {
+            std::task::Poll::Ready(Err(tonic::Status::unavailable(
+                "subscribe request channel is closed",
+            )))
+        } else {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+}
+
+impl Stream for FumaroleSubscription {
+    type Item = Result<geyser::SubscribeUpdate, FumaroleSubscribeError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.stream.poll_next_unpin(cx)
+    }
+}
+
+impl Sink<SubscribeRequest> for FumaroleSubscription {
+    type Error = tonic::Status;
+
+    fn poll_ready(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.sink.poll_ready_unpin(cx)
+    }
+
+    fn start_send(
+        mut self: std::pin::Pin<&mut Self>,
+        item: SubscribeRequest,
+    ) -> Result<(), Self::Error> {
+        self.sink.start_send_unpin(item)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.sink.poll_flush_unpin(cx)
+    }
+
+    fn poll_close(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.sink.poll_close_unpin(cx)
+    }
+}
+
+impl FumaroleSubscription {
+    pub fn split(self) -> (FumaroleSink, FumaroleStream) {
+        (self.sink, self.stream)
+    }
+}
 
 ///
 /// Configuration for the Fumarole subscription session
@@ -508,7 +594,9 @@ pub struct FumaroleSubscribeConfig {
     /// If set to `true`, [`FumaroleSubscribeConfig::commit_interval`] will be ignored.
     pub no_commit: bool,
 
-    #[deprecated(note = "This field is deprecated and will be removed in a future version. Sharded block download is now always enabled if the fumarole service version supports it.")]
+    #[deprecated(
+        note = "This field is deprecated and will be removed in a future version. Sharded block download is now always enabled if the fumarole service version supports it."
+    )]
     pub enable_sharded_block_download: bool,
 }
 
@@ -531,20 +619,6 @@ impl Default for FumaroleSubscribeConfig {
             enable_sharded_block_download: true,
         }
     }
-}
-
-pub enum FumeControlPlaneError {
-    Disconnected,
-}
-
-pub enum FumeDataPlaneError {
-    Disconnected,
-}
-
-pub enum FumaroleError {
-    ControlPlaneDisconnected,
-    DataPlaneDisconnected,
-    InvalidSubscribeRequest,
 }
 
 ///
@@ -578,8 +652,19 @@ fn string_pairs_to_metadata_header(
     headers
         .into_iter()
         .map(|(k, v)| {
-            let key = MetadataKey::from_bytes(k.as_ref().as_bytes())?;
-            let value: MetadataValue<Ascii> = v.as_ref().try_into()?;
+            let key_string = k.as_ref().to_owned();
+            let key = MetadataKey::from_bytes(key_string.as_bytes()).map_err(|err| {
+                InvalidMetadataHeader::InvalidMetadataKey {
+                    key: key_string.clone(),
+                    source: Some(Box::new(err)),
+                }
+            })?;
+            let value: MetadataValue<Ascii> = v.as_ref().try_into().map_err(|err| {
+                InvalidMetadataHeader::InvalidMetadataValue {
+                    key: key_string,
+                    source: Some(Box::new(err)),
+                }
+            })?;
             Ok((key, value))
         })
         .collect()
@@ -601,8 +686,15 @@ impl FumaroleClient {
         let mut tonic_endpoints = Vec::with_capacity(1);
         #[allow(clippy::single_element_loop)]
         for endpoint_str in [config.endpoint.clone()] {
-            let endpoints = Endpoint::from_shared(endpoint_str)?
-                .tls_config(ClientTlsConfig::new().with_native_roots())?
+            let endpoints = Endpoint::from_shared(endpoint_str.clone())
+                .map_err(|err| ConnectError::InvalidEndpoint {
+                    endpoint: endpoint_str.clone(),
+                    source: Some(Box::new(err)),
+                })?
+                .tls_config(ClientTlsConfig::new().with_native_roots())
+                .map_err(|err| ConnectError::TlsConfiguration {
+                    source: Some(Box::new(err)),
+                })?
                 .initial_connection_window_size(connection_window_size)
                 .initial_stream_window_size(stream_window_size)
                 .http2_adaptive_window(config.enable_http2_adaptive_window);
@@ -615,7 +707,12 @@ impl FumaroleClient {
             connect_cnt: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
 
-        let client = connector.connect().await?;
+        let client = connector
+            .connect()
+            .await
+            .map_err(|err| ConnectError::Transport {
+                source: Some(Box::new(err)),
+            })?;
         Ok(FumaroleClient {
             connector,
             inner: client,
@@ -638,7 +735,7 @@ impl FumaroleClient {
         &mut self,
         subscriber_name: S,
         request: geyser::SubscribeRequest,
-    ) -> Result<DragonsmouthAdapterSession, tonic::Status>
+    ) -> Result<FumaroleSubscription, tonic::Status>
     where
         S: AsRef<str>,
     {
@@ -657,7 +754,7 @@ impl FumaroleClient {
         consumer_group_name: S,
         request: geyser::SubscribeRequest,
         config: FumaroleSubscribeConfig,
-    ) -> Result<DragonsmouthAdapterSession, tonic::Status>
+    ) -> Result<FumaroleSubscription, tonic::Status>
     where
         S: AsRef<str>,
     {
@@ -676,7 +773,7 @@ impl FumaroleClient {
         request: geyser::SubscribeRequest,
         config: FumaroleSubscribeConfig,
         handle: tokio::runtime::Handle,
-    ) -> Result<DragonsmouthAdapterSession, tonic::Status>
+    ) -> Result<FumaroleSubscription, tonic::Status>
     where
         S: AsRef<str>,
     {
@@ -692,10 +789,14 @@ impl FumaroleClient {
         }
         const SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION: u64 = 39;
         let fumarole_frontend_version_supported = semver_version
-                .filter(|v| v.minor > SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION)
-                .is_none();
+            .filter(|v| v.minor > SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION)
+            .is_none();
 
-        assert!(fumarole_frontend_version_supported, "Fumarole service version {} is not supported", SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION);
+        assert!(
+            fumarole_frontend_version_supported,
+            "Fumarole service version {} is not supported",
+            SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION
+        );
 
         let request = Arc::new(request);
         assert!(
@@ -716,12 +817,15 @@ impl FumaroleClient {
         let initial_join = JoinControlPlane {
             consumer_group_name: Some(subscriber_name.as_ref().to_string()),
         };
-        let (fume_control_plane_tx, mut fume_control_plane_rx) = self.subscribe(initial_join).await?;
+        let (fume_control_plane_tx, mut fume_control_plane_rx) =
+            self.subscribe(initial_join).await?;
         let control_response = match fume_control_plane_rx.next().await {
             Some(Ok(resp)) => resp,
             Some(Err(ControlPlaneStreamError::Disconnected(err))) => {
                 tracing::error!("control plane disconnected before init: {err}");
-                return Err(tonic::Status::unavailable("control plane disconnected before init"));
+                return Err(tonic::Status::unavailable(
+                    "control plane disconnected before init",
+                ));
             }
             Some(Err(ControlPlaneStreamError::ApplicationError(err))) => {
                 tracing::error!("control plane application error before init: {err}");
@@ -815,13 +919,14 @@ impl FumaroleClient {
                 }
             }
         };
-        let fumarole_handle = handle.spawn(fut);
-        let dm_session = DragonsmouthAdapterSession {
-            sink: dm_tx,
-            source: dragonsmouth_inlet,
-            fumarole_handle,
+        let _fumarole_handle = handle.spawn(fut);
+        let subscription = FumaroleSubscription {
+            sink: FumaroleSink { inner: dm_tx },
+            stream: FumaroleStream {
+                inner: dragonsmouth_inlet,
+            },
         };
-        Ok(dm_session)
+        Ok(subscription)
     }
 
     pub async fn list_consumer_groups(

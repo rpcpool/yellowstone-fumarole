@@ -2,6 +2,7 @@ use {
     clap::Parser,
     solana_pubkey::Pubkey,
     std::{collections::HashMap, path::PathBuf},
+    tokio_stream::StreamExt,
     yellowstone_fumarole_client::{
         DragonsmouthAdapterSession, FumaroleClient, config::FumaroleConfig,
     },
@@ -64,24 +65,16 @@ async fn subscribe(args: SubscribeArgs, config: FumaroleConfig) {
         .await
         .expect("Failed to connect to fumarole");
 
-    let dragonsmouth_session = fumarole_client
+    let subscription = fumarole_client
         .dragonsmouth_subscribe(args.name, request)
         .await
         .expect("Failed to subscribe");
 
-    let DragonsmouthAdapterSession {
-        sink: _,
-        mut source,
-        mut fumarole_handle,
-    } = dragonsmouth_session;
+    let (_, mut source) = subscription.split();
 
     loop {
         tokio::select! {
-            result = &mut fumarole_handle => {
-                eprintln!("Fumarole handle closed: {:?}", result);
-                break;
-            }
-            maybe = source.recv() => {
+            maybe = source.next() => {
                 match maybe {
                     None => {
                         eprintln!("Source closed");
