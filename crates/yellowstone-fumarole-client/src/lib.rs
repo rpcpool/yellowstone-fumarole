@@ -279,12 +279,16 @@ pub use crate::runtime::tokio::{DataplaneErrorKind, DataplaneStreamError};
 use {
     crate::proto::GetSlotRangeRequest,
     config::FumaroleConfig,
-    futures::future::{Either, select},
+    futures::{
+        StreamExt,
+        future::{Either, select},
+    },
     proto::control_response::Response,
     runtime::{
         state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
         tokio::{
-            DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels,
+            ControlPlaneConnector, ControlPlaneStreamError, DEFAULT_GC_INTERVAL,
+            DownloadTaskRunnerChannels,
             TokioFumeDragonsmouthRuntime,
         },
     },
@@ -296,7 +300,6 @@ use {
         time::{Duration, Instant},
     },
     tokio::sync::mpsc,
-    tokio_stream::wrappers::ReceiverStream,
     tonic::{
         metadata::{
             Ascii, MetadataKey, MetadataValue,
@@ -305,7 +308,6 @@ use {
         service::{Interceptor, interceptor::InterceptedService},
         transport::{Channel, ClientTlsConfig},
     },
-    util::grpc::into_bounded_mpsc_rx,
     uuid::Uuid,
 };
 
@@ -706,34 +708,31 @@ impl FumaroleClient {
             "refresh_tip_stats_interval must be greater than or equal to 5 seconds"
         );
 
-        use {proto::ControlCommand, runtime::tokio::DragonsmouthSubscribeRequestBidi};
+        use runtime::tokio::DragonsmouthSubscribeRequestBidi;
 
         let (dragonsmouth_outlet, dragonsmouth_inlet) =
             mpsc::channel(DEFAULT_DRAGONSMOUTH_CAPACITY);
-        let (fume_control_plane_tx, fume_control_plane_rx) = mpsc::channel(100);
 
         let initial_join = JoinControlPlane {
             consumer_group_name: Some(subscriber_name.as_ref().to_string()),
         };
-        let initial_join_command = ControlCommand {
-            command: Some(proto::control_command::Command::InitialJoin(initial_join)),
+        let (fume_control_plane_tx, mut fume_control_plane_rx) = self.subscribe(initial_join).await?;
+        let control_response = match fume_control_plane_rx.next().await {
+            Some(Ok(resp)) => resp,
+            Some(Err(ControlPlaneStreamError::Disconnected(err))) => {
+                tracing::error!("control plane disconnected before init: {err}");
+                return Err(tonic::Status::unavailable("control plane disconnected before init"));
+            }
+            Some(Err(ControlPlaneStreamError::ApplicationError(err))) => {
+                tracing::error!("control plane application error before init: {err}");
+                return Err(tonic::Status::internal("control plane init failed"));
+            }
+            None => {
+                return Err(tonic::Status::unavailable(
+                    "control plane stream closed before init",
+                ));
+            }
         };
-
-        // IMPORTANT: Make sure we send the request here before we subscribe to the stream
-        // Otherwise this will block until timeout by remote server.
-        fume_control_plane_tx
-            .send(initial_join_command)
-            .await
-            .expect("failed to send initial join");
-
-        let resp = self.inner
-            .subscribe_v2(ReceiverStream::new(fume_control_plane_rx))
-            .await?;
-
-        let mut streaming = resp.into_inner();
-        let fume_control_plane_tx = fume_control_plane_tx.clone();
-        let control_response = streaming.message().await?.expect("none");
-        let fume_control_plane_rx = into_bounded_mpsc_rx(100, streaming);
         let response = control_response.response.expect("none");
         let Response::Init(initial_state) = response else {
             panic!("unexpected initial response: {response:?}")
@@ -790,6 +789,7 @@ impl FumaroleClient {
             subscribe_request: request,
             download_task_runner_chans,
             persistent_subscriber_name: subscriber_name.as_ref().to_string(),
+            control_plane_connector: self.clone(),
             control_plane_tx: fume_control_plane_tx,
             control_plane_rx: fume_control_plane_rx,
             dragonsmouth_outlet,

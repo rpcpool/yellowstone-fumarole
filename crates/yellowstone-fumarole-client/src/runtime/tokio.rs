@@ -17,12 +17,12 @@ use {
             DownloadBlockShard, GetChainTipResponse, JoinControlPlane, PollBlockchainHistory,
             control_response::Response, data_command::Command, data_response,
         },
-        util::grpc::into_bounded_mpsc_rx,
     },
     futures::StreamExt,
     solana_clock::Slot,
     std::{
         collections::{HashMap, VecDeque},
+        error::Error as StdError,
         future::Future,
         pin::Pin,
         sync::Arc,
@@ -75,7 +75,10 @@ pub enum BackgroundJobResult {
 ///
 /// Drives the Fumarole State-Machine ([`FumaroleSM`]) using Async I/O.
 ///
-pub(crate) struct TokioFumeDragonsmouthRuntime {
+pub(crate) struct TokioFumeDragonsmouthRuntime<C>
+where
+    C: ControlPlaneConnector,
+{
     pub sm: FumaroleSM,
     #[allow(dead_code)]
     pub blockchain_id: Vec<u8>,
@@ -84,8 +87,9 @@ pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub dragonsmouth_bidi: DragonsmouthSubscribeRequestBidi,
     pub subscribe_request: Arc<SubscribeRequest>,
     pub persistent_subscriber_name: String,
-    pub control_plane_tx: mpsc::Sender<proto::ControlCommand>,
-    pub control_plane_rx: mpsc::Receiver<Result<proto::ControlResponse, tonic::Status>>,
+    pub control_plane_connector: C,
+    pub control_plane_tx: C::ControlPlaneSink,
+    pub control_plane_rx: C::ControlPlaneStream,
     pub dragonsmouth_outlet:
         mpsc::Sender<Result<geyser::SubscribeUpdate, FumaroleSubscribeError>>,
     pub commit_interval: Duration,
@@ -141,7 +145,100 @@ enum LoopInstruction {
     ErrorStop,
 }
 
-impl TokioFumeDragonsmouthRuntime {
+pub type BoxedProtocolError = Box<dyn StdError + Send + Sync + 'static>;
+
+#[derive(Debug)]
+pub enum ControlPlaneStreamError {
+    Disconnected(BoxedProtocolError),
+    ApplicationError(BoxedProtocolError),
+}
+
+impl std::fmt::Display for ControlPlaneStreamError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Disconnected(err) => write!(f, "control plane disconnected: {err}"),
+            Self::ApplicationError(err) => write!(f, "control plane application error: {err}"),
+        }
+    }
+}
+
+impl StdError for ControlPlaneStreamError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::Disconnected(err) | Self::ApplicationError(err) => Some(err.as_ref()),
+        }
+    }
+}
+
+
+pub trait ControlPlaneConnector {
+    type SubscribeError: StdError + Send + Sync + 'static;
+
+    type ControlPlaneSink: Sink<proto::ControlCommand> + Send + Unpin;
+    type ControlPlaneStream: Stream<Item = Result<proto::ControlResponse, ControlPlaneStreamError>>
+        + Unpin;
+
+    type SubscribeFut: Future<
+            Output = Result<(Self::ControlPlaneSink, Self::ControlPlaneStream), Self::SubscribeError>,
+        > + Send;
+
+    fn subscribe(&self, initial_join: JoinControlPlane) -> Self::SubscribeFut;
+}
+
+impl ControlPlaneConnector for FumaroleClient {
+    type SubscribeError = tonic::Status;
+    type ControlPlaneSink = PollSender<proto::ControlCommand>;
+    type ControlPlaneStream = ReceiverStream<Result<proto::ControlResponse, ControlPlaneStreamError>>;
+    type SubscribeFut = Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        (Self::ControlPlaneSink, Self::ControlPlaneStream),
+                        Self::SubscribeError,
+                    >,
+                > + Send,
+        >,
+    >;
+
+    fn subscribe(&self, initial_join: JoinControlPlane) -> Self::SubscribeFut {
+        let mut client = self.inner.clone();
+        Box::pin(async move {
+            let (control_plane_tx, control_plane_rx) = mpsc::channel(100);
+            let initial_join_command = ControlCommand {
+                command: Some(proto::control_command::Command::InitialJoin(initial_join)),
+            };
+            control_plane_tx
+                .send(initial_join_command)
+                .await
+                .expect("failed to send initial join");
+
+            let resp = client.subscribe_v2(ReceiverStream::new(control_plane_rx)).await?;
+            let mut streaming = resp.into_inner();
+
+            let (bounded_tx, bounded_rx) = mpsc::channel(100);
+            tokio::spawn(async move {
+                while let Some(result) = streaming.message().await.transpose() {
+                    let mapped = result.map_err(|status| match status.code() {
+                        Code::Unavailable | Code::DataLoss | Code::Internal => {
+                            ControlPlaneStreamError::Disconnected(Box::new(status))
+                        }
+                        _ => ControlPlaneStreamError::ApplicationError(Box::new(status)),
+                    });
+                    if bounded_tx.send(mapped).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            Ok((PollSender::new(control_plane_tx), ReceiverStream::new(bounded_rx)))
+        })
+    }
+}
+
+impl<C> TokioFumeDragonsmouthRuntime<C>
+where
+    C: ControlPlaneConnector,
+{
     fn handle_control_response(&mut self, control_response: proto::ControlResponse) {
         let Some(response) = control_response.response else {
             return;
@@ -187,7 +284,9 @@ impl TokioFumeDragonsmouthRuntime {
                 self.sm.unprocessed_blockchain_event.len()
             );
             let cmd = build_poll_history_cmd(Some(self.sm.committable_offset));
-            self.control_plane_tx.send(cmd).await.expect("disconnected");
+            if self.control_plane_tx.send(cmd).await.is_err() {
+                panic!("control plane disconnected");
+            }
             self.last_history_poll = Some(Instant::now());
         }
     }
@@ -277,7 +376,7 @@ impl TokioFumeDragonsmouthRuntime {
         self.control_plane_tx
             .send(build_commit_offset_cmd(self.sm.committable_offset))
             .await
-            .expect("failed to commit offset");
+            .unwrap_or_else(|_| panic!("failed to commit offset"));
         #[cfg(feature = "prometheus")]
         {
             use crate::metrics::set_max_offset_committed;
@@ -358,71 +457,60 @@ impl TokioFumeDragonsmouthRuntime {
         }
     }
 
-    async fn rejoin_controle_plane(&mut self) -> Result<(), tonic::Status> {
+    async fn rejoin_controle_plane(&mut self) -> Result<(), C::SubscribeError> {
         self.last_history_poll = None;
-        let (fume_control_plane_tx, fume_control_plane_rx) = mpsc::channel(100);
-
         let initial_join = JoinControlPlane {
             consumer_group_name: Some(self.persistent_subscriber_name.clone()),
         };
-        let initial_join_command = ControlCommand {
-            command: Some(proto::control_command::Command::InitialJoin(initial_join)),
-        };
-
-        // IMPORTANT: Make sure we send the request here before we subscribe to the stream
-        // Otherwise this will block until timeout by remote server.
-        fume_control_plane_tx
-            .send(initial_join_command)
+        let (control_plane_tx, mut control_plane_rx) =
+            self.control_plane_connector.subscribe(initial_join).await?;
+        let initial_response = control_plane_rx
+            .next()
             .await
-            .expect("failed to send initial join");
-
-        let resp =
-            self.fumarole_client
-                .inner
-                .subscribe_v2(ReceiverStream::new(fume_control_plane_rx))
-                .await?;
-        self.control_plane_tx = fume_control_plane_tx;
-        let mut streaming_rx = resp.into_inner();
-        let initial_reponse = streaming_rx.message().await?.expect("init");
-        self.control_plane_rx = into_bounded_mpsc_rx(100, streaming_rx);
-
-        let response = initial_reponse.response.expect("none");
+            .expect("control plane closed before init")
+            .expect("control plane init error");
+        let response = initial_response.response.expect("none");
         let Response::Init(initial_state) = response else {
             panic!("unexpected initial response: {response:?}")
         };
+        self.control_plane_tx = control_plane_tx;
+        self.control_plane_rx = control_plane_rx;
         tracing::info!("rejoined control plane with initial state: {initial_state:?}");
         Ok(())
     }
 
     async fn handle_control_plane_resp(
         &mut self,
-        result: Result<proto::ControlResponse, tonic::Status>,
+        result: Result<proto::ControlResponse, ControlPlaneStreamError>,
     ) -> LoopInstruction {
         match result {
             Ok(control_response) => {
                 self.handle_control_response(control_response);
                 LoopInstruction::Continue
             }
-            Err(e) => {
-                if matches!(
-                    e.code(),
-                    Code::Unavailable | Code::DataLoss | Code::Internal
-                ) {
-                    tracing::warn!(
-                        "control plane connection lost with error: {e:?}, attempting to rejoin..."
-                    );
-                    match self.rejoin_controle_plane().await {
-                        Ok(_) => LoopInstruction::Continue,
-                        Err(e) => {
-                            tracing::error!("failed to rejoin control plane with error: {e:?}");
-                            let _ = self.dragonsmouth_outlet.send(Err(e.into())).await;
-                            LoopInstruction::ErrorStop
-                        }
+            Err(ControlPlaneStreamError::Disconnected(e)) => {
+                tracing::warn!(
+                    "control plane connection lost with error: {e:?}, attempting to rejoin..."
+                );
+                match self.rejoin_controle_plane().await {
+                    Ok(_) => LoopInstruction::Continue,
+                    Err(e) => {
+                        tracing::error!("failed to rejoin control plane with error: {e:?}");
+                        let _ = self
+                            .dragonsmouth_outlet
+                            .send(Err(FumaroleSubscribeError::ControlPlaneDisconnected))
+                            .await;
+                        LoopInstruction::ErrorStop
                     }
-                } else {
-                    let _ = self.dragonsmouth_outlet.send(Err(e.into())).await;
-                    LoopInstruction::ErrorStop
                 }
+            }
+            Err(ControlPlaneStreamError::ApplicationError(e)) => {
+                tracing::error!("control plane application error: {e:?}");
+                let _ = self
+                    .dragonsmouth_outlet
+                    .send(Err(FumaroleSubscribeError::ControlPlaneDisconnected))
+                    .await;
+                LoopInstruction::ErrorStop
             }
         }
     }
@@ -519,7 +607,7 @@ impl TokioFumeDragonsmouthRuntime {
                     // self.subscribe_request = subscribe_request
                     self.handle_new_subscribe_request(subscribe_request).await;
                 }
-                control_response = self.control_plane_rx.recv() => {
+                control_response = self.control_plane_rx.next() => {
                     match control_response {
                         Some(result) => {
                             match self.handle_control_plane_resp(result).await {
