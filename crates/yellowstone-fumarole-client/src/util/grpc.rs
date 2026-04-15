@@ -1,4 +1,9 @@
-use {tokio::sync::mpsc, tonic::Streaming};
+use {
+    futures::Stream,
+    std::{future::Future, pin::Pin, task::Poll},
+    tokio::sync::mpsc,
+    tonic::Streaming,
+};
 
 pub fn into_bounded_mpsc_rx<T>(
     capacity: usize,
@@ -16,4 +21,10 @@ where
         }
     });
     rx
+}
+
+pub trait GrpcConnector {
+    type Response: Send + 'static;
+
+    async fn subscribe(&self) -> Result<Streaming<Self::Response>, tonic::Status>;
 }

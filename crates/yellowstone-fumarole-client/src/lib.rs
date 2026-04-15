@@ -273,6 +273,7 @@ pub mod metrics;
 
 pub(crate) mod grpc;
 pub(crate) mod core;
+pub(crate) mod connectors;
 pub(crate) mod util;
 
 pub use crate::error::{
@@ -288,11 +289,9 @@ use {
     },
     proto::control_response::Response,
     core::{
+        ports::{ControlPlaneConnector, ControlPlaneStreamError},
         state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
-        runtime::{
-            ControlPlaneConnector, ControlPlaneStreamError, DEFAULT_GC_INTERVAL,
-            DownloadTaskRunnerChannels, FumaroleAsyncRuntime,
-        },
+        runtime::{DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, FumaroleAsyncRuntime},
     },
     semver::Version,
     std::{
