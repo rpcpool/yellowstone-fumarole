@@ -1,0 +1,64 @@
+version: 2
+
+before:
+    hooks:
+        - bash -c 'echo "YELLOWSTONE_GRPC_CLIENT_VERSION=$(cargo --quiet metadata --format-version 1 | jq -r '\''.packages[] | select(.name=="yellowstone-grpc-client") | .version'\'')" >> "$GITHUB_ENV"'
+
+builds:
+    - id: fume
+      builder: rust
+      binary: fume
+      targets:
+          - x86_64-unknown-linux-gnu
+      flags:
+          - --release
+          - --bin=fume
+          - -p=yellowstone-fumarole-cli
+
+    - id: example-fumarole
+      builder: rust
+      binary: example-fumarole
+      targets:
+          - x86_64-unknown-linux-gnu
+      flags:
+          - --release
+          - --bin=example-fumarole
+          - -p=yellowstone-fumarole-client-simple
+
+    - id: dragonsmouth
+      builder: rust
+      binary: dragonsmouth
+      targets:
+          - x86_64-unknown-linux-gnu
+      flags:
+          - --release
+          - --bin=dragonsmouth
+          - -p=yellowstone-fumarole-client-simple
+
+archives:
+    - id: fume
+      name_template: fume-linux-amd64
+      formats: [binary]
+      ids:
+          - fume
+
+    - id: example-fumarole
+      name_template: example-fumarole-linux-amd64
+      formats: [binary]
+      ids:
+          - example-fumarole
+
+    - id: dragonsmouth
+      name_template: dragonsmouth-linux-amd64
+      formats: [binary]
+      ids:
+          - dragonsmouth
+
+release:
+    disable: "{{ .Prerelease }}"
+    header: |
+        rust {{ .Env.RUST_VERSION }}
+
+changelog:
+    sort: asc
+    use: github
