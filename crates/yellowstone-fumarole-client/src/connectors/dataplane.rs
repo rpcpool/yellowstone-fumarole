@@ -76,11 +76,8 @@ impl FumaroleDataplaneConnector for FumaroleGrpcConnector {
     >;
 
     fn subscribe_data(&self) -> Self::DataplaneSubscribeFut {
-        let connector = self.clone();
+        let mut client = self.connect_lazy();
         Box::pin(async move {
-            let mut client = connector.connect().await.map_err(|e| {
-                tonic::Status::unavailable(format!("failed to connect data plane: {e}"))
-            })?;
             let (tx, rx) = mpsc::channel(100);
             let response = client.subscribe_data(ReceiverStream::new(rx)).await?;
             let sink: Self::DataplaneSink = Box::pin(create_dataplane_sink(tx));

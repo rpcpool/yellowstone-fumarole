@@ -275,7 +275,6 @@ pub mod metrics;
 pub(crate) mod connectors;
 pub(crate) mod core;
 pub(crate) mod grpc;
-pub(crate) mod util;
 
 pub use crate::{
     error::{
@@ -337,6 +336,9 @@ use {
     proto::{JoinControlPlane, fumarole_client::FumaroleClient as TonicFumaroleClient},
     tonic::transport::Endpoint,
 };
+
+const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 
 #[derive(Clone)]
 struct FumeInterceptor {
@@ -410,7 +412,7 @@ pub(crate) type GrpcFumaroleClient =
 ///
 #[derive(Clone)]
 pub struct FumaroleClient {
-    connector: FumaroleGrpcConnector,
+    pub(crate) connector: FumaroleGrpcConnector,
     inner: GrpcFumaroleClient,
 }
 
@@ -621,9 +623,12 @@ impl FumaroleClient {
                 .map_err(|err| ConnectError::TlsConfiguration {
                     source: Some(Box::new(err)),
                 })?
+                .tcp_nodelay(true)
+                .connect_timeout(DEFAULT_CONNECTION_TIMEOUT)
+                .tcp_keepalive(Some(DEFAULT_KEEPALIVE_INTERVAL))
                 .initial_connection_window_size(connection_window_size)
                 .initial_stream_window_size(stream_window_size)
-                .http2_adaptive_window(config.enable_http2_adaptive_window);
+                .http2_adaptive_window(true);
             tonic_endpoints.push(endpoints);
         }
 

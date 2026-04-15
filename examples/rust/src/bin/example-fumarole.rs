@@ -70,8 +70,8 @@ async fn subscribe(args: SubscribeArgs, config: FumaroleConfig) {
         .await
         .expect("Failed to subscribe");
 
-    let (_, mut source) = subscription.split();
-
+    let (_, source) = subscription.split();
+    let mut source = source.like_dragonsmouth();
     loop {
         tokio::select! {
             maybe = source.next() => {

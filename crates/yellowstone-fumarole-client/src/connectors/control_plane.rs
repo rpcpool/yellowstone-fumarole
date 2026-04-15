@@ -4,19 +4,22 @@ use {
         core::ports::{ControlPlaneConnector, ControlPlaneStreamError},
         proto::{self, ControlCommand, JoinControlPlane},
     },
-    futures::Future,
+    futures::{Future, Stream, StreamExt},
     std::pin::Pin,
     tokio::sync::mpsc,
     tokio_stream::wrappers::ReceiverStream,
     tokio_util::sync::PollSender,
-    tonic::Code,
+    tonic::{Code, Streaming},
 };
+
+pub struct GrpcControlPlaneStream {
+    inner: Streaming<proto::ControlResponse>,
+}
 
 impl ControlPlaneConnector for FumaroleClient {
     type SubscribeError = tonic::Status;
     type ControlPlaneSink = PollSender<proto::ControlCommand>;
-    type ControlPlaneStream =
-        ReceiverStream<Result<proto::ControlResponse, ControlPlaneStreamError>>;
+    type ControlPlaneStream = GrpcControlPlaneStream;
     type SubscribeFut = Pin<
         Box<
             dyn Future<
@@ -29,7 +32,7 @@ impl ControlPlaneConnector for FumaroleClient {
     >;
 
     fn subscribe(&self, initial_join: JoinControlPlane) -> Self::SubscribeFut {
-        let mut client = self.inner.clone();
+        let mut client = self.connector.connect_lazy();
         Box::pin(async move {
             let (control_plane_tx, control_plane_rx) = mpsc::channel(100);
             let initial_join_command = ControlCommand {
@@ -43,27 +46,35 @@ impl ControlPlaneConnector for FumaroleClient {
             let resp = client
                 .subscribe_v2(ReceiverStream::new(control_plane_rx))
                 .await?;
-            let mut streaming = resp.into_inner();
+            let streaming = resp.into_inner();
 
-            let (bounded_tx, bounded_rx) = mpsc::channel(100);
-            tokio::spawn(async move {
-                while let Some(result) = streaming.message().await.transpose() {
-                    let mapped = result.map_err(|status| match status.code() {
-                        Code::Unavailable | Code::DataLoss | Code::Internal => {
-                            ControlPlaneStreamError::Disconnected(Box::new(status))
-                        }
-                        _ => ControlPlaneStreamError::ApplicationError(Box::new(status)),
-                    });
-                    if bounded_tx.send(mapped).await.is_err() {
-                        break;
-                    }
-                }
-            });
+            let streaming = GrpcControlPlaneStream { inner: streaming };
 
-            Ok((
-                PollSender::new(control_plane_tx),
-                ReceiverStream::new(bounded_rx),
-            ))
+            Ok((PollSender::new(control_plane_tx), streaming))
         })
+    }
+}
+
+impl Stream for GrpcControlPlaneStream {
+    type Item = Result<proto::ControlResponse, ControlPlaneStreamError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        match self.inner.poll_next_unpin(cx) {
+            std::task::Poll::Ready(Some(Ok(resp))) => std::task::Poll::Ready(Some(Ok(resp))),
+            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+            std::task::Poll::Ready(Some(Err(status))) => {
+                let err = match status.code() {
+                    Code::Unavailable | Code::DataLoss | Code::Internal => {
+                        ControlPlaneStreamError::Disconnected(Box::new(status))
+                    }
+                    _ => ControlPlaneStreamError::ApplicationError(Box::new(status)),
+                };
+                std::task::Poll::Ready(Some(Err(err)))
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
     }
 }

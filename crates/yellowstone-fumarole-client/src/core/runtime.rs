@@ -13,12 +13,12 @@ use {
     crate::{
         FumaroleClient,
         error::FumaroleSubscribeError,
-        stream::FumaroleEvent,
         proto::{
             self, BlockFilters, CommitOffset, ControlCommand, DataCommand, DataResponse,
             DownloadBlockShard, GetChainTipResponse, JoinControlPlane, PollBlockchainHistory,
             control_response::Response, data_command::Command, data_response,
         },
+        stream::FumaroleEvent,
     },
     futures::{Sink, SinkExt, Stream, StreamExt},
     rustc_hash::FxHashSet,
@@ -93,6 +93,9 @@ where
 }
 
 const DEFAULT_HISTORY_POLL_SIZE: i64 = 100;
+const CONTROL_PLANE_REJOIN_MAX_ATTEMPTS: usize = 3;
+const CONTROL_PLANE_REJOIN_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+const CONTROL_PLANE_REJOIN_BACKOFF: Duration = Duration::from_secs(2);
 
 const fn build_poll_history_cmd(from: Option<FumeOffset>) -> ControlCommand {
     ControlCommand {
@@ -223,6 +226,7 @@ where
             else {
                 break;
             };
+            tracing::debug!(slot = download_request.slot, "scheduling download task");
             let download_task_args = DownloadTaskArgs { download_request };
             permit.send(download_task_args);
         }
@@ -399,22 +403,53 @@ where
                 tracing::warn!(
                     "control plane connection lost with error: {e:?}, attempting to rejoin..."
                 );
-                match self.rejoin_controle_plane().await {
-                    Ok(_) => LoopInstruction::Continue,
-                    Err(rejoin_err) => {
-                        tracing::error!(
-                            "failed to rejoin control plane with error: {rejoin_err:?}"
-                        );
-                        tracing::error!("original disconnect cause before rejoin attempt: {e:?}");
-                        let _ = self
-                            .dragonsmouth_outlet
-                            .send(Err(FumaroleSubscribeError::ControlPlaneRejoinFailed {
-                                details: Some(Box::new(rejoin_err)),
-                            }))
-                            .await;
-                        LoopInstruction::ErrorStop
+                for attempt in 1..=CONTROL_PLANE_REJOIN_MAX_ATTEMPTS {
+                    tracing::warn!(
+                        "control plane rejoin attempt {attempt}/{CONTROL_PLANE_REJOIN_MAX_ATTEMPTS}"
+                    );
+
+                    match tokio::time::timeout(
+                        CONTROL_PLANE_REJOIN_ATTEMPT_TIMEOUT,
+                        self.rejoin_controle_plane(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => {
+                            tracing::info!(
+                                "control plane rejoin succeeded on attempt {attempt}/{CONTROL_PLANE_REJOIN_MAX_ATTEMPTS}"
+                            );
+                            return LoopInstruction::Continue;
+                        }
+                        Ok(Err(rejoin_err)) => {
+                            tracing::warn!(
+                                "control plane rejoin attempt {attempt}/{CONTROL_PLANE_REJOIN_MAX_ATTEMPTS} failed: {rejoin_err:?}"
+                            );
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                "control plane rejoin attempt {attempt}/{CONTROL_PLANE_REJOIN_MAX_ATTEMPTS} timed out after {:?}",
+                                CONTROL_PLANE_REJOIN_ATTEMPT_TIMEOUT
+                            );
+                        }
+                    }
+
+                    if attempt < CONTROL_PLANE_REJOIN_MAX_ATTEMPTS {
+                        tokio::time::sleep(CONTROL_PLANE_REJOIN_BACKOFF).await;
                     }
                 }
+
+                tracing::error!(
+                    "exhausted control plane rejoin attempts ({CONTROL_PLANE_REJOIN_MAX_ATTEMPTS}) after disconnect: {e:?}"
+                );
+                let _ = self
+                    .dragonsmouth_outlet
+                    .send(Err(FumaroleSubscribeError::ControlPlaneRejoinFailed {
+                        details: Some(Box::new(std::io::Error::other(format!(
+                            "exhausted control plane rejoin attempts ({CONTROL_PLANE_REJOIN_MAX_ATTEMPTS})"
+                        )))),
+                    }))
+                    .await;
+                LoopInstruction::ErrorStop
             }
             Err(ControlPlaneStreamError::ApplicationError(e)) => {
                 tracing::error!("control plane application error: {e:?}");
@@ -462,7 +497,12 @@ where
     fn handle_non_critical_job_result(&mut self, result: BackgroundJobResult) {
         match result {
             BackgroundJobResult::UpdateTip(get_tip_response) => {
-                tracing::debug!("received get tip response: {get_tip_response:?}");
+                tracing::debug!(
+                    last_committed_offset = self.sm.last_committed_offset,
+                    committable_offset = self.sm.committable_offset,
+                    "received get tip response: {:?}",
+                    get_tip_response.shard_to_max_offset_map
+                );
                 let GetChainTipResponse {
                     shard_to_max_offset_map,
                     ..
@@ -561,7 +601,10 @@ where
                 }
 
                 _ = tokio::time::sleep_until(commit_deadline.into()) => {
-                    tracing::trace!("commit deadline reached");
+                    tracing::debug!(
+                        download_queue_capacity = self.download_task_runner_chans.download_task_queue_tx.capacity(),
+                        "commit deadline reached"
+                    );
                     self.commit_offset().await;
                 }
                 _ = tokio::time::sleep_until(get_tip_deadline.into()) => {
@@ -636,6 +679,7 @@ enum DedupKey {
 
 const DEDUP_WINDOW_SIZE: usize = 100_000;
 const ORCHESTRATOR_DOWNLOADER_QUEUE_CAPACITY: usize = 2;
+const PENDING_SHARD_DOWNLOAD_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Default, Debug, Clone)]
 struct DedupState {
@@ -720,7 +764,6 @@ impl DedupState {
             UpdateOneof::Entry(msg) => Some(DedupKey::Entry { index: msg.index }),
         }
     }
-
 }
 
 pub(crate) struct PipelinedShardDownloader<Outlet> {
@@ -893,7 +936,6 @@ where
                             .await
                             .is_err()
                         {
-                            tracing::error!("failed to send update to outlet: outlet disconnected");
                             return Err((ShardDownloaderErrorKind::SinkClosed, dedup_state));
                         }
                         if outlet
@@ -907,7 +949,7 @@ where
                 data_response::Response::BlockShardDownloadFinish(footer) => {
                     dedup_state.mark_shard_done(footer.slot, footer.shard_indices[0]);
                     dedup_state.shrink_seen_if_needed();
-                    tracing::debug!(
+                    tracing::trace!(
                         "shard {} for slot {} download finished, dedup state updated",
                         footer.shard_indices[0],
                         footer.slot
@@ -1163,6 +1205,11 @@ struct QueuedShardDownload {
     attempt: usize,
 }
 
+struct PendingShardDownload {
+    downloader_idx: usize,
+    queued: QueuedShardDownload,
+}
+
 /// Orchestrates shard downloads across `N` pinned downloader workers.
 ///
 /// Affinity model:
@@ -1195,6 +1242,7 @@ pub(crate) struct ShardedDownloadOrchestrator<C> {
     subscribe_request: Arc<SubscribeRequest>,
     dragonsmouth_outlet: mpsc::Sender<Result<FumaroleEvent, FumaroleSubscribeError>>,
     total_shard_downloaders: usize,
+    pending_shard_downloads: VecDeque<PendingShardDownload>,
 }
 
 ///
@@ -1246,6 +1294,7 @@ where
             total_shard_downloaders,
             completed_tx,
             completed_rx,
+            pending_shard_downloads: VecDeque::new(),
         }
     }
 
@@ -1267,26 +1316,53 @@ where
     ///
     /// Normal scheduling and retry paths should call this helper when they
     /// want default affinity routing.
-    async fn route_queued_download(&self, queued: QueuedShardDownload) {
+    fn route_queued_download(&mut self, queued: QueuedShardDownload) {
         let shard_idx = queued.request.shard_idx as u32;
         let downloader_idx = self.queue_idx_for_shard(shard_idx);
-        self.route_queued_download_to_downloader(downloader_idx, queued)
-            .await;
+        self.route_queued_download_to_downloader(downloader_idx, queued);
     }
 
     /// Routes a queued download to an explicit downloader queue index.
     ///
     /// Recovery paths use this to preserve lane ownership when recycling work
     /// from a failed downloader.
-    async fn route_queued_download_to_downloader(
-        &self,
+    fn route_queued_download_to_downloader(
+        &mut self,
         downloader_idx: usize,
         queued: QueuedShardDownload,
     ) {
-        self.shard_download_queue_txs[downloader_idx]
-            .send(queued)
-            .await
-            .expect("shard downloader queue unexpectedly closed");
+        match self.shard_download_queue_txs[downloader_idx].try_send(queued) {
+            Ok(()) => {}
+            Err(TrySendError::Full(queued)) => {
+                self.pending_shard_downloads
+                    .push_back(PendingShardDownload {
+                        downloader_idx,
+                        queued,
+                    });
+            }
+            Err(TrySendError::Closed(_)) => {
+                panic!("shard downloader queue unexpectedly closed");
+            }
+        }
+    }
+
+    fn drain_pending_shard_downloads(&mut self) {
+        while let Some(pending) = self.pending_shard_downloads.pop_front() {
+            match self.shard_download_queue_txs[pending.downloader_idx].try_send(pending.queued) {
+                Ok(()) => {}
+                Err(TrySendError::Full(queued)) => {
+                    self.pending_shard_downloads
+                        .push_front(PendingShardDownload {
+                            downloader_idx: pending.downloader_idx,
+                            queued,
+                        });
+                    break;
+                }
+                Err(TrySendError::Closed(_)) => {
+                    panic!("shard downloader queue unexpectedly closed");
+                }
+            }
+        }
     }
 
     /// Re-enqueues scheduled (already-issued) shard downloads back to the
@@ -1316,8 +1392,7 @@ where
                 },
                 attempt: scheduled_shard_download.attempt,
             };
-            self.route_queued_download_to_downloader(downloader_idx, queued)
-                .await;
+            self.route_queued_download_to_downloader(downloader_idx, queued);
         }
     }
 
@@ -1338,8 +1413,7 @@ where
                 expected_downloader_idx, downloader_idx,
                 "queued shard affinity mismatch during recycle"
             );
-            self.route_queued_download_to_downloader(downloader_idx, queued_download)
-                .await;
+            self.route_queued_download_to_downloader(downloader_idx, queued_download);
         }
     }
 
@@ -1441,10 +1515,12 @@ where
                     observe_slot_download_duration(elapsed);
                 }
                 let block_meta = completed.block_meta;
-                tracing::debug!("slot {slot} download completed");
+                tracing::trace!("slot {slot} download completed");
                 let _ = self
                     .dragonsmouth_outlet
-                    .send(Ok(FumaroleEvent::Data(block_meta.expect("missing block meta"))))
+                    .send(Ok(FumaroleEvent::Data(
+                        block_meta.expect("missing block meta"),
+                    )))
                     .await;
                 let _ = self
                     .dragonsmouth_outlet
@@ -1489,7 +1565,7 @@ where
                 request: download_shard_task,
                 attempt: 1,
             };
-            self.route_queued_download(queued_download).await;
+            self.route_queued_download(queued_download);
         }
         let slot_progress = ShardedSlotDownloadProgress {
             started_at: Instant::now(),
@@ -1571,8 +1647,7 @@ where
                                     },
                                     attempt: attempt + 1,
                                 };
-                                self.route_queued_download_to_downloader(downloader_idx, queued)
-                                    .await;
+                                self.route_queued_download_to_downloader(downloader_idx, queued);
                             } else {
                                 self.recycle_scheduled_shard_downloads(
                                     downloader_idx,
@@ -1622,9 +1697,7 @@ where
     }
 
     fn can_poll_download_task_queue(&self) -> bool {
-        self.shard_download_queue_txs
-            .iter()
-            .all(|tx| tx.capacity() > 0)
+        self.pending_shard_downloads.is_empty()
     }
 
     pub(crate) async fn run(mut self) -> Result<(), DownloadBlockError> {
@@ -1633,6 +1706,7 @@ where
         }
 
         while !self.outlet.is_closed() {
+            self.drain_pending_shard_downloads();
             let can_poll_download_task = self.can_poll_download_task_queue();
             tokio::select! {
                 maybe = self.cnc_rx.recv() => {
@@ -1679,6 +1753,7 @@ where
                     let (task_id, result) = result.expect("download task result");
                     self.handle_shard_downloader_result(task_id, result).await?;
                 }
+                _ = tokio::time::sleep(PENDING_SHARD_DOWNLOAD_RETRY_INTERVAL), if !self.pending_shard_downloads.is_empty() => {}
             }
         }
         tracing::debug!("Closing GrpcDownloadTaskRunner loop");
@@ -1745,6 +1820,7 @@ mod tests {
             subscribe_request: Arc::new(SubscribeRequest::default()),
             dragonsmouth_outlet: dragonsmouth_outlet_tx,
             total_shard_downloaders: 1,
+            pending_shard_downloads: VecDeque::new(),
         };
 
         drop(cnc_tx);
@@ -1790,6 +1866,7 @@ mod tests {
             subscribe_request: Arc::new(SubscribeRequest::default()),
             dragonsmouth_outlet: dragonsmouth_outlet_tx,
             total_shard_downloaders,
+            pending_shard_downloads: VecDeque::new(),
         };
 
         drop(cnc_tx);
@@ -2048,10 +2125,7 @@ mod tests {
 
         assert!(matches!(result, Ok((None, _))));
 
-        let forwarded = outlet_rx
-            .next()
-            .await
-            .expect("expected forwarded update");
+        let forwarded = outlet_rx.next().await.expect("expected forwarded update");
         let Ok(FumaroleEvent::Data(forwarded)) = forwarded else {
             panic!("expected data event")
         };
