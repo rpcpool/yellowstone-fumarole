@@ -272,7 +272,7 @@ pub mod error;
 pub mod metrics;
 
 pub(crate) mod grpc;
-pub(crate) mod runtime;
+pub(crate) mod core;
 pub(crate) mod util;
 
 pub use crate::error::{
@@ -287,11 +287,11 @@ use {
         future::{Either, select},
     },
     proto::control_response::Response,
-    runtime::{
+    core::{
         state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
-        tokio::{
+        runtime::{
             ControlPlaneConnector, ControlPlaneStreamError, DEFAULT_GC_INTERVAL,
-            DownloadTaskRunnerChannels, TokioFumeDragonsmouthRuntime,
+            DownloadTaskRunnerChannels, FumaroleAsyncRuntime,
         },
     },
     semver::Version,
@@ -731,6 +731,9 @@ impl FumaroleClient {
     ///
     /// Subscribe to a stream of updates from the Fumarole service
     ///
+    #[deprecated(
+        note = "This method is deprecated. Please use `subscribe` instead."
+    )]
     pub async fn dragonsmouth_subscribe<S>(
         &mut self,
         subscriber_name: S,
@@ -739,40 +742,22 @@ impl FumaroleClient {
     where
         S: AsRef<str>,
     {
-        let handle = tokio::runtime::Handle::current();
-        self.dragonsmouth_subscribe_with_config_on(
+        self.dragonsmouth_subscribe_with_config(
             subscriber_name,
             request,
             Default::default(),
-            handle,
         )
         .await
     }
 
+    #[deprecated(
+        note = "This method is deprecated. Please use `subscribe_with_config` instead."
+    )]
     pub async fn dragonsmouth_subscribe_with_config<S>(
-        &mut self,
-        consumer_group_name: S,
-        request: geyser::SubscribeRequest,
-        config: FumaroleSubscribeConfig,
-    ) -> Result<FumaroleSubscription, tonic::Status>
-    where
-        S: AsRef<str>,
-    {
-        let handle = tokio::runtime::Handle::current();
-        self.dragonsmouth_subscribe_with_config_on(consumer_group_name, request, config, handle)
-            .await
-    }
-
-    ///
-    /// Same as [`FumaroleClient::dragonsmouth_subscribe`] but allows you to specify a custom runtime handle
-    /// the underlying fumarole runtie will use
-    ///
-    pub async fn dragonsmouth_subscribe_with_config_on<S>(
         &mut self,
         subscriber_name: S,
         request: geyser::SubscribeRequest,
         config: FumaroleSubscribeConfig,
-        handle: tokio::runtime::Handle,
     ) -> Result<FumaroleSubscription, tonic::Status>
     where
         S: AsRef<str>,
@@ -809,7 +794,7 @@ impl FumaroleClient {
             "refresh_tip_stats_interval must be greater than or equal to 5 seconds"
         );
 
-        use runtime::tokio::DragonsmouthSubscribeRequestBidi;
+        use core::runtime::DragonsmouthSubscribeRequestBidi;
 
         let (dragonsmouth_outlet, dragonsmouth_inlet) =
             mpsc::channel(DEFAULT_DRAGONSMOUTH_CAPACITY);
@@ -867,7 +852,7 @@ impl FumaroleClient {
         let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(100);
         let (download_result_tx, download_result_rx) = mpsc::channel(1000);
 
-        let grpc_download_task_runner = runtime::tokio::ShardedDownloadOrchestrator::new(
+        let grpc_download_task_runner = core::runtime::ShardedDownloadOrchestrator::new(
             self.connector.clone(),
             download_task_runner_cnc_rx,
             download_task_queue_rx,
@@ -877,7 +862,7 @@ impl FumaroleClient {
             total_shard_downloaders,
             dragonsmouth_outlet.clone(),
         );
-        let download_task_runner_jh = handle.spawn(grpc_download_task_runner.run());
+        let download_task_runner_jh = tokio::spawn(grpc_download_task_runner.run());
 
         let download_task_runner_chans = DownloadTaskRunnerChannels {
             download_task_queue_tx,
@@ -885,7 +870,7 @@ impl FumaroleClient {
             download_result_rx,
         };
 
-        let tokio_rt = TokioFumeDragonsmouthRuntime {
+        let tokio_rt = FumaroleAsyncRuntime {
             sm,
             fumarole_client: self.clone(),
             blockchain_id: initial_state.blockchain_id,
@@ -907,7 +892,7 @@ impl FumaroleClient {
             no_commit: config.no_commit,
             stop: false,
         };
-        let fumarole_rt_jh = handle.spawn(tokio_rt.run());
+        let fumarole_rt_jh = tokio::spawn(tokio_rt.run());
         let fut = async move {
             let either = select(download_task_runner_jh, fumarole_rt_jh).await;
             match either {
@@ -919,7 +904,7 @@ impl FumaroleClient {
                 }
             }
         };
-        let _fumarole_handle = handle.spawn(fut);
+        let _fumarole_handle = tokio::spawn(fut);
         let subscription = FumaroleSubscription {
             sink: FumaroleSink { inner: dm_tx },
             stream: FumaroleStream {

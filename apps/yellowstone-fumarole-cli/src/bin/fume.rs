@@ -1,3 +1,4 @@
+use futures::StreamExt;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 use {
@@ -28,7 +29,7 @@ use {
     tracing_subscriber::EnvFilter,
     yellowstone_fumarole_cli::prom::prometheus_server,
     yellowstone_fumarole_client::{
-        DragonsmouthAdapterSession, FumaroleClient, FumaroleSubscribeConfig,
+        FumaroleClient, FumaroleSubscribeConfig,
         config::FumaroleConfig,
         proto::{
             ConsumerGroupInfo, CreateConsumerGroupRequest, DeleteConsumerGroupRequest,
@@ -53,20 +54,8 @@ const FUMAROLE_CONFIG_ENV: &str = "FUMAROLE_CONFIG";
 pub struct FumeConfig {
     #[serde(default, flatten)]
     fumarole: FumaroleConfig,
-
-    // Experimental(xx) feature to enable sharded downloads
-    #[serde(
-        default = "FumeConfig::default_enable_sharded_download",
-        alias = "xx_enable_sharded_download"
-    )]
-    enable_sharded_download: bool,
 }
 
-impl FumeConfig {
-    const fn default_enable_sharded_download() -> bool {
-        true
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct PrometheusBindAddr(SocketAddr);
@@ -701,7 +690,6 @@ impl SubscribeArgs {
 async fn subscribe(
     mut client: FumaroleClient,
     args: SubscribeArgs,
-    xx_enable_sharded_download: bool,
 ) {
     let mut out: Box<dyn Write> = if let Some(out) = &args.out {
         Box::new(
@@ -733,20 +721,15 @@ async fn subscribe(
         commit_interval: Duration::from_secs(1),
         num_data_plane_tcp_connections: args.para,
         no_commit: args.no_commit,
-        enable_sharded_block_download: xx_enable_sharded_download,
         concurrent_download_limit_per_tcp: args.con,
         ..Default::default()
     };
-    let dragonsmouth_session = client
+    let fumarole_subscription = client
         .dragonsmouth_subscribe_with_config(cg_name.clone(), request, subscribe_config)
         .await
         .expect("Failed to subscribe");
-    let DragonsmouthAdapterSession {
-        sink: _,
-        mut source,
-        fumarole_handle: _,
-    } = dragonsmouth_session;
 
+    let (_, mut source) = fumarole_subscription.split();
     let mut shutdown = create_shutdown();
 
     loop {
@@ -755,7 +738,7 @@ async fn subscribe(
                 println!("Shutting down...");
                 break;
             }
-            result = source.recv() => {
+            result = source.next() => {
                 let Some(result) = result else {
                     println!("grpc stream closed!");
                     break;
@@ -805,7 +788,6 @@ async fn subscribe(
 async fn block_stats(
     mut client: FumaroleClient,
     args: SubscribeArgs,
-    xx_enable_sharded_download: bool,
 ) {
     let mut out: Box<dyn Write> = if let Some(out) = &args.out {
         Box::new(
@@ -853,19 +835,14 @@ async fn block_stats(
         commit_interval: Duration::from_secs(5),
         num_data_plane_tcp_connections: args.para,
         no_commit: args.no_commit,
-        enable_sharded_block_download: xx_enable_sharded_download,
         ..Default::default()
     };
-    let dragonsmouth_session = client
+    let fumarole_subscription = client
         .dragonsmouth_subscribe_with_config(cg_name.clone(), request, subscribe_config)
         .await
         .expect("Failed to subscribe");
-    let DragonsmouthAdapterSession {
-        sink: _,
-        mut source,
-        fumarole_handle: _,
-    } = dragonsmouth_session;
 
+    let (_, mut fumarole_stream) = fumarole_subscription.split();
     let mut shutdown = create_shutdown();
     #[derive(Default)]
     struct BlockInfo {
@@ -907,7 +884,7 @@ async fn block_stats(
                 block_rate_sma.record(block_count_per_tick as f64);
                 block_count_per_tick = 0;
             }
-            result = source.recv() => {
+            result = fumarole_stream.next() => {
                 let Some(result) = result else {
                     println!("grpc stream closed!");
                     break;
@@ -1090,7 +1067,6 @@ async fn main() {
             subscribe(
                 fumarole_client,
                 subscribe_args,
-                config.enable_sharded_download,
             )
             .await;
         }
@@ -1098,7 +1074,7 @@ async fn main() {
             slot_range(fumarole_client).await;
         }
         Action::Block(blocks_args) => {
-            block_stats(fumarole_client, blocks_args, config.enable_sharded_download).await;
+            block_stats(fumarole_client, blocks_args).await;
         }
     }
 }

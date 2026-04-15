@@ -1,4 +1,4 @@
-pub use crate::runtime::tokio::{DataplaneErrorKind, DataplaneStreamError};
+pub use crate::core::runtime::{DataplaneErrorKind, DataplaneStreamError};
 
 pub type BoxedStdError = Box<dyn std::error::Error + Send + Sync + 'static>;
 

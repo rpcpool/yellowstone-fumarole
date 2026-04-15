@@ -1,3 +1,5 @@
+use tonic::transport;
+
 #[cfg(feature = "prometheus")]
 use crate::metrics::{
     dec_inflight_slot_download, inc_offset_commitment_count, inc_skip_offset_commitment_count,
@@ -71,7 +73,7 @@ pub enum BackgroundJobResult {
 ///
 /// Drives the Fumarole State-Machine ([`FumaroleSM`]) using Async I/O.
 ///
-pub(crate) struct TokioFumeDragonsmouthRuntime<C>
+pub(crate) struct FumaroleAsyncRuntime<C>
 where
     C: ControlPlaneConnector,
 {
@@ -238,7 +240,7 @@ impl ControlPlaneConnector for FumaroleClient {
     }
 }
 
-impl<C> TokioFumeDragonsmouthRuntime<C>
+impl<C> FumaroleAsyncRuntime<C>
 where
     C: ControlPlaneConnector,
 {
@@ -774,6 +776,15 @@ impl DataplaneStreamError {
 impl From<tonic::Status> for DataplaneStreamError {
     fn from(status: tonic::Status) -> Self {
         let message = status.message().to_ascii_lowercase();
+        if let Some(source) = status.source() {
+            if source.downcast_ref::<transport::Error>().is_some() {
+                return Self::new(
+                    DataplaneErrorKind::RecoverableTransport,
+                    status.to_string(),
+                    Some(Box::new(status)),
+                ); 
+            }
+        }
         let kind = match status.code() {
             Code::Unavailable
             | Code::Internal
@@ -1065,7 +1076,7 @@ struct QueuedShardDownload {
 }
 
 /// A trait to abstract the connection and interaction with fumarole data plane.
-pub(crate) trait FumaroleConnector {
+pub(crate) trait FumaroleDataplaneConnector {
     /// The error type for subscribing to data plane.
     type DataplaneSubscribeError: std::error::Error + Send + Sync + 'static;
     /// The error type for sending commands to data plane.
@@ -1090,7 +1101,7 @@ pub(crate) trait FumaroleConnector {
     fn subscribe_data(&self) -> Self::DataplaneSubscribeFut;
 }
 
-impl FumaroleConnector for FumaroleGrpcConnector {
+impl FumaroleDataplaneConnector for FumaroleGrpcConnector {
     type DataplaneSubscribeError = tonic::Status;
     type DataplaneSinkError = DataplaneSinkSendError;
     type DataplaneSink = Pin<Box<dyn Sink<DataCommand, Error = Self::DataplaneSinkError> + Send>>;
@@ -1154,7 +1165,7 @@ pub(crate) struct PipelinedShardDownloaderHandle {
 
 impl<C> ShardedDownloadOrchestrator<C>
 where
-    C: FumaroleConnector + Send + 'static,
+    C: FumaroleDataplaneConnector + Send + 'static,
     DataplaneStreamError: From<C::DataplaneSubscribeError>,
 {
     #[allow(clippy::too_many_arguments)]
@@ -1286,9 +1297,9 @@ where
                 .await;
             if is_slot_complete {
                 let completed = self.slot_download_progression_map.remove(&slot).unwrap();
-                let elapsed = completed.started_at.elapsed();
                 #[cfg(feature = "prometheus")]
                 {
+                    let elapsed = completed.started_at.elapsed();
                     observe_slot_download_duration(elapsed);
                 }
                 let block_meta = completed.block_meta;
@@ -1487,7 +1498,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct TestConnector;
 
-    impl FumaroleConnector for TestConnector {
+    impl FumaroleDataplaneConnector for TestConnector {
         type DataplaneSubscribeError = tonic::Status;
         type DataplaneSinkError = DataplaneSinkSendError;
         type DataplaneSink =
