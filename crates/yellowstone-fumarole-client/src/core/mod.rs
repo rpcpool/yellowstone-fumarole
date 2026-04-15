@@ -1,3 +1,3 @@
-pub mod state_machine;
-pub mod runtime;
 pub mod ports;
+pub mod runtime;
+pub mod state_machine;

@@ -11,7 +11,7 @@ use {
         state_machine::{FumaroleSM, FumeDownloadRequest, FumeOffset, FumeShardIdx},
     },
     crate::{
-        FumaroleClient, GrpcFumaroleClient,
+        FumaroleClient,
         error::FumaroleSubscribeError,
         proto::{
             self, BlockFilters, CommitOffset, ControlCommand, DataCommand, DataResponse,
@@ -20,6 +20,7 @@ use {
         },
     },
     futures::{Sink, SinkExt, Stream, StreamExt},
+    rustc_hash::FxHashSet,
     solana_clock::Slot,
     std::{
         collections::{HashMap, VecDeque},
@@ -194,7 +195,7 @@ where
             .map(|cl| CommitmentLevel::try_from(cl).expect("invalid commitment level"))
     }
 
-    fn schedule_download_task_if_any(&mut self) {
+    async fn schedule_download_task_if_any(&mut self) {
         // This loop drains as many download slot request as possible,
         // limited to available [`DataPlaneBidi`].
         loop {
@@ -505,7 +506,7 @@ where
             let commit_deadline = self.last_commit + self.commit_interval;
 
             self.poll_history_if_needed().await;
-            self.schedule_download_task_if_any();
+            self.schedule_download_task_if_any().await;
             tokio::select! {
                 Some(subscribe_request) = self.dragonsmouth_bidi.rx.recv() => {
                     tracing::debug!("dragonsmouth subscribe request received");
@@ -613,13 +614,128 @@ struct ScheduleShardDownload {
     slot: Slot,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum DedupKey {
+    Account {
+        pubkey: Vec<u8>,
+        txn_signature: Option<Vec<u8>>,
+    },
+    Transaction {
+        index: u64,
+    },
+    Entry {
+        index: u64,
+    },
+}
+
+const DEDUP_WINDOW_SIZE: usize = 100_000;
+const ORCHESTRATOR_DOWNLOADER_QUEUE_CAPACITY: usize = 2;
+
+#[derive(Default, Debug, Clone)]
+struct DedupState {
+    seen: HashMap<(u64, FumeShardIdx), FxHashSet<DedupKey>>,
+    completed_shards: FxHashSet<(u64, FumeShardIdx)>,
+    completed_order: VecDeque<(u64, FumeShardIdx)>,
+}
+
+impl DedupState {
+    /// Returns true when the event should be skipped as duplicate.
+    fn dedup(&mut self, slot: u64, shard_idx: FumeShardIdx, ev: &UpdateOneof) -> bool {
+        if self.is_shard_done(slot, shard_idx) {
+            return true;
+        }
+
+        let Some(key) = Self::key_for_update(ev) else {
+            // Non-deduped event kinds are skipped by default.
+            return true;
+        };
+        let shard_key = (slot, shard_idx);
+        let shard_seen = self.seen.entry(shard_key).or_default();
+        !shard_seen.insert(key)
+    }
+
+    fn mark_shard_done(&mut self, slot: u64, shard_idx: FumeShardIdx) {
+        let shard_key = (slot, shard_idx);
+        if !self.completed_shards.insert(shard_key) {
+            return;
+        }
+        self.completed_order.push_back(shard_key);
+
+        self.seen.remove(&shard_key);
+
+        if self.completed_order.len() > DEDUP_WINDOW_SIZE {
+            if let Some(oldest) = self.completed_order.pop_front() {
+                self.completed_shards.remove(&oldest);
+            }
+        }
+    }
+
+    fn is_shard_done(&self, slot: u64, shard_idx: FumeShardIdx) -> bool {
+        self.completed_shards.contains(&(slot, shard_idx))
+    }
+
+    fn shrink_seen_if_needed(&mut self) {
+        // `seen` is keyed by shard (slot, shard_idx) and is aggressively removed
+        // in `mark_shard_done`, so no additional key-level compaction is required.
+        while self.completed_order.len() > DEDUP_WINDOW_SIZE {
+            if let Some(oldest) = self.completed_order.pop_front() {
+                self.completed_shards.remove(&oldest);
+            }
+        }
+    }
+
+    fn key_for_update(ev: &UpdateOneof) -> Option<DedupKey> {
+        match ev {
+            UpdateOneof::Account(msg) => {
+                if let Some(account_info) = msg.account.as_ref() {
+                    Some(DedupKey::Account {
+                        pubkey: account_info.pubkey.clone(),
+                        txn_signature: account_info.txn_signature.clone(),
+                    })
+                } else {
+                    None
+                }
+            }
+            UpdateOneof::Slot(_) => None,
+            UpdateOneof::Transaction(msg) => {
+                if let Some(tx_info) = msg.transaction.as_ref() {
+                    Some(DedupKey::Transaction {
+                        index: tx_info.index,
+                    })
+                } else {
+                    None
+                }
+            }
+            UpdateOneof::TransactionStatus(msg) => Some(DedupKey::Transaction { index: msg.index }),
+            UpdateOneof::BlockMeta(_)
+            | UpdateOneof::Block(_)
+            | UpdateOneof::Ping(_)
+            | UpdateOneof::Pong(_) => None,
+            UpdateOneof::Entry(msg) => Some(DedupKey::Entry { index: msg.index }),
+        }
+    }
+
+    fn slot_from_update(ev: &UpdateOneof) -> Option<u64> {
+        match ev {
+            UpdateOneof::Account(msg) => Some(msg.slot),
+            UpdateOneof::Slot(msg) => Some(msg.slot),
+            UpdateOneof::Transaction(msg) => Some(msg.slot),
+            UpdateOneof::TransactionStatus(msg) => Some(msg.slot),
+            UpdateOneof::Block(msg) => Some(msg.slot),
+            UpdateOneof::BlockMeta(msg) => Some(msg.slot),
+            UpdateOneof::Entry(msg) => Some(msg.slot),
+            UpdateOneof::Ping(_) | UpdateOneof::Pong(_) => None,
+        }
+    }
+}
+
 pub(crate) struct PipelinedShardDownloader<Outlet> {
     cnc_rx: mpsc::Receiver<Arc<SubscribeRequest>>,
     download_completed_tx: mpsc::Sender<CompletedDownloadBlockShardTask>,
     subscribe_request: Arc<SubscribeRequest>,
     dragonsmouth_outlet: Outlet,
     shard_scheduled_for_download: VecDeque<ScheduleShardDownload>,
-    shard_download_queue: mpsc::UnboundedReceiver<QueuedShardDownload>,
+    shard_download_queue: mpsc::Receiver<QueuedShardDownload>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -698,39 +814,61 @@ enum ShardDownloaderErrorKind {
 
 #[derive(Debug, thiserror::Error)]
 #[error("shard downloader error: {kind}")]
-pub struct ShardDownloaderError {
+struct ShardDownloaderError {
     slot_scheduled_for_download: VecDeque<ScheduleShardDownload>,
-    shard_download_queue_rx: mpsc::UnboundedReceiver<QueuedShardDownload>,
+    shard_download_queue_rx: mpsc::Receiver<QueuedShardDownload>,
+    recyclable_dedup_state: Option<DedupState>,
     kind: ShardDownloaderErrorKind,
 }
 
 pub struct ShardDownloaderRecycleState {
     scheduled_shard_downloads: VecDeque<ScheduleShardDownload>,
-    shard_download_queue_rx: mpsc::UnboundedReceiver<QueuedShardDownload>,
+    shard_download_queue_rx: mpsc::Receiver<QueuedShardDownload>,
+    recyclable_dedup_state: DedupState,
 }
+
+type PipelinedDownloaderOutcome = Result<
+    (Option<CompletedDownloadBlockShardTask>, DedupState),
+    (ShardDownloaderErrorKind, DedupState),
+>;
 
 impl<Outlet> PipelinedShardDownloader<Outlet>
 where
-    Outlet: Sink<Result<SubscribeUpdate, FumaroleSubscribeError>> + Send + 'static,
+    Outlet: Sink<Result<SubscribeUpdate, FumaroleSubscribeError>> + Unpin + Send + 'static,
 {
     async fn pipelined_downloader<Source>(
         mut rx: Source,
-        outlet: Outlet,
+        mut outlet: Outlet,
         completed_slot_tx: mpsc::Sender<CompletedDownloadBlockShardTask>,
-    ) -> Result<Option<CompletedDownloadBlockShardTask>, ShardDownloaderErrorKind>
+        mut dedup_state: DedupState,
+        mut scheduled_shard_rx: mpsc::UnboundedReceiver<(u64, FumeShardIdx)>,
+    ) -> PipelinedDownloaderOutcome
     where
         Source: Stream<Item = Result<DataResponse, DataplaneStreamError>> + Unpin,
     {
-        let mut outlet = Box::pin(outlet);
         let mut total_event_downloaded = 0;
         let mut block_meta: Option<SubscribeUpdate> = None;
+        let mut scheduled_shards = VecDeque::new();
         let mut t = Instant::now();
         tracing::trace!("starting continuous shard downloader loop");
         while let Some(data) = rx.next().await {
-            let resp = data?.response.expect("response");
+            while let Ok(shard_ctx) = scheduled_shard_rx.try_recv() {
+                scheduled_shards.push_back(shard_ctx);
+            }
+
+            let resp = match data {
+                Ok(data) => data.response.expect("response"),
+                Err(err) => {
+                    return Err((ShardDownloaderErrorKind::DataplaneError(err), dedup_state));
+                }
+            };
 
             match resp {
                 data_response::Response::Update(update) => {
+                    if update.update_oneof.as_ref().is_none() {
+                        continue;
+                    }
+
                     total_event_downloaded += 1;
                     #[cfg(feature = "prometheus")]
                     {
@@ -740,13 +878,55 @@ where
                     if matches!(update.update_oneof, Some(UpdateOneof::BlockMeta(_))) {
                         block_meta = Some(update);
                     } else {
-                        if outlet.send(Ok(update)).await.is_err() {
+                        // Dedup here
+                        let (expected_slot, expected_shard_idx) = scheduled_shards
+                            .front()
+                            .map(|(slot, shard_idx)| (*slot, *shard_idx))
+                            .expect("schedule slot must be set");
+                        if dedup_state.dedup(
+                            expected_slot,
+                            expected_shard_idx,
+                            update
+                                .update_oneof
+                                .as_ref()
+                                .expect("update oneof must be set"),
+                        ) {
+                            continue;
+                        }
+
+                        if futures::future::poll_fn(|cx| outlet.poll_ready_unpin(cx))
+                            .await
+                            .is_err()
+                        {
                             tracing::error!("failed to send update to outlet: outlet disconnected");
-                            return Err(ShardDownloaderErrorKind::SinkClosed);
+                            return Err((ShardDownloaderErrorKind::SinkClosed, dedup_state));
+                        }
+                        if outlet.start_send_unpin(Ok(update)).is_err() {
+                            return Err((ShardDownloaderErrorKind::SinkClosed, dedup_state));
                         }
                     }
                 }
                 data_response::Response::BlockShardDownloadFinish(footer) => {
+                    dedup_state.mark_shard_done(footer.slot, footer.shard_indices[0]);
+                    dedup_state.shrink_seen_if_needed();
+                    tracing::debug!(
+                        "shard {} for slot {} download finished, dedup state updated",
+                        footer.shard_indices[0],
+                        footer.slot
+                    );
+                    if let Some((scheduled_slot, scheduled_shard_idx)) =
+                        scheduled_shards.pop_front()
+                    {
+                        debug_assert_eq!(
+                            scheduled_slot, footer.slot,
+                            "slot mismatch for scheduled shard completion"
+                        );
+                        debug_assert_eq!(
+                            scheduled_shard_idx, footer.shard_indices[0],
+                            "shard idx mismatch for scheduled shard completion"
+                        );
+                    }
+
                     let download_time = t.elapsed();
                     #[cfg(feature = "prometheus")]
                     {
@@ -773,20 +953,21 @@ where
                     };
                     if let Err(e) = completed_slot_tx.send(completed).await {
                         let completed = e.0;
-                        return Ok(Some(completed));
+                        return Ok((Some(completed), dedup_state));
                     }
                     t = Instant::now();
                 }
             }
         }
         tracing::trace!("exiting continuous shard downloader loop");
-        Ok(None)
+        Ok((None, dedup_state))
     }
 
     async fn downloader_loop<DataplaneSink, DataplaneStream>(
         mut self,
         mut dataplane_sink: DataplaneSink,
         dataplane_stream: DataplaneStream,
+        dedup_state: DedupState,
     ) -> Result<ShardDownloaderRecycleState, ShardDownloaderError>
     where
         DataplaneSink: Sink<DataCommand> + Send + Unpin + 'static,
@@ -805,9 +986,11 @@ where
                 kind: ShardDownloaderErrorKind::SubscribeDataTxDisconnected,
                 slot_scheduled_for_download: self.shard_scheduled_for_download,
                 shard_download_queue_rx: self.shard_download_queue,
+                recyclable_dedup_state: Some(dedup_state),
             });
         }
         let mut joinset = JoinSet::new();
+        let (scheduled_shard_tx, scheduled_shard_rx) = mpsc::unbounded_channel();
 
         let dragonsmouth_outlet = self.dragonsmouth_outlet;
         let (completed_slot_tx, mut completed_slot_rx) = mpsc::channel(10);
@@ -815,8 +998,11 @@ where
             dataplane_stream,
             dragonsmouth_outlet,
             completed_slot_tx,
+            dedup_state,
+            scheduled_shard_rx,
         ));
 
+        let mut recyclable_dedup_state = None;
         let err = loop {
             let poll_shared_queue = self.shard_scheduled_for_download.len() < 2;
             tokio::select! {
@@ -857,8 +1043,29 @@ where
                 Some(result) = joinset.join_next() => {
                     let result2 = result.expect("join error");
                     match result2 {
-                        Ok(_) => break None,
-                        Err(e) => break Some(e),
+                        Ok((maybe_completed, dedup_state)) => {
+                            recyclable_dedup_state = Some(dedup_state);
+                            if let Some(completed) = maybe_completed {
+                                let expected_shard_download = self
+                                    .shard_scheduled_for_download
+                                    .pop_front()
+                                    .expect("no scheduled shard download");
+                                assert!(
+                                    expected_shard_download.shard_idx == completed.shard_idx,
+                                    "shard idx mismatch"
+                                );
+                                assert!(
+                                    expected_shard_download.block_uid == completed.block_uid,
+                                    "block uid mismatch"
+                                );
+                                let _ = self.download_completed_tx.send(completed).await;
+                            }
+                            break None
+                        }
+                        Err((e, dedup_state)) => {
+                            recyclable_dedup_state = Some(dedup_state);
+                            break Some(e)
+                        },
                     }
 
                 }
@@ -874,6 +1081,7 @@ where
                         attempt: queued_shard_download.attempt,
                     };
                     self.shard_scheduled_for_download.push_back(scheduled_shard_download);
+                    let _ = scheduled_shard_tx.send((queued_shard_download.slot, queued_shard_download.request.shard_idx as u32));
                     let cmd = crate::proto::data_command::Command::DownloadBlockShard(queued_shard_download.request);
                     let result = dataplane_sink.send(DataCommand {
                         command: Some(cmd)
@@ -889,33 +1097,57 @@ where
         };
         drop(completed_slot_rx);
 
-        if let Some(Ok(Ok(Some(completed)))) = joinset.join_next().await {
-            let expected_shard_download = self
-                .shard_scheduled_for_download
-                .pop_front()
-                .expect("no scheduled shard download");
-            assert!(
-                expected_shard_download.shard_idx == completed.shard_idx,
-                "shard idx mismatch"
-            );
-            assert!(
-                expected_shard_download.block_uid == completed.block_uid,
-                "block uid mismatch"
-            );
-            // Notify the caller about completed shard download
-            let _ = self.download_completed_tx.send(completed).await;
-        };
+        if recyclable_dedup_state.is_none() {
+            if let Some(result) = joinset.join_next().await {
+                let result2 = result.expect("join error");
+                match result2 {
+                    Ok((maybe_completed, dedup_state)) => {
+                        recyclable_dedup_state = Some(dedup_state);
+                        if let Some(completed) = maybe_completed {
+                            let expected_shard_download = self
+                                .shard_scheduled_for_download
+                                .pop_front()
+                                .expect("no scheduled shard download");
+                            assert!(
+                                expected_shard_download.shard_idx == completed.shard_idx,
+                                "shard idx mismatch"
+                            );
+                            assert!(
+                                expected_shard_download.block_uid == completed.block_uid,
+                                "block uid mismatch"
+                            );
+                            let _ = self.download_completed_tx.send(completed).await;
+                        }
+                    }
+                    Err((err_kind, dedup_state)) => {
+                        recyclable_dedup_state = Some(dedup_state);
+                        if err.is_none() {
+                            return Err(ShardDownloaderError {
+                                kind: err_kind,
+                                slot_scheduled_for_download: self.shard_scheduled_for_download,
+                                shard_download_queue_rx: self.shard_download_queue,
+                                recyclable_dedup_state,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        let recyclable_dedup_state = recyclable_dedup_state.unwrap_or_default();
 
         if let Some(err_kind) = err {
             Err(ShardDownloaderError {
                 kind: err_kind,
                 slot_scheduled_for_download: self.shard_scheduled_for_download,
                 shard_download_queue_rx: self.shard_download_queue,
+                recyclable_dedup_state: Some(recyclable_dedup_state),
             })
         } else {
             Ok(ShardDownloaderRecycleState {
                 scheduled_shard_downloads: self.shard_scheduled_for_download,
                 shard_download_queue_rx: self.shard_download_queue,
+                recyclable_dedup_state,
             })
         }
     }
@@ -950,8 +1182,8 @@ struct QueuedShardDownload {
 /// 2. The backend can perform better shard download prediction thanks to
 ///    deterministic shard-to-downloader affinity over time.
 pub(crate) struct ShardedDownloadOrchestrator<C> {
-    shard_download_queue_txs: Vec<mpsc::UnboundedSender<QueuedShardDownload>>,
-    shard_download_queue_rxs: Vec<Option<mpsc::UnboundedReceiver<QueuedShardDownload>>>,
+    shard_download_queue_txs: Vec<mpsc::Sender<QueuedShardDownload>>,
+    shard_download_queue_rxs: Vec<Option<mpsc::Receiver<QueuedShardDownload>>>,
     slot_download_progression_map: HashMap<Slot, ShardedSlotDownloadProgress>,
     completed_tx: mpsc::Sender<CompletedDownloadBlockShardTask>,
     completed_rx: mpsc::Receiver<CompletedDownloadBlockShardTask>,
@@ -996,7 +1228,7 @@ where
         let mut shard_download_queue_txs = Vec::with_capacity(total_shard_downloaders);
         let mut shard_download_queue_rxs = Vec::with_capacity(total_shard_downloaders);
         for _ in 0..total_shard_downloaders {
-            let (tx, rx) = mpsc::unbounded_channel();
+            let (tx, rx) = mpsc::channel(ORCHESTRATOR_DOWNLOADER_QUEUE_CAPACITY);
             shard_download_queue_txs.push(tx);
             shard_download_queue_rxs.push(Some(rx));
         }
@@ -1028,7 +1260,7 @@ where
     /// This must happen before recycling, so recovered work is enqueued into
     /// the new queue instance that the next downloader task will consume.
     fn reset_downloader_queue(&mut self, downloader_idx: usize) {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(ORCHESTRATOR_DOWNLOADER_QUEUE_CAPACITY);
         self.shard_download_queue_txs[downloader_idx] = tx;
         self.shard_download_queue_rxs[downloader_idx] = Some(rx);
     }
@@ -1037,23 +1269,25 @@ where
     ///
     /// Normal scheduling and retry paths should call this helper when they
     /// want default affinity routing.
-    fn route_queued_download(&self, queued: QueuedShardDownload) {
+    async fn route_queued_download(&self, queued: QueuedShardDownload) {
         let shard_idx = queued.request.shard_idx as u32;
         let downloader_idx = self.queue_idx_for_shard(shard_idx);
-        self.route_queued_download_to_downloader(downloader_idx, queued);
+        self.route_queued_download_to_downloader(downloader_idx, queued)
+            .await;
     }
 
     /// Routes a queued download to an explicit downloader queue index.
     ///
     /// Recovery paths use this to preserve lane ownership when recycling work
     /// from a failed downloader.
-    fn route_queued_download_to_downloader(
+    async fn route_queued_download_to_downloader(
         &self,
         downloader_idx: usize,
         queued: QueuedShardDownload,
     ) {
         self.shard_download_queue_txs[downloader_idx]
             .send(queued)
+            .await
             .expect("shard downloader queue unexpectedly closed");
     }
 
@@ -1061,16 +1295,16 @@ where
     /// pinned queue of downloader `i`.
     ///
     /// Affinity invariant: for every recycled item, `shard_idx % N == i`.
-    fn recycle_scheduled_shard_downloads(
+    async fn recycle_scheduled_shard_downloads(
         &mut self,
         downloader_idx: usize,
         shard_downloads: VecDeque<ScheduleShardDownload>,
     ) {
         for scheduled_shard_download in shard_downloads {
-            let expected_downloader_idx = self.queue_idx_for_shard(scheduled_shard_download.shard_idx);
+            let expected_downloader_idx =
+                self.queue_idx_for_shard(scheduled_shard_download.shard_idx);
             debug_assert_eq!(
-                expected_downloader_idx,
-                downloader_idx,
+                expected_downloader_idx, downloader_idx,
                 "scheduled shard affinity mismatch during recycle"
             );
             let queued = QueuedShardDownload {
@@ -1084,7 +1318,8 @@ where
                 },
                 attempt: scheduled_shard_download.attempt,
             };
-            self.route_queued_download_to_downloader(downloader_idx, queued);
+            self.route_queued_download_to_downloader(downloader_idx, queued)
+                .await;
         }
     }
 
@@ -1093,25 +1328,27 @@ where
     ///
     /// `try_recv` is used intentionally to perform a non-blocking snapshot drain:
     /// read what is already buffered, then stop when empty.
-    fn recycle_queued_shard_downloads(
+    async fn recycle_queued_shard_downloads(
         &mut self,
         downloader_idx: usize,
-        mut shard_download_queue_rx: mpsc::UnboundedReceiver<QueuedShardDownload>,
+        mut shard_download_queue_rx: mpsc::Receiver<QueuedShardDownload>,
     ) {
         while let Ok(queued_download) = shard_download_queue_rx.try_recv() {
-            let expected_downloader_idx = self.queue_idx_for_shard(queued_download.request.shard_idx as u32);
+            let expected_downloader_idx =
+                self.queue_idx_for_shard(queued_download.request.shard_idx as u32);
             debug_assert_eq!(
-                expected_downloader_idx,
-                downloader_idx,
+                expected_downloader_idx, downloader_idx,
                 "queued shard affinity mismatch during recycle"
             );
-            self.route_queued_download_to_downloader(downloader_idx, queued_download);
+            self.route_queued_download_to_downloader(downloader_idx, queued_download)
+                .await;
         }
     }
 
     async fn spawn_shard_downloader(
         &mut self,
         downloader_idx: usize,
+        recycled_dedup_state: Option<DedupState>,
     ) -> Result<(), DownloadBlockError> {
         let (dataplane_tx, dataplane_stream) = self
             .connector
@@ -1135,7 +1372,11 @@ where
         };
         let ah = self.shard_downloader_js.spawn(async move {
             shard_downloader
-                .downloader_loop(dataplane_tx, dataplane_stream)
+                .downloader_loop(
+                    dataplane_tx,
+                    dataplane_stream,
+                    recycled_dedup_state.unwrap_or_default(),
+                )
                 .await
         });
         let handle = PipelinedShardDownloaderHandle {
@@ -1218,7 +1459,7 @@ where
 
     /// Splits one slot into per-shard downloads and enqueues each shard using
     /// the affinity rule `shard_idx % N`.
-    fn schedule_slot_download_task(&mut self, task_spec: DownloadTaskArgs) {
+    async fn schedule_slot_download_task(&mut self, task_spec: DownloadTaskArgs) {
         if self
             .slot_download_progression_map
             .contains_key(&task_spec.download_request.slot)
@@ -1246,7 +1487,7 @@ where
                 request: download_shard_task,
                 attempt: 1,
             };
-            self.route_queued_download(queued_download);
+            self.route_queued_download(queued_download).await;
         }
         let slot_progress = ShardedSlotDownloadProgress {
             started_at: Instant::now(),
@@ -1284,24 +1525,29 @@ where
         // avoids rerouting work to other downloader indices.
         self.reset_downloader_queue(downloader_idx);
 
-        match result {
+        let recycled_dedup_state = match result {
             Ok(shard_downloader_recycle_state) => {
                 self.recycle_scheduled_shard_downloads(
                     downloader_idx,
                     shard_downloader_recycle_state.scheduled_shard_downloads,
-                );
+                )
+                .await;
                 self.recycle_queued_shard_downloads(
                     downloader_idx,
                     shard_downloader_recycle_state.shard_download_queue_rx,
-                );
+                )
+                .await;
+                Some(shard_downloader_recycle_state.recyclable_dedup_state)
             }
             Err(e) => {
                 let ShardDownloaderError {
                     mut slot_scheduled_for_download,
                     shard_download_queue_rx,
+                    recyclable_dedup_state,
                     kind,
                 } = e;
-                self.recycle_queued_shard_downloads(downloader_idx, shard_download_queue_rx);
+                self.recycle_queued_shard_downloads(downloader_idx, shard_download_queue_rx)
+                    .await;
 
                 match kind {
                     ShardDownloaderErrorKind::DataplaneError(dataplane_err) => {
@@ -1323,19 +1569,22 @@ where
                                     },
                                     attempt: attempt + 1,
                                 };
-                                self.route_queued_download_to_downloader(downloader_idx, queued);
+                                self.route_queued_download_to_downloader(downloader_idx, queued)
+                                    .await;
                             } else {
                                 self.recycle_scheduled_shard_downloads(
                                     downloader_idx,
                                     slot_scheduled_for_download,
-                                );
+                                )
+                                .await;
                                 return Err(DownloadBlockError::FailedDownload(dataplane_err));
                             }
                         }
                         self.recycle_scheduled_shard_downloads(
                             downloader_idx,
                             slot_scheduled_for_download,
-                        );
+                        )
+                        .await;
                     }
                     ShardDownloaderErrorKind::SinkClosed => {
                         return Err(DownloadBlockError::OutletDisconnected);
@@ -1344,13 +1593,16 @@ where
                         self.recycle_scheduled_shard_downloads(
                             downloader_idx,
                             slot_scheduled_for_download,
-                        );
+                        )
+                        .await;
                     }
                 }
+                recyclable_dedup_state
             }
-        }
+        };
 
-        self.spawn_shard_downloader(downloader_idx).await
+        self.spawn_shard_downloader(downloader_idx, recycled_dedup_state)
+            .await
     }
 
     async fn handle_control_command(&mut self, cmd: DownloadTaskRunnerCommand) {
@@ -1367,12 +1619,19 @@ where
         }
     }
 
+    fn can_poll_download_task_queue(&self) -> bool {
+        self.shard_download_queue_txs
+            .iter()
+            .all(|tx| tx.capacity() > 0)
+    }
+
     pub(crate) async fn run(mut self) -> Result<(), DownloadBlockError> {
         for downloader_idx in 0..self.total_shard_downloaders {
-            self.spawn_shard_downloader(downloader_idx).await?;
+            self.spawn_shard_downloader(downloader_idx, None).await?;
         }
 
         while !self.outlet.is_closed() {
+            let can_poll_download_task = self.can_poll_download_task_queue();
             tokio::select! {
                 maybe = self.cnc_rx.recv() => {
                     match maybe {
@@ -1385,10 +1644,10 @@ where
                         }
                     }
                 }
-                maybe_download_task = self.download_task_queue.recv() => {
+                maybe_download_task = self.download_task_queue.recv(), if can_poll_download_task => {
                     match maybe_download_task {
                         Some(download_task) => {
-                            self.schedule_slot_download_task(download_task);
+                            self.schedule_slot_download_task(download_task).await;
                         }
                         None => {
                             tracing::debug!("download task queue disconnected");
@@ -1465,7 +1724,8 @@ mod tests {
         let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(1);
         let (outlet_tx, outlet_rx) = mpsc::channel(8);
         let (dragonsmouth_outlet_tx, dragonsmouth_outlet_rx) = mpsc::channel(8);
-        let (shard_download_queue_tx, shard_download_queue_rx) = mpsc::unbounded_channel();
+        let (shard_download_queue_tx, shard_download_queue_rx) =
+            mpsc::channel(ORCHESTRATOR_DOWNLOADER_QUEUE_CAPACITY);
 
         let orchestrator = ShardedDownloadOrchestrator {
             shard_download_queue_txs: vec![shard_download_queue_tx],
@@ -1507,7 +1767,7 @@ mod tests {
         let mut shard_download_queue_txs = Vec::with_capacity(total_shard_downloaders);
         let mut shard_download_queue_rxs = Vec::with_capacity(total_shard_downloaders);
         for _ in 0..total_shard_downloaders {
-            let (tx, rx) = mpsc::unbounded_channel();
+            let (tx, rx) = mpsc::channel(ORCHESTRATOR_DOWNLOADER_QUEUE_CAPACITY);
             shard_download_queue_txs.push(tx);
             shard_download_queue_rxs.push(Some(rx));
         }
@@ -1546,6 +1806,11 @@ mod tests {
         }
     }
 
+    fn empty_scheduled_shard_rx() -> mpsc::UnboundedReceiver<(u64, FumeShardIdx)> {
+        let (_tx, rx) = mpsc::unbounded_channel();
+        rx
+    }
+
     #[tokio::test]
     async fn sharded_orchestrator_schedules_all_shards_and_dedups_slot() {
         let (mut orchestrator, _outlet_rx, _dragonsmouth_outlet_rx) = make_test_orchestrator();
@@ -1558,9 +1823,11 @@ mod tests {
             commitment_level: CommitmentLevel::Processed,
         };
 
-        orchestrator.schedule_slot_download_task(DownloadTaskArgs {
-            download_request: request.clone(),
-        });
+        orchestrator
+            .schedule_slot_download_task(DownloadTaskArgs {
+                download_request: request.clone(),
+            })
+            .await;
 
         assert!(orchestrator.slot_download_progression_map.contains_key(&77));
         {
@@ -1580,9 +1847,11 @@ mod tests {
         }
 
         // Scheduling the same slot again should be ignored.
-        orchestrator.schedule_slot_download_task(DownloadTaskArgs {
-            download_request: request,
-        });
+        orchestrator
+            .schedule_slot_download_task(DownloadTaskArgs {
+                download_request: request,
+            })
+            .await;
         {
             let queue_rx = orchestrator.shard_download_queue_rxs[0]
                 .as_mut()
@@ -1654,9 +1923,10 @@ mod tests {
 
         let failed_downloader_idx = 1usize;
 
-        let ah = orchestrator
-            .shard_downloader_js
-            .spawn(async { std::future::pending::<Result<ShardDownloaderRecycleState, ShardDownloaderError>>().await });
+        let ah = orchestrator.shard_downloader_js.spawn(async {
+            std::future::pending::<Result<ShardDownloaderRecycleState, ShardDownloaderError>>()
+                .await
+        });
         let task_id = ah.id();
 
         let (cnc_tx, _cnc_rx) = mpsc::channel(1);
@@ -1677,7 +1947,7 @@ mod tests {
             slot: 55,
         });
 
-        let (recycled_tx, recycled_rx) = mpsc::unbounded_channel();
+        let (recycled_tx, recycled_rx) = mpsc::channel(2);
         recycled_tx
             .send(QueuedShardDownload {
                 slot: 56,
@@ -1690,12 +1960,14 @@ mod tests {
                 },
                 attempt: 2,
             })
+            .await
             .expect("recycle queue send should succeed");
         drop(recycled_tx);
 
         let err = ShardDownloaderError {
             slot_scheduled_for_download: scheduled_shard_downloads,
             shard_download_queue_rx: recycled_rx,
+            recyclable_dedup_state: Some(DedupState::default()),
             kind: ShardDownloaderErrorKind::SubscribeDataTxDisconnected,
         };
 
@@ -1746,10 +2018,16 @@ mod tests {
             }),
         ]);
 
-        let result =
-            PipelinedShardDownloader::pipelined_downloader(stream, outlet_tx, completed_tx).await;
+        let result = PipelinedShardDownloader::pipelined_downloader(
+            stream,
+            outlet_tx,
+            completed_tx,
+            DedupState::default(),
+            empty_scheduled_shard_rx(),
+        )
+        .await;
 
-        assert!(matches!(result, Ok(None)));
+        assert!(matches!(result, Ok((None, _))));
 
         let forwarded = outlet_rx
             .next()
@@ -1785,10 +2063,54 @@ mod tests {
 
         let result = PipelinedShardDownloader::<
             futures_mpsc::UnboundedSender<Result<SubscribeUpdate, FumaroleSubscribeError>>,
-        >::pipelined_downloader(stream, outlet_tx, completed_tx)
+        >::pipelined_downloader(
+            stream,
+            outlet_tx,
+            completed_tx,
+            DedupState::default(),
+            empty_scheduled_shard_rx(),
+        )
         .await;
 
-        assert!(matches!(result, Err(ShardDownloaderErrorKind::SinkClosed)));
+        assert!(matches!(
+            result,
+            Err((ShardDownloaderErrorKind::SinkClosed, _))
+        ));
+    }
+
+    #[tokio::test]
+    async fn dedup_state_drops_duplicate_updates() {
+        let mut dedup_state = DedupState::default();
+        let update = UpdateOneof::Entry(yellowstone_grpc_proto::geyser::SubscribeUpdateEntry {
+            slot: 42,
+            index: 7,
+            num_hashes: 0,
+            hash: Vec::new(),
+            executed_transaction_count: 0,
+            starting_transaction_index: 0,
+        });
+
+        assert!(!dedup_state.dedup(42, 0, &update));
+        assert!(dedup_state.dedup(42, 0, &update));
+
+        dedup_state.mark_shard_done(42, 0);
+        assert!(dedup_state.is_shard_done(42, 0));
+
+        // Once shard is marked done, associated keys are released.
+        assert!(!dedup_state.dedup(42, 1, &update));
+    }
+
+    #[tokio::test]
+    async fn dedup_state_skips_non_keyed_updates_by_default() {
+        let mut dedup_state = DedupState::default();
+        let update = UpdateOneof::Slot(SubscribeUpdateSlot {
+            slot: 42,
+            parent: Some(41),
+            status: 1,
+            dead_error: Some(String::new()),
+        });
+
+        assert!(dedup_state.dedup(42, 0, &update));
     }
 
     #[tokio::test]
@@ -1803,11 +2125,17 @@ mod tests {
 
         let result = PipelinedShardDownloader::<
             futures_mpsc::UnboundedSender<Result<SubscribeUpdate, FumaroleSubscribeError>>,
-        >::pipelined_downloader(stream, outlet_tx, completed_tx)
+        >::pipelined_downloader(
+            stream,
+            outlet_tx,
+            completed_tx,
+            DedupState::default(),
+            empty_scheduled_shard_rx(),
+        )
         .await;
 
         match result {
-            Err(ShardDownloaderErrorKind::DataplaneError(err)) => {
+            Err((ShardDownloaderErrorKind::DataplaneError(err), _)) => {
                 assert_eq!(err.kind(), DataplaneErrorKind::RecoverableTransport);
                 assert!(err.is_recoverable());
             }
@@ -1827,11 +2155,17 @@ mod tests {
 
         let result = PipelinedShardDownloader::<
             futures_mpsc::UnboundedSender<Result<SubscribeUpdate, FumaroleSubscribeError>>,
-        >::pipelined_downloader(stream, outlet_tx, completed_tx)
+        >::pipelined_downloader(
+            stream,
+            outlet_tx,
+            completed_tx,
+            DedupState::default(),
+            empty_scheduled_shard_rx(),
+        )
         .await;
 
         match result {
-            Err(ShardDownloaderErrorKind::DataplaneError(err)) => {
+            Err((ShardDownloaderErrorKind::DataplaneError(err), _)) => {
                 assert_eq!(err.kind(), DataplaneErrorKind::SlotNotFound);
                 assert!(!err.is_recoverable());
             }
@@ -1851,11 +2185,17 @@ mod tests {
 
         let result = PipelinedShardDownloader::<
             futures_mpsc::UnboundedSender<Result<SubscribeUpdate, FumaroleSubscribeError>>,
-        >::pipelined_downloader(stream, outlet_tx, completed_tx)
+        >::pipelined_downloader(
+            stream,
+            outlet_tx,
+            completed_tx,
+            DedupState::default(),
+            empty_scheduled_shard_rx(),
+        )
         .await;
 
         match result {
-            Err(ShardDownloaderErrorKind::DataplaneError(err)) => {
+            Err((ShardDownloaderErrorKind::DataplaneError(err), _)) => {
                 assert_eq!(err.kind(), DataplaneErrorKind::InvalidSubscribeFilter);
                 assert!(!err.is_recoverable());
             }

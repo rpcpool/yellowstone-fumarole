@@ -15,7 +15,8 @@ use {
 impl ControlPlaneConnector for FumaroleClient {
     type SubscribeError = tonic::Status;
     type ControlPlaneSink = PollSender<proto::ControlCommand>;
-    type ControlPlaneStream = ReceiverStream<Result<proto::ControlResponse, ControlPlaneStreamError>>;
+    type ControlPlaneStream =
+        ReceiverStream<Result<proto::ControlResponse, ControlPlaneStreamError>>;
     type SubscribeFut = Pin<
         Box<
             dyn Future<
@@ -39,7 +40,9 @@ impl ControlPlaneConnector for FumaroleClient {
                 .await
                 .expect("failed to send initial join");
 
-            let resp = client.subscribe_v2(ReceiverStream::new(control_plane_rx)).await?;
+            let resp = client
+                .subscribe_v2(ReceiverStream::new(control_plane_rx))
+                .await?;
             let mut streaming = resp.into_inner();
 
             let (bounded_tx, bounded_rx) = mpsc::channel(100);
@@ -57,7 +60,10 @@ impl ControlPlaneConnector for FumaroleClient {
                 }
             });
 
-            Ok((PollSender::new(control_plane_tx), ReceiverStream::new(bounded_rx)))
+            Ok((
+                PollSender::new(control_plane_tx),
+                ReceiverStream::new(bounded_rx),
+            ))
         })
     }
 }

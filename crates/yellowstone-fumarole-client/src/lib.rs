@@ -271,9 +271,9 @@ pub mod error;
 #[cfg(feature = "prometheus")]
 pub mod metrics;
 
-pub(crate) mod grpc;
-pub(crate) mod core;
 pub(crate) mod connectors;
+pub(crate) mod core;
+pub(crate) mod grpc;
 pub(crate) mod util;
 
 pub use crate::error::{
@@ -283,16 +283,16 @@ pub use crate::error::{
 use {
     crate::proto::GetSlotRangeRequest,
     config::FumaroleConfig,
+    core::{
+        ports::{ControlPlaneConnector, ControlPlaneStreamError},
+        runtime::{DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, FumaroleAsyncRuntime},
+        state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
+    },
     futures::{
         Sink, SinkExt, Stream, StreamExt,
         future::{Either, select},
     },
     proto::control_response::Response,
-    core::{
-        ports::{ControlPlaneConnector, ControlPlaneStreamError},
-        state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
-        runtime::{DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, FumaroleAsyncRuntime},
-    },
     semver::Version,
     std::{
         collections::HashMap,
@@ -730,9 +730,7 @@ impl FumaroleClient {
     ///
     /// Subscribe to a stream of updates from the Fumarole service
     ///
-    #[deprecated(
-        note = "This method is deprecated. Please use `subscribe` instead."
-    )]
+    #[deprecated(note = "This method is deprecated. Please use `subscribe` instead.")]
     pub async fn dragonsmouth_subscribe<S>(
         &mut self,
         subscriber_name: S,
@@ -741,17 +739,11 @@ impl FumaroleClient {
     where
         S: AsRef<str>,
     {
-        self.dragonsmouth_subscribe_with_config(
-            subscriber_name,
-            request,
-            Default::default(),
-        )
-        .await
+        self.dragonsmouth_subscribe_with_config(subscriber_name, request, Default::default())
+            .await
     }
 
-    #[deprecated(
-        note = "This method is deprecated. Please use `subscribe_with_config` instead."
-    )]
+    #[deprecated(note = "This method is deprecated. Please use `subscribe_with_config` instead.")]
     pub async fn dragonsmouth_subscribe_with_config<S>(
         &mut self,
         subscriber_name: S,
@@ -773,13 +765,13 @@ impl FumaroleClient {
         }
         const SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION: u64 = 39;
         let fumarole_frontend_version_supported = semver_version
-            .filter(|v| v.minor > SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION)
-            .is_none();
+            .as_ref()
+            .filter(|v| v.minor >= SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION)
+            .is_some();
 
         assert!(
             fumarole_frontend_version_supported,
-            "Fumarole service version {} is not supported",
-            SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION
+            "Fumarole service version {semver_version:?} is not supported",
         );
 
         let request = Arc::new(request);

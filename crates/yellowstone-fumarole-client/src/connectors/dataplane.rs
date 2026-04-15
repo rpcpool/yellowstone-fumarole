@@ -62,7 +62,8 @@ impl FumaroleDataplaneConnector for FumaroleGrpcConnector {
     type DataplaneSubscribeError = tonic::Status;
     type DataplaneSinkError = DataplaneSinkSendError;
     type DataplaneSink = Pin<Box<dyn Sink<DataCommand, Error = Self::DataplaneSinkError> + Send>>;
-    type DataplaneStream = Pin<Box<dyn Stream<Item = Result<DataResponse, DataplaneStreamError>> + Send>>;
+    type DataplaneStream =
+        Pin<Box<dyn Stream<Item = Result<DataResponse, DataplaneStreamError>> + Send>>;
     type DataplaneSubscribeFut = Pin<
         Box<
             dyn Future<

@@ -1,9 +1,8 @@
-use futures::StreamExt;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 use {
     clap::Parser,
-    futures::{FutureExt, future::BoxFuture},
+    futures::{FutureExt, StreamExt, future::BoxFuture},
     serde::Deserialize,
     solana_pubkey::{ParsePubkeyError, Pubkey},
     solana_signature::Signature,
@@ -55,7 +54,6 @@ pub struct FumeConfig {
     #[serde(default, flatten)]
     fumarole: FumaroleConfig,
 }
-
 
 #[derive(Debug, Clone, Copy)]
 pub struct PrometheusBindAddr(SocketAddr);
@@ -687,10 +685,7 @@ impl SubscribeArgs {
     }
 }
 
-async fn subscribe(
-    mut client: FumaroleClient,
-    args: SubscribeArgs,
-) {
+async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     let mut out: Box<dyn Write> = if let Some(out) = &args.out {
         Box::new(
             File::options()
@@ -785,10 +780,7 @@ async fn subscribe(
     }
 }
 
-async fn block_stats(
-    mut client: FumaroleClient,
-    args: SubscribeArgs,
-) {
+async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
     let mut out: Box<dyn Write> = if let Some(out) = &args.out {
         Box::new(
             File::options()
@@ -1064,11 +1056,7 @@ async fn main() {
             delete_all_cg(fumarole_client).await;
         }
         Action::Subscribe(subscribe_args) => {
-            subscribe(
-                fumarole_client,
-                subscribe_args,
-            )
-            .await;
+            subscribe(fumarole_client, subscribe_args).await;
         }
         Action::SlotRange => {
             slot_range(fumarole_client).await;

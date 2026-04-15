@@ -1,7 +1,7 @@
 use {
     crate::{
-        proto::{self, DataCommand, DataResponse, JoinControlPlane},
         core::runtime::DataplaneStreamError,
+        proto::{self, DataCommand, DataResponse, JoinControlPlane},
     },
     futures::{Sink, Stream},
     std::{error::Error as StdError, future::Future},
