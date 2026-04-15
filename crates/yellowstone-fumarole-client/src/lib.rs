@@ -267,6 +267,7 @@
 
 pub mod config;
 pub mod error;
+pub mod stream;
 
 #[cfg(feature = "prometheus")]
 pub mod metrics;
@@ -276,9 +277,12 @@ pub(crate) mod core;
 pub(crate) mod grpc;
 pub(crate) mod util;
 
-pub use crate::error::{
-    ConnectError, DataplaneErrorKind, DataplaneStreamError, FumaroleSubscribeError,
-    InvalidMetadataHeader,
+pub use crate::{
+    error::{
+        ConnectError, DataplaneErrorKind, DataplaneStreamError, FumaroleSubscribeError,
+        InvalidMetadataHeader,
+    },
+    stream::{DragonsmouthLike, FumaroleEvent, FumaroleSink, FumaroleStream},
 };
 use {
     crate::proto::GetSlotRangeRequest,
@@ -415,85 +419,8 @@ pub struct FumaroleSubscription {
     sink: FumaroleSink,
 }
 
-pub struct FumaroleSink {
-    inner: mpsc::Sender<geyser::SubscribeRequest>,
-}
-
-pub struct FumaroleStream {
-    inner: mpsc::Receiver<Result<geyser::SubscribeUpdate, FumaroleSubscribeError>>,
-}
-
-impl Stream for FumaroleStream {
-    type Item = Result<geyser::SubscribeUpdate, FumaroleSubscribeError>;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.inner.poll_recv(cx)
-    }
-}
-
-impl Sink<SubscribeRequest> for FumaroleSink {
-    type Error = tonic::Status;
-
-    fn poll_ready(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        if self.get_mut().inner.is_closed() {
-            std::task::Poll::Ready(Err(tonic::Status::unavailable(
-                "subscribe request channel is closed",
-            )))
-        } else {
-            std::task::Poll::Ready(Ok(()))
-        }
-    }
-
-    fn start_send(
-        self: std::pin::Pin<&mut Self>,
-        item: SubscribeRequest,
-    ) -> Result<(), Self::Error> {
-        match self.get_mut().inner.try_send(item) {
-            Ok(()) => Ok(()),
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Err(
-                tonic::Status::resource_exhausted("subscribe request channel is full"),
-            ),
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(
-                tonic::Status::unavailable("subscribe request channel is closed"),
-            ),
-        }
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        if self.get_mut().inner.is_closed() {
-            std::task::Poll::Ready(Err(tonic::Status::unavailable(
-                "subscribe request channel is closed",
-            )))
-        } else {
-            std::task::Poll::Ready(Ok(()))
-        }
-    }
-
-    fn poll_close(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        if self.get_mut().inner.is_closed() {
-            std::task::Poll::Ready(Err(tonic::Status::unavailable(
-                "subscribe request channel is closed",
-            )))
-        } else {
-            std::task::Poll::Ready(Ok(()))
-        }
-    }
-}
-
 impl Stream for FumaroleSubscription {
-    type Item = Result<geyser::SubscribeUpdate, FumaroleSubscribeError>;
+    type Item = Result<FumaroleEvent, FumaroleSubscribeError>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -897,10 +824,8 @@ impl FumaroleClient {
         };
         let _fumarole_handle = tokio::spawn(fut);
         let subscription = FumaroleSubscription {
-            sink: FumaroleSink { inner: dm_tx },
-            stream: FumaroleStream {
-                inner: dragonsmouth_inlet,
-            },
+            sink: FumaroleSink::new(dm_tx),
+            stream: FumaroleStream::new(dragonsmouth_inlet),
         };
         Ok(subscription)
     }

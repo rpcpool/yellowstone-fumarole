@@ -724,7 +724,8 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
         .await
         .expect("Failed to subscribe");
 
-    let (_, mut source) = fumarole_subscription.split();
+    let (_, source) = fumarole_subscription.split();
+    let mut source = source.like_dragonsmouth();
     let mut shutdown = create_shutdown();
 
     loop {
@@ -834,7 +835,8 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
         .await
         .expect("Failed to subscribe");
 
-    let (_, mut fumarole_stream) = fumarole_subscription.split();
+    let (_, fumarole_stream) = fumarole_subscription.split();
+    let mut fumarole_stream = fumarole_stream.like_dragonsmouth();
     let mut shutdown = create_shutdown();
     #[derive(Default)]
     struct BlockInfo {

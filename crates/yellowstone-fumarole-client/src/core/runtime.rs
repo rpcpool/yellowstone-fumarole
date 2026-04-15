@@ -13,6 +13,7 @@ use {
     crate::{
         FumaroleClient,
         error::FumaroleSubscribeError,
+        stream::FumaroleEvent,
         proto::{
             self, BlockFilters, CommitOffset, ControlCommand, DataCommand, DataResponse,
             DownloadBlockShard, GetChainTipResponse, JoinControlPlane, PollBlockchainHistory,
@@ -79,7 +80,7 @@ where
     pub control_plane_connector: C,
     pub control_plane_tx: C::ControlPlaneSink,
     pub control_plane_rx: C::ControlPlaneStream,
-    pub dragonsmouth_outlet: mpsc::Sender<Result<geyser::SubscribeUpdate, FumaroleSubscribeError>>,
+    pub dragonsmouth_outlet: mpsc::Sender<Result<FumaroleEvent, FumaroleSubscribeError>>,
     pub commit_interval: Duration,
     pub get_tip_interval: Duration,
     pub last_commit: Instant,
@@ -339,7 +340,12 @@ where
                         },
                     )),
                 };
-                if self.dragonsmouth_outlet.send(Ok(update)).await.is_err() {
+                if self
+                    .dragonsmouth_outlet
+                    .send(Ok(FumaroleEvent::Data(update)))
+                    .await
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -715,18 +721,6 @@ impl DedupState {
         }
     }
 
-    fn slot_from_update(ev: &UpdateOneof) -> Option<u64> {
-        match ev {
-            UpdateOneof::Account(msg) => Some(msg.slot),
-            UpdateOneof::Slot(msg) => Some(msg.slot),
-            UpdateOneof::Transaction(msg) => Some(msg.slot),
-            UpdateOneof::TransactionStatus(msg) => Some(msg.slot),
-            UpdateOneof::Block(msg) => Some(msg.slot),
-            UpdateOneof::BlockMeta(msg) => Some(msg.slot),
-            UpdateOneof::Entry(msg) => Some(msg.slot),
-            UpdateOneof::Ping(_) | UpdateOneof::Pong(_) => None,
-        }
-    }
 }
 
 pub(crate) struct PipelinedShardDownloader<Outlet> {
@@ -834,7 +828,7 @@ type PipelinedDownloaderOutcome = Result<
 
 impl<Outlet> PipelinedShardDownloader<Outlet>
 where
-    Outlet: Sink<Result<SubscribeUpdate, FumaroleSubscribeError>> + Unpin + Send + 'static,
+    Outlet: Sink<Result<FumaroleEvent, FumaroleSubscribeError>> + Unpin + Send + 'static,
 {
     async fn pipelined_downloader<Source>(
         mut rx: Source,
@@ -878,20 +872,21 @@ where
                     if matches!(update.update_oneof, Some(UpdateOneof::BlockMeta(_))) {
                         block_meta = Some(update);
                     } else {
-                        // Dedup here
-                        let (expected_slot, expected_shard_idx) = scheduled_shards
+                        // Dedup only when we have shard scheduling context.
+                        if let Some((expected_slot, expected_shard_idx)) = scheduled_shards
                             .front()
                             .map(|(slot, shard_idx)| (*slot, *shard_idx))
-                            .expect("schedule slot must be set");
-                        if dedup_state.dedup(
-                            expected_slot,
-                            expected_shard_idx,
-                            update
-                                .update_oneof
-                                .as_ref()
-                                .expect("update oneof must be set"),
-                        ) {
-                            continue;
+                        {
+                            if dedup_state.dedup(
+                                expected_slot,
+                                expected_shard_idx,
+                                update
+                                    .update_oneof
+                                    .as_ref()
+                                    .expect("update oneof must be set"),
+                            ) {
+                                continue;
+                            }
                         }
 
                         if futures::future::poll_fn(|cx| outlet.poll_ready_unpin(cx))
@@ -901,7 +896,10 @@ where
                             tracing::error!("failed to send update to outlet: outlet disconnected");
                             return Err((ShardDownloaderErrorKind::SinkClosed, dedup_state));
                         }
-                        if outlet.start_send_unpin(Ok(update)).is_err() {
+                        if outlet
+                            .start_send_unpin(Ok(FumaroleEvent::Data(update)))
+                            .is_err()
+                        {
                             return Err((ShardDownloaderErrorKind::SinkClosed, dedup_state));
                         }
                     }
@@ -1195,7 +1193,7 @@ pub(crate) struct ShardedDownloadOrchestrator<C> {
     outlet: mpsc::Sender<DownloadTaskResult>,
     max_download_attempt_per_slot: usize,
     subscribe_request: Arc<SubscribeRequest>,
-    dragonsmouth_outlet: mpsc::Sender<Result<SubscribeUpdate, FumaroleSubscribeError>>,
+    dragonsmouth_outlet: mpsc::Sender<Result<FumaroleEvent, FumaroleSubscribeError>>,
     total_shard_downloaders: usize,
 }
 
@@ -1222,7 +1220,7 @@ where
         max_download_attempt_by_slot: usize,
         subscribe_request: Arc<SubscribeRequest>,
         total_shard_downloaders: usize,
-        dragonsmouth_outlet: mpsc::Sender<Result<SubscribeUpdate, FumaroleSubscribeError>>,
+        dragonsmouth_outlet: mpsc::Sender<Result<FumaroleEvent, FumaroleSubscribeError>>,
     ) -> Self {
         let (completed_tx, completed_rx) = mpsc::channel(1000);
         let mut shard_download_queue_txs = Vec::with_capacity(total_shard_downloaders);
@@ -1446,7 +1444,11 @@ where
                 tracing::debug!("slot {slot} download completed");
                 let _ = self
                     .dragonsmouth_outlet
-                    .send(Ok(block_meta.expect("missing block meta")))
+                    .send(Ok(FumaroleEvent::Data(block_meta.expect("missing block meta"))))
+                    .await;
+                let _ = self
+                    .dragonsmouth_outlet
+                    .send(Ok(FumaroleEvent::SlotEnded(slot)))
                     .await;
 
                 #[cfg(feature = "prometheus")]
@@ -1717,7 +1719,7 @@ mod tests {
     fn make_test_orchestrator() -> (
         ShardedDownloadOrchestrator<TestConnector>,
         mpsc::Receiver<DownloadTaskResult>,
-        mpsc::Receiver<Result<SubscribeUpdate, FumaroleSubscribeError>>,
+        mpsc::Receiver<Result<FumaroleEvent, FumaroleSubscribeError>>,
     ) {
         let (completed_tx, completed_rx) = mpsc::channel(8);
         let (cnc_tx, cnc_rx) = mpsc::channel(1);
@@ -1756,7 +1758,7 @@ mod tests {
     ) -> (
         ShardedDownloadOrchestrator<TestConnector>,
         mpsc::Receiver<DownloadTaskResult>,
-        mpsc::Receiver<Result<SubscribeUpdate, FumaroleSubscribeError>>,
+        mpsc::Receiver<Result<FumaroleEvent, FumaroleSubscribeError>>,
     ) {
         let (completed_tx, completed_rx) = mpsc::channel(8);
         let (cnc_tx, cnc_rx) = mpsc::channel(1);
@@ -1823,23 +1825,33 @@ mod tests {
             commitment_level: CommitmentLevel::Processed,
         };
 
+        let mut queue_rx = orchestrator.shard_download_queue_rxs[0]
+            .take()
+            .expect("missing test queue receiver");
+
+        let drain_jh = tokio::spawn(async move {
+            let mut drained = Vec::new();
+            for _ in 0..3 {
+                drained.push(queue_rx.recv().await.expect("expected queued shard"));
+            }
+            (drained, queue_rx)
+        });
+
         orchestrator
             .schedule_slot_download_task(DownloadTaskArgs {
                 download_request: request.clone(),
             })
             .await;
 
+        let (drained, queue_rx) = drain_jh.await.expect("drain task should complete");
+        orchestrator.shard_download_queue_rxs[0] = Some(queue_rx);
+
         assert!(orchestrator.slot_download_progression_map.contains_key(&77));
         {
-            let queue_rx = orchestrator.shard_download_queue_rxs[0]
-                .as_mut()
-                .expect("missing test queue receiver");
-
-            for shard_idx in 0..3 {
-                let queued = queue_rx.recv().await.expect("expected queued shard");
+            for (shard_idx, queued) in drained.into_iter().enumerate() {
                 assert_eq!(queued.slot, 77);
                 assert_eq!(queued.attempt, 1);
-                assert_eq!(queued.request.shard_idx, shard_idx);
+                assert_eq!(queued.request.shard_idx, shard_idx as i32);
                 assert_eq!(queued.request.slot, Some(77));
                 assert_eq!(queued.request.blockchain_id, request.blockchain_id.to_vec());
                 assert_eq!(queued.request.block_uid, request.block_uid.to_vec());
@@ -1908,11 +1920,18 @@ mod tests {
             .recv()
             .await
             .expect("expected dragonsmouth block meta");
-        let dm_update = dm_msg.expect("expected ok dragonsmouth update");
+        let Ok(FumaroleEvent::Data(dm_update)) = dm_msg else {
+            panic!("expected dragonsmouth data event")
+        };
         assert!(matches!(
             dm_update.update_oneof,
             Some(UpdateOneof::BlockMeta(_))
         ));
+        let slot_ended = dragonsmouth_outlet_rx
+            .recv()
+            .await
+            .expect("expected slot ended event");
+        assert!(matches!(slot_ended, Ok(FumaroleEvent::SlotEnded(42))));
         assert!(!orchestrator.slot_download_progression_map.contains_key(&42));
     }
 
@@ -1999,7 +2018,7 @@ mod tests {
     #[tokio::test]
     async fn pipelined_downloader_forwards_updates_and_reports_completed_shard() {
         let (outlet_tx, mut outlet_rx) =
-            futures_mpsc::unbounded::<Result<SubscribeUpdate, FumaroleSubscribeError>>();
+            futures_mpsc::unbounded::<Result<FumaroleEvent, FumaroleSubscribeError>>();
         let (completed_tx, mut completed_rx) = mpsc::channel(2);
 
         let footer = proto::BlockShardDownloadFinish {
@@ -2032,8 +2051,10 @@ mod tests {
         let forwarded = outlet_rx
             .next()
             .await
-            .expect("expected forwarded update")
-            .expect("expected ok update");
+            .expect("expected forwarded update");
+        let Ok(FumaroleEvent::Data(forwarded)) = forwarded else {
+            panic!("expected data event")
+        };
         assert!(matches!(forwarded.update_oneof, Some(UpdateOneof::Slot(_))));
         assert!(matches!(outlet_rx.try_next(), Ok(None)));
 
@@ -2053,7 +2074,7 @@ mod tests {
     #[tokio::test]
     async fn pipelined_downloader_returns_sink_closed_when_outlet_is_disconnected() {
         let (outlet_tx, outlet_rx) =
-            futures_mpsc::unbounded::<Result<SubscribeUpdate, FumaroleSubscribeError>>();
+            futures_mpsc::unbounded::<Result<FumaroleEvent, FumaroleSubscribeError>>();
         drop(outlet_rx);
         let (completed_tx, _completed_rx) = mpsc::channel(1);
 
@@ -2062,7 +2083,7 @@ mod tests {
         )))]);
 
         let result = PipelinedShardDownloader::<
-            futures_mpsc::UnboundedSender<Result<SubscribeUpdate, FumaroleSubscribeError>>,
+            futures_mpsc::UnboundedSender<Result<FumaroleEvent, FumaroleSubscribeError>>,
         >::pipelined_downloader(
             stream,
             outlet_tx,
@@ -2116,7 +2137,7 @@ mod tests {
     #[tokio::test]
     async fn pipelined_downloader_propagates_recoverable_transport_error() {
         let (outlet_tx, _outlet_rx) =
-            futures_mpsc::unbounded::<Result<SubscribeUpdate, FumaroleSubscribeError>>();
+            futures_mpsc::unbounded::<Result<FumaroleEvent, FumaroleSubscribeError>>();
         let (completed_tx, _completed_rx) = mpsc::channel(1);
 
         let stream = tokio_stream::iter(vec![Err(DataplaneStreamError::from(
@@ -2124,7 +2145,7 @@ mod tests {
         ))]);
 
         let result = PipelinedShardDownloader::<
-            futures_mpsc::UnboundedSender<Result<SubscribeUpdate, FumaroleSubscribeError>>,
+            futures_mpsc::UnboundedSender<Result<FumaroleEvent, FumaroleSubscribeError>>,
         >::pipelined_downloader(
             stream,
             outlet_tx,
@@ -2146,7 +2167,7 @@ mod tests {
     #[tokio::test]
     async fn pipelined_downloader_propagates_slot_not_found_error() {
         let (outlet_tx, _outlet_rx) =
-            futures_mpsc::unbounded::<Result<SubscribeUpdate, FumaroleSubscribeError>>();
+            futures_mpsc::unbounded::<Result<FumaroleEvent, FumaroleSubscribeError>>();
         let (completed_tx, _completed_rx) = mpsc::channel(1);
 
         let stream = tokio_stream::iter(vec![Err(DataplaneStreamError::from(
@@ -2154,7 +2175,7 @@ mod tests {
         ))]);
 
         let result = PipelinedShardDownloader::<
-            futures_mpsc::UnboundedSender<Result<SubscribeUpdate, FumaroleSubscribeError>>,
+            futures_mpsc::UnboundedSender<Result<FumaroleEvent, FumaroleSubscribeError>>,
         >::pipelined_downloader(
             stream,
             outlet_tx,
@@ -2176,7 +2197,7 @@ mod tests {
     #[tokio::test]
     async fn pipelined_downloader_propagates_invalid_subscribe_filter_error() {
         let (outlet_tx, _outlet_rx) =
-            futures_mpsc::unbounded::<Result<SubscribeUpdate, FumaroleSubscribeError>>();
+            futures_mpsc::unbounded::<Result<FumaroleEvent, FumaroleSubscribeError>>();
         let (completed_tx, _completed_rx) = mpsc::channel(1);
 
         let stream = tokio_stream::iter(vec![Err(DataplaneStreamError::from(
@@ -2184,7 +2205,7 @@ mod tests {
         ))]);
 
         let result = PipelinedShardDownloader::<
-            futures_mpsc::UnboundedSender<Result<SubscribeUpdate, FumaroleSubscribeError>>,
+            futures_mpsc::UnboundedSender<Result<FumaroleEvent, FumaroleSubscribeError>>,
         >::pipelined_downloader(
             stream,
             outlet_tx,
