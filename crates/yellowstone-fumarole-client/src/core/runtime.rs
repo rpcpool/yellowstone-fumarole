@@ -346,7 +346,10 @@ where
                 };
                 if self
                     .dragonsmouth_outlet
-                    .send(Ok(FumaroleEvent::Data(update)))
+                    .send(Ok(FumaroleEvent::Data { 
+                        slot: slot_status.slot,
+                        update 
+                    }))
                     .await
                     .is_err()
                 {
@@ -915,10 +918,8 @@ where
                     if matches!(update.update_oneof, Some(UpdateOneof::BlockMeta(_))) {
                         block_meta = Some(update);
                     } else {
-                        // Dedup only when we have shard scheduling context.
-                        if let Some((expected_slot, expected_shard_idx)) = scheduled_shards
-                            .front()
-                            .map(|(slot, shard_idx)| (*slot, *shard_idx))
+                        let event_slot = if let Some((expected_slot, expected_shard_idx)) =
+                            scheduled_shards.front().map(|(slot, shard_idx)| (*slot, *shard_idx))
                         {
                             if dedup_state.dedup(
                                 expected_slot,
@@ -930,7 +931,23 @@ where
                             ) {
                                 continue;
                             }
-                        }
+                            expected_slot
+                        } else {
+                            // In tests and during startup races we might receive updates before
+                            // scheduled shard context is visible here. Skip dedup in that case.
+                            match update.update_oneof.as_ref() {
+                                Some(UpdateOneof::Account(msg)) => msg.slot,
+                                Some(UpdateOneof::Slot(msg)) => msg.slot,
+                                Some(UpdateOneof::Transaction(msg)) => msg.slot,
+                                Some(UpdateOneof::TransactionStatus(msg)) => msg.slot,
+                                Some(UpdateOneof::Block(msg)) => msg.slot,
+                                Some(UpdateOneof::BlockMeta(msg)) => msg.slot,
+                                Some(UpdateOneof::Entry(msg)) => msg.slot,
+                                Some(UpdateOneof::Ping(_)) | Some(UpdateOneof::Pong(_)) | None => {
+                                    continue;
+                                }
+                            }
+                        };
 
                         if futures::future::poll_fn(|cx| outlet.poll_ready_unpin(cx))
                             .await
@@ -939,7 +956,10 @@ where
                             return Err((ShardDownloaderErrorKind::SinkClosed, dedup_state));
                         }
                         if outlet
-                            .start_send_unpin(Ok(FumaroleEvent::Data(update)))
+                            .start_send_unpin(Ok(FumaroleEvent::Data {
+                                slot: event_slot,
+                                update,
+                            }))
                             .is_err()
                         {
                             return Err((ShardDownloaderErrorKind::SinkClosed, dedup_state));
@@ -1516,12 +1536,20 @@ where
                 }
                 let block_meta = completed.block_meta;
                 tracing::trace!("slot {slot} download completed");
-                let _ = self
-                    .dragonsmouth_outlet
-                    .send(Ok(FumaroleEvent::Data(
-                        block_meta.expect("missing block meta"),
-                    )))
-                    .await;
+                if let Some(block_meta) = block_meta {
+                    let _ = self
+                        .dragonsmouth_outlet
+                        .send(Ok(FumaroleEvent::Data {
+                            slot,
+                            update: block_meta,
+                        }))
+                        .await;
+                } else {
+                    tracing::debug!(
+                        slot,
+                        "slot completed without block meta; emitting SlotEnded only"
+                    );
+                }
                 let _ = self
                     .dragonsmouth_outlet
                     .send(Ok(FumaroleEvent::SlotEnded(slot)))
@@ -1920,6 +1948,16 @@ mod tests {
             })
             .await;
 
+        // With bounded queue + pending queue fallback, actively drain pending items
+        // so the spawned receiver can observe all 3 enqueued shards deterministically.
+        for _ in 0..16 {
+            if orchestrator.pending_shard_downloads.is_empty() {
+                break;
+            }
+            orchestrator.drain_pending_shard_downloads();
+            tokio::task::yield_now().await;
+        }
+
         let (drained, queue_rx) = drain_jh.await.expect("drain task should complete");
         orchestrator.shard_download_queue_rxs[0] = Some(queue_rx);
 
@@ -1997,7 +2035,7 @@ mod tests {
             .recv()
             .await
             .expect("expected dragonsmouth block meta");
-        let Ok(FumaroleEvent::Data(dm_update)) = dm_msg else {
+        let Ok(FumaroleEvent::Data { slot: 42, update: dm_update }) = dm_msg else {
             panic!("expected dragonsmouth data event")
         };
         assert!(matches!(
@@ -2010,6 +2048,51 @@ mod tests {
             .expect("expected slot ended event");
         assert!(matches!(slot_ended, Ok(FumaroleEvent::SlotEnded(42))));
         assert!(!orchestrator.slot_download_progression_map.contains_key(&42));
+    }
+
+    #[tokio::test]
+    async fn sharded_orchestrator_emits_slot_ended_without_block_meta_when_slot_finishes() {
+        let (mut orchestrator, mut outlet_rx, mut dragonsmouth_outlet_rx) =
+            make_test_orchestrator();
+
+        orchestrator.slot_download_progression_map.insert(
+            43,
+            ShardedSlotDownloadProgress {
+                started_at: Instant::now(),
+                block_meta: None,
+                remaining_shard_idx: vec![0],
+            },
+        );
+
+        let completed = CompletedDownloadBlockShardTask {
+            shard_idx: 0,
+            block_uid: [8u8; 16],
+            block_meta: None,
+            slot: 43,
+        };
+
+        orchestrator.handle_shard_download_completed(completed).await;
+
+        let task_result = outlet_rx
+            .recv()
+            .await
+            .expect("expected completed task result");
+        match task_result {
+            DownloadTaskResult::Ok(task) => {
+                assert_eq!(task.slot, 43);
+                assert_eq!(task.block_uid, [8u8; 16]);
+                assert_eq!(task.shard_idx_vec, vec![0]);
+            }
+            DownloadTaskResult::Err { .. } => panic!("expected DownloadTaskResult::Ok"),
+        }
+
+        let slot_ended = dragonsmouth_outlet_rx
+            .recv()
+            .await
+            .expect("expected slot ended event");
+        assert!(matches!(slot_ended, Ok(FumaroleEvent::SlotEnded(43))));
+        assert!(dragonsmouth_outlet_rx.try_recv().is_err());
+        assert!(!orchestrator.slot_download_progression_map.contains_key(&43));
     }
 
     #[tokio::test]
@@ -2105,7 +2188,10 @@ mod tests {
         };
 
         let stream = tokio_stream::iter(vec![
-            Ok(mk_update(UpdateOneof::Slot(SubscribeUpdateSlot::default()))),
+            Ok(mk_update(UpdateOneof::Slot(SubscribeUpdateSlot {
+                slot: 42,
+                ..SubscribeUpdateSlot::default()
+            }))),
             Ok(mk_update(UpdateOneof::BlockMeta(
                 yellowstone_grpc_proto::geyser::SubscribeUpdateBlockMeta::default(),
             ))),
@@ -2126,7 +2212,7 @@ mod tests {
         assert!(matches!(result, Ok((None, _))));
 
         let forwarded = outlet_rx.next().await.expect("expected forwarded update");
-        let Ok(FumaroleEvent::Data(forwarded)) = forwarded else {
+        let Ok(FumaroleEvent::Data { slot: 42, update: forwarded }) = forwarded else {
             panic!("expected data event")
         };
         assert!(matches!(forwarded.update_oneof, Some(UpdateOneof::Slot(_))));

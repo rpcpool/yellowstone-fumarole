@@ -720,7 +720,7 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
         ..Default::default()
     };
     let fumarole_subscription = client
-        .dragonsmouth_subscribe_with_config(cg_name.clone(), request, subscribe_config)
+        .subscribe_with_config(cg_name.clone(), request, subscribe_config)
         .await
         .expect("Failed to subscribe");
 
@@ -831,7 +831,7 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
         ..Default::default()
     };
     let fumarole_subscription = client
-        .dragonsmouth_subscribe_with_config(cg_name.clone(), request, subscribe_config)
+        .subscribe_with_config(cg_name.clone(), request, subscribe_config)
         .await
         .expect("Failed to subscribe");
 

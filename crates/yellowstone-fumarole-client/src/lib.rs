@@ -276,6 +276,8 @@ pub(crate) mod connectors;
 pub(crate) mod core;
 pub(crate) mod grpc;
 
+use tokio::task::JoinHandle;
+
 pub use crate::{
     error::{
         ConnectError, DataplaneErrorKind, DataplaneStreamError, FumaroleSubscribeError,
@@ -553,17 +555,18 @@ impl Default for FumaroleSubscribeConfig {
 /// Dragonsmouth flavor fumarole session.
 /// Mimics the same API as dragonsmouth but uses fumarole as the backend.
 ///
+#[deprecated(note = "This struct is deprecated. Please use `FumaroleSubscription` instead.")]
 pub struct DragonsmouthAdapterSession {
     ///
     /// Channel to send requests to the fumarole service.
     /// If you don't need to change the subscribe request, you can drop this channel.
     ///
-    pub sink: mpsc::Sender<geyser::SubscribeRequest>,
+    pub sink: FumaroleSink,
     ///
     /// Channel to receive updates from the fumarole service.
     /// Dropping this channel will stop the fumarole session.
     ///
-    pub source: FumaroleStream,
+    pub source: DragonsmouthLike<FumaroleStream>,
     ///
     /// Handle to the fumarole session client runtime.
     /// Dropping this handle does not stop the fumarole session.
@@ -667,7 +670,7 @@ impl FumaroleClient {
         &mut self,
         subscriber_name: S,
         request: geyser::SubscribeRequest,
-    ) -> Result<FumaroleSubscription, tonic::Status>
+    ) -> Result<DragonsmouthAdapterSession, tonic::Status>
     where
         S: AsRef<str>,
     {
@@ -681,7 +684,56 @@ impl FumaroleClient {
         subscriber_name: S,
         request: geyser::SubscribeRequest,
         config: FumaroleSubscribeConfig,
+    ) -> Result<DragonsmouthAdapterSession, tonic::Status>
+    where
+        S: AsRef<str>,
+    {
+        let (subscription, handle) = self
+            .internal_subscribe_with_config(subscriber_name, request, config)
+            .await?;
+        let (sink, source) = subscription.split();
+        let dm = source.like_dragonsmouth();
+        Ok(DragonsmouthAdapterSession {
+            sink,
+            source: dm,
+            fumarole_handle: handle,
+        })
+    }
+
+    pub async fn subscribe<S>(
+        &mut self,
+        subscriber_name: S,
+        request: geyser::SubscribeRequest,
     ) -> Result<FumaroleSubscription, tonic::Status>
+    where
+        S: AsRef<str>,
+    {
+        self.subscribe_with_config(subscriber_name, request, Default::default())
+            .await
+    }
+    
+    pub async fn subscribe_with_config<S>(
+        &mut self,
+        subscriber_name: S,
+        request: geyser::SubscribeRequest,
+        config: FumaroleSubscribeConfig,
+    ) -> Result<FumaroleSubscription, tonic::Status>
+    where
+        S: AsRef<str>,
+    {
+        let (subscription, _handle) = self
+            .internal_subscribe_with_config(subscriber_name, request, config)
+            .await?;
+        Ok(subscription)
+    }
+
+
+    async fn internal_subscribe_with_config<S>(
+        &mut self,
+        subscriber_name: S,
+        request: geyser::SubscribeRequest,
+        config: FumaroleSubscribeConfig,
+    ) -> Result<(FumaroleSubscription, JoinHandle<()>), tonic::Status>
     where
         S: AsRef<str>,
     {
@@ -726,7 +778,7 @@ impl FumaroleClient {
             consumer_group_name: Some(subscriber_name.as_ref().to_string()),
         };
         let (fume_control_plane_tx, mut fume_control_plane_rx) =
-            self.subscribe(initial_join).await?;
+            ControlPlaneConnector::subscribe(self, initial_join).await?;
         let control_response = match fume_control_plane_rx.next().await {
             Some(Ok(resp)) => resp,
             Some(Err(ControlPlaneStreamError::Disconnected(err))) => {
@@ -827,12 +879,12 @@ impl FumaroleClient {
                 }
             }
         };
-        let _fumarole_handle = tokio::spawn(fut);
+        let runtime_handle = tokio::spawn(fut);
         let subscription = FumaroleSubscription {
             sink: FumaroleSink::new(dm_tx),
             stream: FumaroleStream::new(dragonsmouth_inlet),
         };
-        Ok(subscription)
+        Ok((subscription, runtime_handle))
     }
 
     pub async fn list_consumer_groups(

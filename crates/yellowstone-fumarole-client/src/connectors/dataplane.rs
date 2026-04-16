@@ -8,10 +8,10 @@ use {
         proto::{DataCommand, DataResponse},
     },
     futures::{Future, Sink, Stream, StreamExt},
-    std::{error::Error as _, pin::Pin},
+    std::{error::Error as _, pin::Pin, task::Poll},
     tokio::sync::mpsc,
     tokio_stream::wrappers::ReceiverStream,
-    tonic::{Code, transport},
+    tonic::{Code, Streaming, transport},
 };
 
 impl From<tonic::Status> for DataplaneStreamError {
@@ -62,8 +62,7 @@ impl FumaroleDataplaneConnector for FumaroleGrpcConnector {
     type DataplaneSubscribeError = tonic::Status;
     type DataplaneSinkError = DataplaneSinkSendError;
     type DataplaneSink = Pin<Box<dyn Sink<DataCommand, Error = Self::DataplaneSinkError> + Send>>;
-    type DataplaneStream =
-        Pin<Box<dyn Stream<Item = Result<DataResponse, DataplaneStreamError>> + Send>>;
+    type DataplaneStream = TonicDataplaneStreamAdapter;
     type DataplaneSubscribeFut = Pin<
         Box<
             dyn Future<
@@ -81,12 +80,30 @@ impl FumaroleDataplaneConnector for FumaroleGrpcConnector {
             let (tx, rx) = mpsc::channel(100);
             let response = client.subscribe_data(ReceiverStream::new(rx)).await?;
             let sink: Self::DataplaneSink = Box::pin(create_dataplane_sink(tx));
-            let stream: Self::DataplaneStream = Box::pin(
-                response
-                    .into_inner()
-                    .map(|result| result.map_err(DataplaneStreamError::from)),
-            );
+            let stream: Self::DataplaneStream = TonicDataplaneStreamAdapter {
+                inner: response.into_inner(),
+            };
             Ok((sink, stream))
         })
+    }
+}
+
+pub struct TonicDataplaneStreamAdapter {
+    inner: Streaming<DataResponse>,
+}
+
+impl Stream for TonicDataplaneStreamAdapter {
+    type Item = Result<DataResponse, DataplaneStreamError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        match self.inner.poll_next_unpin(cx) {
+            Poll::Ready(Some(Ok(response))) => Poll::Ready(Some(Ok(response))),
+            Poll::Ready(Some(Err(status))) => Poll::Ready(Some(Err(DataplaneStreamError::from(status)))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
