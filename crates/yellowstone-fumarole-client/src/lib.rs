@@ -276,8 +276,6 @@ pub(crate) mod connectors;
 pub(crate) mod core;
 pub(crate) mod grpc;
 
-use tokio::task::JoinHandle;
-
 pub use crate::{
     error::{
         ConnectError, DataplaneErrorKind, DataplaneStreamError, FumaroleSubscribeError,
@@ -305,7 +303,7 @@ use {
         sync::Arc,
         time::{Duration, Instant},
     },
-    tokio::sync::mpsc,
+    tokio::{sync::mpsc, task::JoinHandle},
     tonic::{
         metadata::{Ascii, MetadataKey, MetadataValue},
         service::{Interceptor, interceptor::InterceptedService},
@@ -711,7 +709,7 @@ impl FumaroleClient {
         self.subscribe_with_config(subscriber_name, request, Default::default())
             .await
     }
-    
+
     pub async fn subscribe_with_config<S>(
         &mut self,
         subscriber_name: S,
@@ -726,7 +724,6 @@ impl FumaroleClient {
             .await?;
         Ok(subscription)
     }
-
 
     async fn internal_subscribe_with_config<S>(
         &mut self,

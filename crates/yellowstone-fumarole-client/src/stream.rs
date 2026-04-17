@@ -8,13 +8,33 @@ use {
 
 #[derive(Debug)]
 pub enum FumaroleEvent {
-    Data { 
+    Data {
         slot: u64,
-        update: geyser::SubscribeUpdate 
+        update: geyser::SubscribeUpdate,
     },
     SlotEnded(u64),
 }
 
+/// Sending half of a Fumarole subscription session.
+///
+/// This sink accepts [`geyser::SubscribeRequest`] values and forwards them to the
+/// runtime over an internal bounded Tokio channel.
+///
+/// # Backpressure
+///
+/// The sink is backed by `mpsc::Sender::try_send`, so `start_send` can fail with
+/// `resource_exhausted` when the channel is full.
+///
+/// # Errors
+///
+/// - `unavailable` when the underlying request channel is closed.
+/// - `resource_exhausted` when the channel is full.
+///
+/// # Typical Usage
+///
+/// Use this sink from [`FumaroleSubscription`](crate::FumaroleSubscription) or
+/// split APIs to dynamically update filters/commitment while the data stream is
+/// active.
 pub struct FumaroleSink {
     inner: mpsc::Sender<geyser::SubscribeRequest>,
 }
@@ -83,10 +103,28 @@ impl Sink<geyser::SubscribeRequest> for FumaroleSink {
     }
 }
 
+///
+/// The main fumarole stream type yielding [`FumaroleEvent`] values from the runtime.
+///
 pub struct FumaroleStream {
     inner: mpsc::Receiver<Result<FumaroleEvent, FumaroleSubscribeError>>,
 }
 
+/// Receiving half of a Fumarole subscription session.
+///
+/// This stream yields [`FumaroleEvent`] values wrapped in
+/// [`FumaroleSubscribeError`] for transport/runtime failures.
+///
+/// It acts as the canonical source stream and can be adapted into richer views:
+/// - [`slot_sequential`](Self::slot_sequential): enforces per-slot sequentiality.
+/// - [`block_stream`](Self::block_stream): groups data into slot-scoped blocks.
+/// - [`like_dragonsmouth`](Self::like_dragonsmouth): compatibility adapter that
+///   yields raw `SubscribeUpdate` entries.
+///
+/// # Ordering
+///
+/// Ordering guarantees depend on the selected adapter. The base stream itself
+/// forwards events as produced by the runtime.
 impl FumaroleStream {
     pub(crate) fn new(
         inner: mpsc::Receiver<Result<FumaroleEvent, FumaroleSubscribeError>>,
@@ -95,7 +133,7 @@ impl FumaroleStream {
     }
 
     pub fn like_dragonsmouth(self) -> DragonsmouthLike<Self> {
-        DragonsmouthLike { 
+        DragonsmouthLike {
             inner: self.slot_sequential(),
         }
     }
@@ -107,8 +145,11 @@ impl FumaroleStream {
         }
     }
 
-    pub fn block_stream(self) -> BlockStream {
-        BlockStream { inner: self }
+    pub fn block_stream(self) -> BlockStream<Self> {
+        BlockStream {
+            inner: self,
+            state: Default::default(),
+        }
     }
 }
 
@@ -159,14 +200,11 @@ impl<T> RopeDeque<T> {
     }
 }
 
-
-
 #[derive(Default)]
 struct BufferedSlotState {
     updates: VecDeque<geyser::SubscribeUpdate>,
     ended: bool,
 }
-
 
 #[derive(Default)]
 struct SlotSequentialStreamState {
@@ -225,27 +263,30 @@ impl SlotSequentialStreamState {
     }
 
     fn handle_fumarole_ev_data(&mut self, slot: u64, update: geyser::SubscribeUpdate) {
-        // Slot status and block metadata updates are guaranteed to be emitted after all data updates from the slot, 
+        // Slot status and block metadata updates are guaranteed to be emitted after all data updates from the slot,
         // so we can let them pass through immediately regardless of the currently active slot.
         if matches!(
             update.update_oneof.as_ref(),
             Some(geyser::subscribe_update::UpdateOneof::Slot(_))
                 | Some(geyser::subscribe_update::UpdateOneof::BlockMeta(_))
         ) {
-            self.poll_ready.push_back(FumaroleEvent::Data { slot, update });
+            self.poll_ready
+                .push_back(FumaroleEvent::Data { slot, update });
             return;
         }
 
         match self.current_slot {
             Some(current) if current == slot => {
-                self.poll_ready.push_back(FumaroleEvent::Data { slot, update });
+                self.poll_ready
+                    .push_back(FumaroleEvent::Data { slot, update });
             }
             Some(_) => {
                 self.buffer_data(slot, update);
             }
             None => {
                 self.current_slot = Some(slot);
-                self.poll_ready.push_back(FumaroleEvent::Data { slot, update });
+                self.poll_ready
+                    .push_back(FumaroleEvent::Data { slot, update });
             }
         }
     }
@@ -291,7 +332,7 @@ impl SlotSequentialStreamState {
 }
 
 ///
-/// A streams that yeild [`FumaroleEvent`] in slot order, meaning that while a slot is active, only events from that 
+/// A streams that yeild [`FumaroleEvent`] in slot order, meaning that while a slot is active, only events from that
 /// slot will be yielded, and once the slot ends, events from the next slot will be yielded, and so on. So while a slot
 /// has not ended, event's from that slot won't be interleaved with events from other slots.
 ///
@@ -306,6 +347,27 @@ pub struct SlotSequentialStream<S> {
     inner: S,
     state: SlotSequentialStreamState,
 }
+
+/// Stream adapter that enforces slot-local sequential emission.
+///
+/// Given an input stream of [`FumaroleEvent`], this adapter ensures that regular
+/// data events from one active slot are emitted contiguously until that slot
+/// ends. Data from other slots is buffered until the active slot emits
+/// [`FumaroleEvent::SlotEnded`].
+///
+/// `Slot` status and `BlockMeta` updates are intentionally passed through
+/// immediately, because runtime semantics guarantee they are emitted after block
+/// payload data for the slot.
+///
+/// # Generic Parameter
+///
+/// `S` is any stream yielding `Result<FumaroleEvent, FumaroleSubscribeError>`.
+/// This allows composing adapters on top of `FumaroleStream` or custom sources.
+///
+/// # Use Cases
+///
+/// Useful for consumers that want deterministic per-slot processing without
+/// interleaving payload updates from concurrent slot downloads.
 
 impl<S> Stream for SlotSequentialStream<S>
 where
@@ -346,18 +408,6 @@ where
     }
 }
 
-// pub struct FumaroleBLock {
-//     inner: Vec<geyser::SubscribeUpdate>,
-// }
-
-// /// 
-// /// A stream that yields [`FumaroleBlock`] which is a vector of [`yellowstone_grpc_proto::geyser::SubscribeUpdate`].
-// /// 
-// pub struct BlockStream {
-//     inner: FumaroleStream,
-// }
-
-
 impl Stream for FumaroleStream {
     type Item = Result<FumaroleEvent, FumaroleSubscribeError>;
 
@@ -369,30 +419,246 @@ impl Stream for FumaroleStream {
     }
 }
 
-pub struct BlockStream {
-    inner: FumaroleStream,
+#[derive(Debug)]
+pub enum FumaroleBlockStreamEvent {
+    Block(FumaroleBlockEvent),
+    SlotStatus(FumaroleSlotStatusEvent),
 }
 
-impl Stream for BlockStream {
-    type Item = Result<geyser::SubscribeUpdate, FumaroleSubscribeError>;
+#[derive(Debug)]
+pub struct FumaroleBlockEvent {
+    pub slot: u64,
+    updates: Vec<geyser::SubscribeUpdate>,
+}
+
+///
+/// An iterator over the updates contained in a [`FumaroleBlockStreamEvent`].
+///
+pub struct FumaroleBlockIterator {
+    curr: usize,
+    inner: Vec<geyser::SubscribeUpdate>,
+}
+
+impl Iterator for FumaroleBlockIterator {
+    type Item = geyser::SubscribeUpdate;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.curr >= self.inner.len() {
+            None
+        } else {
+            let item = self.inner[self.curr].clone();
+            self.curr += 1;
+            Some(item)
+        }
+    }
+}
+
+impl IntoIterator for FumaroleBlockEvent {
+    type Item = geyser::SubscribeUpdate;
+    type IntoIter = FumaroleBlockIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        FumaroleBlockIterator {
+            curr: 0,
+            inner: self.updates,
+        }
+    }
+}
+
+///
+/// An iterator over the references of updates contained in a [`FumaroleBlockEvent`].
+///
+pub struct FumaroleBlockIter<'a> {
+    curr: usize,
+    inner: &'a [geyser::SubscribeUpdate],
+}
+
+impl<'a> Iterator for FumaroleBlockIter<'a> {
+    type Item = &'a geyser::SubscribeUpdate;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.curr >= self.inner.len() {
+            None
+        } else {
+            let item = &self.inner[self.curr];
+            self.curr += 1;
+            Some(item)
+        }
+    }
+}
+
+impl FumaroleBlockEvent {
+    pub fn iter(&self) -> FumaroleBlockIter<'_> {
+        FumaroleBlockIter {
+            curr: 0,
+            inner: &self.updates,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SlotStatusUpdateLense {
+    inner: geyser::SubscribeUpdate,
+}
+
+impl SlotStatusUpdateLense {
+    pub unsafe fn new_unchecked(update: geyser::SubscribeUpdate) -> Self {
+        Self { inner: update }
+    }
+
+    ///
+    /// Focuses the lense on the [`geyser::SubscribeUpdateSlot`].
+    ///
+    pub fn focus(&self) -> &geyser::SubscribeUpdateSlot {
+        match self.inner.update_oneof.as_ref() {
+            Some(geyser::subscribe_update::UpdateOneof::Slot(slot)) => slot,
+            _ => panic!("not a slot update"),
+        }
+    }
+
+    ///
+    /// Returns the root [`geyser::SubscribeUpdate`] the lense can focus on.
+    ///
+    pub fn inner_ref(&self) -> &geyser::SubscribeUpdate {
+        &self.inner
+    }
+
+    ///
+    /// Consumes the lense and returns the root [`geyser::SubscribeUpdate`] the lense can focus on.
+    ///
+    pub fn into_inner(self) -> geyser::SubscribeUpdate {
+        self.inner
+    }
+
+    ///
+    /// Consumes the lense and returns the focused [`geyser::SubscribeUpdateSlot`].
+    ///
+    pub fn into_focused(self) -> geyser::SubscribeUpdateSlot {
+        match self.inner.update_oneof {
+            Some(geyser::subscribe_update::UpdateOneof::Slot(slot)) => slot,
+            _ => panic!("not a slot update"),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct FumaroleSlotStatusEvent {
+    pub slot: u64,
+    pub lense: SlotStatusUpdateLense,
+}
+
+#[derive(Default)]
+struct BlockStreamState {
+    buffered_block_updates: HashMap<u64, VecDeque<geyser::SubscribeUpdate>>,
+    poll_ready: VecDeque<FumaroleBlockStreamEvent>,
+}
+
+impl BlockStreamState {
+    fn handle_fumarole_ev_data(&mut self, slot: u64, update: geyser::SubscribeUpdate) {
+        match update.update_oneof.as_ref() {
+            Some(geyser::subscribe_update::UpdateOneof::Slot(_)) => {
+                self.poll_ready
+                    .push_back(FumaroleBlockStreamEvent::SlotStatus(
+                        FumaroleSlotStatusEvent {
+                            slot,
+                            lense: unsafe { SlotStatusUpdateLense::new_unchecked(update) },
+                        },
+                    ));
+            }
+            _ => {
+                self.buffered_block_updates
+                    .entry(slot)
+                    .or_default()
+                    .push_back(update);
+            }
+        }
+    }
+
+    fn handle_fumarole_ev_slot_ended(&mut self, slot: u64) {
+        let updates = self
+            .buffered_block_updates
+            .remove(&slot)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        self.poll_ready
+            .push_back(FumaroleBlockStreamEvent::Block(FumaroleBlockEvent {
+                slot,
+                updates,
+            }));
+    }
+
+    fn handle_fumarole_ev(&mut self, event: FumaroleEvent) {
+        match event {
+            FumaroleEvent::Data { slot, update } => self.handle_fumarole_ev_data(slot, update),
+            FumaroleEvent::SlotEnded(slot) => self.handle_fumarole_ev_slot_ended(slot),
+        }
+    }
+
+    fn poll_next(&mut self) -> Option<Result<FumaroleBlockStreamEvent, FumaroleSubscribeError>> {
+        self.poll_ready.pop_front().map(Ok)
+    }
+}
+
+pub struct BlockStream<S> {
+    inner: S,
+    state: BlockStreamState,
+}
+
+/// Stream adapter that groups payload updates into slot-scoped blocks.
+///
+/// The adapter buffers regular data updates by slot (concurrently across slots).
+/// When [`FumaroleEvent::SlotEnded(slot)`] arrives, the buffered payload updates
+/// for that slot are emitted as [`FumaroleBlockStreamEvent::Block`].
+///
+/// `Slot` status and `BlockMeta` updates are surfaced immediately as
+/// [`FumaroleBlockStreamEvent::SlotStatus`] and
+/// [`FumaroleBlockStreamEvent::BlockMeta`] respectively.
+///
+/// # Generic Parameter
+///
+/// `S` is any stream yielding `Result<FumaroleEvent, FumaroleSubscribeError>`.
+///
+/// # Notes
+///
+/// This adapter is intended for block-oriented consumers that want explicit block
+/// boundaries while still receiving slot-status and block-meta events as soon as
+/// they appear.
+
+impl<S> Stream for BlockStream<S>
+where
+    S: Stream<Item = Result<FumaroleEvent, FumaroleSubscribeError>> + Unpin,
+{
+    type Item = Result<FumaroleBlockStreamEvent, FumaroleSubscribeError>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         loop {
+            if let Some(item) = self.state.poll_next() {
+                return std::task::Poll::Ready(Some(item));
+            }
+
             match std::pin::Pin::new(&mut self.inner).poll_next(cx) {
-                std::task::Poll::Ready(Some(Ok(FumaroleEvent::Data { slot: _, update }))) => {
-                    return std::task::Poll::Ready(Some(Ok(update)));
-                }
-                std::task::Poll::Ready(Some(Ok(FumaroleEvent::SlotEnded(_)))) => {
+                std::task::Poll::Ready(Some(Ok(event))) => {
+                    self.state.handle_fumarole_ev(event);
                     continue;
                 }
                 std::task::Poll::Ready(Some(Err(err))) => {
                     return std::task::Poll::Ready(Some(Err(err)));
                 }
-                std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
-                std::task::Poll::Pending => return std::task::Poll::Pending,
+                std::task::Poll::Ready(None) => {
+                    if let Some(item) = self.state.poll_next() {
+                        return std::task::Poll::Ready(Some(item));
+                    }
+                    return std::task::Poll::Ready(None);
+                }
+                std::task::Poll::Pending => {
+                    if self.state.poll_ready.is_empty() {
+                        return std::task::Poll::Pending;
+                    }
+                }
             }
         }
     }
@@ -402,7 +668,7 @@ impl Stream for BlockStream {
 mod tests {
     use {
         super::*,
-        futures::{pin_mut, StreamExt},
+        futures::{StreamExt, pin_mut},
         tokio::sync::mpsc,
         yellowstone_grpc_proto::geyser::{
             SubscribeUpdate, SubscribeUpdateEntry, SubscribeUpdateSlot,
@@ -576,16 +842,130 @@ mod tests {
 
         assert_eq!(got, vec!["d2", "d99", "d100", "e2", "d1", "e1"]);
     }
+
+    #[tokio::test]
+    async fn block_stream_buffers_by_slot_and_emits_block_on_slot_end() {
+        let (tx, rx) = mpsc::channel(16);
+        tx.send(Ok(FumaroleEvent::Data {
+            slot: 2,
+            update: mk_entry_update(2, 1),
+        }))
+        .await
+        .expect("send entry slot 2");
+        tx.send(Ok(FumaroleEvent::Data {
+            slot: 1,
+            update: mk_entry_update(1, 1),
+        }))
+        .await
+        .expect("send entry slot 1");
+        tx.send(Ok(FumaroleEvent::Data {
+            slot: 2,
+            update: mk_entry_update(2, 2),
+        }))
+        .await
+        .expect("send second entry slot 2");
+        tx.send(Ok(FumaroleEvent::SlotEnded(2)))
+            .await
+            .expect("send slot ended 2");
+        tx.send(Ok(FumaroleEvent::SlotEnded(1)))
+            .await
+            .expect("send slot ended 1");
+        drop(tx);
+
+        let stream = FumaroleStream::new(rx).block_stream();
+        pin_mut!(stream);
+
+        let mut got = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item.expect("block stream should yield ok") {
+                FumaroleBlockStreamEvent::Block(FumaroleBlockEvent { slot, updates }) => {
+                    got.push(format!("b{slot}:{}", updates.len()))
+                }
+                FumaroleBlockStreamEvent::SlotStatus(FumaroleSlotStatusEvent { slot, .. }) => {
+                    got.push(format!("s{slot}"))
+                }
+            }
+        }
+
+        assert_eq!(got, vec!["b2:2", "b1:1"]);
+    }
+
+    #[tokio::test]
+    async fn block_stream_passes_through_slot_status_and_block_meta() {
+        let (tx, rx) = mpsc::channel(16);
+        tx.send(Ok(FumaroleEvent::Data {
+            slot: 2,
+            update: mk_entry_update(2, 1),
+        }))
+        .await
+        .expect("send entry slot 2");
+        tx.send(Ok(FumaroleEvent::Data {
+            slot: 99,
+            update: mk_slot_update(99),
+        }))
+        .await
+        .expect("send slot status");
+        tx.send(Ok(FumaroleEvent::Data {
+            slot: 100,
+            update: SubscribeUpdate {
+                filters: vec![],
+                created_at: None,
+                update_oneof: Some(UpdateOneof::BlockMeta(Default::default())),
+            },
+        }))
+        .await
+        .expect("send block meta");
+        tx.send(Ok(FumaroleEvent::SlotEnded(2)))
+            .await
+            .expect("send slot ended 2");
+        drop(tx);
+
+        let stream = FumaroleStream::new(rx).block_stream();
+        pin_mut!(stream);
+
+        let mut got = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item.expect("block stream should yield ok") {
+                FumaroleBlockStreamEvent::Block(FumaroleBlockEvent { slot, updates }) => {
+                    got.push(format!("b{slot}:{}", updates.len()))
+                }
+                FumaroleBlockStreamEvent::SlotStatus(FumaroleSlotStatusEvent { slot, .. }) => {
+                    got.push(format!("s{slot}"))
+                }
+            }
+        }
+
+        assert_eq!(got, vec!["s99", "m100", "b2:1"]);
+    }
 }
 
 ///
 /// A stream that yields [`geyser::SubscribeUpdate`] one by one, without any guarantee on the order of the updates.
-/// 
+///
 /// Prefer to use [`SlotSequentialStream`], it yields richer data types that indicate slot boundaries.
-/// 
+///
 pub struct DragonsmouthLike<S> {
     inner: SlotSequentialStream<S>,
 }
+
+/// Compatibility adapter exposing a Dragonsmouth-like stream shape.
+///
+/// This adapter consumes a slot-sequential stream and yields only raw
+/// [`geyser::SubscribeUpdate`] values, filtering out explicit slot boundary
+/// markers (`SlotEnded`).
+///
+/// # Generic Parameter
+///
+/// `S` is any stream yielding `Result<FumaroleEvent, FumaroleSubscribeError>`.
+///
+/// # Behavior
+///
+/// - `FumaroleEvent::Data` -> forwarded as `Ok(SubscribeUpdate)`
+/// - `FumaroleEvent::SlotEnded` -> skipped
+/// - errors -> forwarded unchanged
+///
+/// This is useful when migrating existing Dragonsmouth consumers that are not
+/// yet aware of explicit slot boundary events.
 
 impl<S> Stream for DragonsmouthLike<S>
 where

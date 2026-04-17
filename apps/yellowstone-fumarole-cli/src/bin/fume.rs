@@ -34,6 +34,7 @@ use {
             ConsumerGroupInfo, CreateConsumerGroupRequest, DeleteConsumerGroupRequest,
             GetConsumerGroupInfoRequest, InitialOffsetPolicy, ListConsumerGroupsRequest,
         },
+        stream::{FumaroleBlockEvent, FumaroleBlockStreamEvent},
     },
     yellowstone_grpc_proto::geyser::{
         CommitmentLevel, SubscribeRequest, SubscribeRequestFilterAccounts,
@@ -836,7 +837,155 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
         .expect("Failed to subscribe");
 
     let (_, fumarole_stream) = fumarole_subscription.split();
-    let mut fumarole_stream = fumarole_stream.like_dragonsmouth();
+    let mut fumarole_stream = fumarole_stream.block_stream();
+    let mut shutdown = create_shutdown();
+
+    let summarized_block = |block_info: &FumaroleBlockEvent| {
+        let mut num_account = 0;
+        let mut num_success_txn = 0;
+        let mut num_failed_txn = 0;
+        let mut num_entry = 0;
+        let mut block_meta: Option<SubscribeUpdateBlockMeta> = None;
+        for update in block_info.iter() {
+            match update.update_oneof.as_ref().unwrap() {
+                UpdateOneof::Account(_) => {
+                    num_account += 1;
+                }
+                UpdateOneof::Transaction(update) => {
+                    let txn = update.transaction.as_ref().unwrap();
+                    if txn.meta.as_ref().unwrap().err.is_some() {
+                        num_failed_txn += 1;
+                    } else {
+                        num_success_txn += 1;
+                    }
+                }
+                UpdateOneof::BlockMeta(subscribe_update_block_meta) => {
+                    block_meta = Some(subscribe_update_block_meta.clone());
+                }
+                UpdateOneof::Entry(_) => {
+                    num_entry += 1;
+                }
+                _ => {
+                    continue;
+                }
+            }
+        }
+        let block_meta = block_meta.as_ref().expect("Block meta should be present");
+        let expected_tx_count = block_meta.executed_transaction_count;
+        let expected_entry_count = block_meta.entries_count;
+        let total_tx_cnt = num_success_txn + num_failed_txn;
+        format!(
+            "good tx: {num_success_txn}, failed tx: {num_failed_txn}, total tx: {total_tx_cnt}/{expected_tx_count}, entries: {num_entry}/{expected_entry_count}, account updates: {num_account}"
+        )
+    };
+
+    let mut one_sec_tick = tokio::time::interval(Duration::from_secs(1));
+    let mut block_count_per_tick = 0u64;
+    let mut block_rate_sma = SMA::new(5);
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => {
+                println!("Shutting down...");
+                break;
+            }
+            _ = one_sec_tick.tick() => {
+                block_rate_sma.record(block_count_per_tick as f64);
+                block_count_per_tick = 0;
+            }
+            result = fumarole_stream.next() => {
+                let Some(result) = result else {
+                    println!("grpc stream closed!");
+                    break;
+                };
+
+                let event = result.expect("Failed to receive event");
+                match event {
+                    FumaroleBlockStreamEvent::Block(block) => {
+                        let slot = block.slot;
+                        block_count_per_tick += 1;
+                        let block_rate_avg = block_rate_sma.average();
+                        let msg = summarized_block(&block);
+                        writeln!(out, "{slot} ({block_rate_avg}/s) -- {msg}").expect("Failed to write to output file");
+                        if let Some(tx_out) = tx_out.as_mut() {
+                            for ev in block.iter() {
+                                if let UpdateOneof::Transaction(tx) = ev.update_oneof.as_ref().unwrap() {
+                                    let sig = bs58::encode(tx.transaction.as_ref().unwrap().signature.clone()).into_string();
+                                    writeln!(tx_out, "{slot},{sig}").expect("Failed to write to transaction output file");
+                                }
+                            }
+                        }
+                    }
+                    FumaroleBlockStreamEvent::SlotStatus(_) => {
+                        continue;
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+
+async fn block_stats_legacy(
+    mut client: FumaroleClient,
+    args: SubscribeArgs,
+) {
+    let mut out: Box<dyn Write> = if let Some(out) = &args.out {
+        Box::new(
+            File::options()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(PathBuf::from(out))
+                .expect("Failed to open output file"),
+        )
+    } else {
+        Box::new(stdout())
+    };
+
+    let mut tx_out = if let Some(tx_out) = &args.tx_out {
+        let f = File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(tx_out)
+            .expect("Failed to open transaction output file");
+        Some(Box::new(f) as Box<dyn Write>)
+    } else {
+        None
+    };
+
+    let registry = prometheus::Registry::new();
+    yellowstone_fumarole_client::metrics::register_metrics(&registry);
+
+    if let Some(bind_addr) = &args.prometheus {
+        let socket_addr: SocketAddr = bind_addr.0;
+        tokio::spawn(prometheus_server(socket_addr, registry));
+    }
+    let mut request = args.as_subscribe_request();
+    // For block stats, we need to track block meta and entry updates
+    request
+        .blocks_meta
+        .insert(args.default_filter_name(), Default::default());
+    request
+        .entry
+        .insert(args.default_filter_name(), Default::default());
+    let cg_name = args.name.clone();
+    println!("Subscribing to consumer group {}", cg_name);
+    let subscribe_config = FumaroleSubscribeConfig {
+        commit_interval: Duration::from_secs(5),
+        num_data_plane_tcp_connections: args.para,
+        no_commit: args.no_commit,
+        ..Default::default()
+    };
+    let subscription = client
+        .subscribe_with_config(cg_name.clone(), request, subscribe_config)
+        .await
+        .expect("Failed to subscribe");
+
+    let (_, source) = subscription.split();
+
+    let mut source = source.like_dragonsmouth();
     let mut shutdown = create_shutdown();
     #[derive(Default)]
     struct BlockInfo {
@@ -878,7 +1027,7 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
                 block_rate_sma.record(block_count_per_tick as f64);
                 block_count_per_tick = 0;
             }
-            result = fumarole_stream.next() => {
+            result = source.next() => {
                 let Some(result) = result else {
                     println!("grpc stream closed!");
                     break;
@@ -1064,7 +1213,7 @@ async fn main() {
             slot_range(fumarole_client).await;
         }
         Action::Block(blocks_args) => {
-            block_stats(fumarole_client, blocks_args).await;
+            block_stats_legacy(fumarole_client, blocks_args).await;
         }
     }
 }

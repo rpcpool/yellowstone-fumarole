@@ -346,9 +346,9 @@ where
                 };
                 if self
                     .dragonsmouth_outlet
-                    .send(Ok(FumaroleEvent::Data { 
+                    .send(Ok(FumaroleEvent::Data {
                         slot: slot_status.slot,
-                        update 
+                        update,
                     }))
                     .await
                     .is_err()
@@ -919,7 +919,9 @@ where
                         block_meta = Some(update);
                     } else {
                         let event_slot = if let Some((expected_slot, expected_shard_idx)) =
-                            scheduled_shards.front().map(|(slot, shard_idx)| (*slot, *shard_idx))
+                            scheduled_shards
+                                .front()
+                                .map(|(slot, shard_idx)| (*slot, *shard_idx))
                         {
                             if dedup_state.dedup(
                                 expected_slot,
@@ -2035,7 +2037,11 @@ mod tests {
             .recv()
             .await
             .expect("expected dragonsmouth block meta");
-        let Ok(FumaroleEvent::Data { slot: 42, update: dm_update }) = dm_msg else {
+        let Ok(FumaroleEvent::Data {
+            slot: 42,
+            update: dm_update,
+        }) = dm_msg
+        else {
             panic!("expected dragonsmouth data event")
         };
         assert!(matches!(
@@ -2071,7 +2077,9 @@ mod tests {
             slot: 43,
         };
 
-        orchestrator.handle_shard_download_completed(completed).await;
+        orchestrator
+            .handle_shard_download_completed(completed)
+            .await;
 
         let task_result = outlet_rx
             .recv()
@@ -2212,7 +2220,11 @@ mod tests {
         assert!(matches!(result, Ok((None, _))));
 
         let forwarded = outlet_rx.next().await.expect("expected forwarded update");
-        let Ok(FumaroleEvent::Data { slot: 42, update: forwarded }) = forwarded else {
+        let Ok(FumaroleEvent::Data {
+            slot: 42,
+            update: forwarded,
+        }) = forwarded
+        else {
             panic!("expected data event")
         };
         assert!(matches!(forwarded.update_oneof, Some(UpdateOneof::Slot(_))));

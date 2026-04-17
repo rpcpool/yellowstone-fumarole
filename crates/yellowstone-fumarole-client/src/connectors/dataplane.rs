@@ -101,7 +101,9 @@ impl Stream for TonicDataplaneStreamAdapter {
     ) -> Poll<Option<Self::Item>> {
         match self.inner.poll_next_unpin(cx) {
             Poll::Ready(Some(Ok(response))) => Poll::Ready(Some(Ok(response))),
-            Poll::Ready(Some(Err(status))) => Poll::Ready(Some(Err(DataplaneStreamError::from(status)))),
+            Poll::Ready(Some(Err(status))) => {
+                Poll::Ready(Some(Err(DataplaneStreamError::from(status))))
+            }
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }
