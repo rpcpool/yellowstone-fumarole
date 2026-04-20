@@ -287,6 +287,7 @@ use {
         },
     },
     semver::Version,
+    solana_clock::Slot,
     std::{
         collections::HashMap,
         num::{NonZeroU8, NonZeroUsize},
@@ -501,6 +502,10 @@ pub struct FumaroleSubscribeConfig {
     /// set to `true` by default.
     ///
     pub enable_sharded_block_download: bool,
+
+    /// Optional hook invoked when a slot's block data cannot be found during download.
+    /// This lets callers recover the slot via another RPC source such as `getBlock`.
+    pub on_slot_not_found: Option<Arc<dyn Fn(Slot) + Send + Sync>>,
 }
 
 impl Default for FumaroleSubscribeConfig {
@@ -519,6 +524,7 @@ impl Default for FumaroleSubscribeConfig {
             refresh_tip_stats_interval: DEFAULT_REFRESH_TIP_INTERVAL, // Default to 5 seconds
             no_commit: false,
             enable_sharded_block_download: true,
+            on_slot_not_found: None,
         }
     }
 }
@@ -851,6 +857,7 @@ impl FumaroleClient {
             no_commit: config.no_commit,
             stop: false,
             enable_sharded_block_download: use_sharded_downlaod,
+            on_slot_not_found: config.on_slot_not_found.clone(),
         };
         let fumarole_rt_jh = handle.spawn(tokio_rt.run());
         let fut = async move {

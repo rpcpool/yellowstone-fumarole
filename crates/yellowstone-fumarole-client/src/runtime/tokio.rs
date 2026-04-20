@@ -96,6 +96,7 @@ pub(crate) struct TokioFumeDragonsmouthRuntime {
     pub no_commit: bool,
     pub stop: bool,
     pub enable_sharded_block_download: bool,
+    pub on_slot_not_found: Option<Arc<dyn Fn(Slot) + Send + Sync>>,
 }
 
 const DEFAULT_HISTORY_POLL_SIZE: i64 = 100;
@@ -138,6 +139,21 @@ impl From<SubscribeRequest> for BlockFilters {
 enum LoopInstruction {
     Continue,
     ErrorStop,
+}
+
+fn spawn_slot_not_found_hook(
+    hook: Option<Arc<dyn Fn(Slot) + Send + Sync>>,
+    slot: Slot,
+) -> Option<task::JoinHandle<()>> {
+    hook.map(|hook| {
+        task::spawn_blocking(move || {
+            if let Err(err) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (hook)(slot)))
+            {
+                tracing::error!("on_slot_not_found panicked for slot {slot}: {err:?}");
+            }
+        })
+    })
 }
 
 impl TokioFumeDragonsmouthRuntime {
@@ -242,7 +258,6 @@ impl TokioFumeDragonsmouthRuntime {
                 }
             }
             DownloadTaskResult::Err { slot, err } => {
-                // TODO add option to let user decide what to do, by default let it crash
                 match err {
                     DownloadBlockError::OutletDisconnected => {
                         // Will be handled in the main loop.
@@ -250,6 +265,7 @@ impl TokioFumeDragonsmouthRuntime {
                     }
                     DownloadBlockError::FailedDownload(h2_err) => {
                         if h2_err.code() == Code::NotFound {
+                            let _ = spawn_slot_not_found_hook(self.on_slot_not_found.clone(), slot);
                             self.sm.make_slot_download_progress(slot, None);
                             tracing::error!("slot {slot} not found, skipping...");
                         } else {
