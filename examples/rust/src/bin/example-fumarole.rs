@@ -3,9 +3,7 @@ use {
     solana_pubkey::Pubkey,
     std::{collections::HashMap, path::PathBuf},
     tokio_stream::StreamExt,
-    yellowstone_fumarole_client::{
-        DragonsmouthAdapterSession, FumaroleClient, config::FumaroleConfig,
-    },
+    yellowstone_fumarole_client::{FumaroleClient, config::FumaroleConfig},
     yellowstone_grpc_proto::geyser::{
         SubscribeRequest, SubscribeRequestFilterTransactions, SubscribeUpdateAccount,
         SubscribeUpdateTransaction, subscribe_update::UpdateOneof,
@@ -66,11 +64,14 @@ async fn subscribe(args: SubscribeArgs, config: FumaroleConfig) {
         .expect("Failed to connect to fumarole");
 
     let subscription = fumarole_client
-        .dragonsmouth_subscribe(args.name, request)
+        .subscribe(args.name, request)
         .await
         .expect("Failed to subscribe");
 
-    let mut source = subscription.source;
+    let (_, source) = subscription.split();
+
+    let mut source = source.like_dragonsmouth();
+
     loop {
         tokio::select! {
             maybe = source.next() => {

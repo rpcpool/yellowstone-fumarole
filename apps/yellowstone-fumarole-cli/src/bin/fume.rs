@@ -5,7 +5,6 @@ use {
     futures::{FutureExt, StreamExt, future::BoxFuture},
     serde::Deserialize,
     solana_pubkey::{ParsePubkeyError, Pubkey},
-    solana_signature::Signature,
     std::{
         collections::{HashMap, HashSet},
         env,
@@ -924,176 +923,6 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
     }
 }
 
-async fn block_stats_legacy(mut client: FumaroleClient, args: SubscribeArgs) {
-    let mut out: Box<dyn Write> = if let Some(out) = &args.out {
-        Box::new(
-            File::options()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(PathBuf::from(out))
-                .expect("Failed to open output file"),
-        )
-    } else {
-        Box::new(stdout())
-    };
-
-    let mut tx_out = if let Some(tx_out) = &args.tx_out {
-        let f = File::options()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(tx_out)
-            .expect("Failed to open transaction output file");
-        Some(Box::new(f) as Box<dyn Write>)
-    } else {
-        None
-    };
-
-    let registry = prometheus::Registry::new();
-    yellowstone_fumarole_client::metrics::register_metrics(&registry);
-
-    if let Some(bind_addr) = &args.prometheus {
-        let socket_addr: SocketAddr = bind_addr.0;
-        tokio::spawn(prometheus_server(socket_addr, registry));
-    }
-    let mut request = args.as_subscribe_request();
-    // For block stats, we need to track block meta and entry updates
-    request
-        .blocks_meta
-        .insert(args.default_filter_name(), Default::default());
-    request
-        .entry
-        .insert(args.default_filter_name(), Default::default());
-    let cg_name = args.name.clone();
-    println!("Subscribing to consumer group {}", cg_name);
-    let subscribe_config = FumaroleSubscribeConfig {
-        commit_interval: Duration::from_secs(5),
-        num_data_plane_tcp_connections: args.para,
-        no_commit: args.no_commit,
-        ..Default::default()
-    };
-    let subscription = client
-        .subscribe_with_config(cg_name.clone(), request, subscribe_config)
-        .await
-        .expect("Failed to subscribe");
-
-    let (_, source) = subscription.split();
-
-    let mut source = source.like_dragonsmouth();
-    let mut shutdown = create_shutdown();
-    #[derive(Default)]
-    struct BlockInfo {
-        success_tx: HashSet<Signature>,
-        failed_tx: HashSet<Signature>,
-        entry_count: u32,
-        account_updates: HashSet<(Pubkey, Signature)>,
-        block_meta: Option<SubscribeUpdateBlockMeta>,
-    }
-
-    let summarized_block = |block_info: &BlockInfo| {
-        let success_count = block_info.success_tx.len();
-        let failed_count = block_info.failed_tx.len();
-        let entry_count = block_info.entry_count;
-        let account_updates = block_info.account_updates.len();
-        let block_meta = block_info
-            .block_meta
-            .as_ref()
-            .expect("Block meta should be present");
-        let expected_tx_count = block_meta.executed_transaction_count;
-        let expected_entry_count = block_meta.entries_count;
-        let total_tx_cnt = success_count + failed_count;
-        format!(
-            "good tx: {success_count}, failed tx: {failed_count}, total tx: {total_tx_cnt}/{expected_tx_count}, entries: {entry_count}/{expected_entry_count}, account updates: {account_updates}"
-        )
-    };
-
-    let mut block_map: HashMap<u64, BlockInfo> = HashMap::new();
-    let mut one_sec_tick = tokio::time::interval(Duration::from_secs(1));
-    let mut block_count_per_tick = 0u64;
-    let mut block_rate_sma = SMA::new(5);
-    loop {
-        tokio::select! {
-            _ = &mut shutdown => {
-                println!("Shutting down...");
-                break;
-            }
-            _ = one_sec_tick.tick() => {
-                block_rate_sma.record(block_count_per_tick as f64);
-                block_count_per_tick = 0;
-            }
-            result = source.next() => {
-                let Some(result) = result else {
-                    println!("grpc stream closed!");
-                    break;
-                };
-
-                let event = result.expect("Failed to receive event");
-
-                if let Some(oneof) = event.update_oneof {
-                    match oneof {
-                        UpdateOneof::Account(account_update) => {
-                            let slot = account_update.slot;
-                            let account = account_update.account.expect("Failed to get account update");
-                            let pubkey = Pubkey::try_from(account.pubkey)
-                                .expect("Failed to parse pubkey");
-                            let tx_sig = if let Some(tx_sig_bytes) = account.txn_signature {
-                                Signature::try_from(tx_sig_bytes)
-                                    .expect("Failed to parse transaction signature")
-                            } else {
-                                Signature::default()
-                            };
-                            let block = block_map.entry(slot).or_default();
-                            block.account_updates.insert((pubkey, tx_sig));
-                        },
-                        UpdateOneof::Transaction(tx) => {
-                            let slot = tx.slot;
-                            let transaction = tx.transaction.expect("Failed to get transaction");
-                            let sig = Signature::try_from(transaction.signature)
-                                .expect("Failed to parse transaction signature");
-                            let is_err = transaction.meta.expect("Failed to get transaction meta").err.is_some();
-                            let block = block_map.entry(slot).or_default();
-                            if is_err {
-                                block.failed_tx.insert(sig);
-                            } else {
-                                block.success_tx.insert(sig);
-                            }
-                            continue;
-                        },
-                        UpdateOneof::Slot(_) => {
-                            continue;
-                        }
-                        UpdateOneof::BlockMeta(block_meta) => {
-                            let slot = block_meta.slot;
-                            let Some(mut block) = block_map.remove(&slot) else {
-                                continue;
-                            };
-                            block.block_meta = Some(block_meta);
-                            let msg = summarized_block(&block);
-                            block_count_per_tick += 1;
-                            let block_rate_avg = block_rate_sma.average();
-                            writeln!(out, "{slot} ({block_rate_avg}/s) -- {msg}").expect("Failed to write to output file");
-                            if let Some(tx_out) = &mut tx_out {
-                                for sig in block.success_tx.iter() {
-                                    writeln!(tx_out, "{slot} -- {sig}").expect("Failed to write to transaction output file");
-                                }
-                            }
-                        }
-                        UpdateOneof::Entry(entry) => {
-                            let slot = entry.slot;
-                            let block = block_map.entry(slot).or_default();
-                            block.entry_count += 1;
-                        }
-                        _ => {
-                            continue;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 async fn slot_range(mut fumarole_client: FumaroleClient) {
     let result = fumarole_client.get_slot_range().await;
     match result {
@@ -1208,7 +1037,7 @@ async fn main() {
             slot_range(fumarole_client).await;
         }
         Action::Block(blocks_args) => {
-            block_stats_legacy(fumarole_client, blocks_args).await;
+            block_stats(fumarole_client, blocks_args).await;
         }
     }
 }

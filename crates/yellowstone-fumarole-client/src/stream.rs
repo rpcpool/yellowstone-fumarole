@@ -570,6 +570,7 @@ impl<'a> Iterator for FumaroleBlockIter<'a> {
 }
 
 impl FumaroleBlockEvent {
+    #[allow(clippy::missing_const_for_fn)]
     pub fn iter(&self) -> FumaroleBlockIter<'_> {
         FumaroleBlockIter {
             curr: 0,
