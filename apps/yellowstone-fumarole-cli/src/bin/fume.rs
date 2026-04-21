@@ -924,12 +924,7 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
     }
 }
 
-
-
-async fn block_stats_legacy(
-    mut client: FumaroleClient,
-    args: SubscribeArgs,
-) {
+async fn block_stats_legacy(mut client: FumaroleClient, args: SubscribeArgs) {
     let mut out: Box<dyn Write> = if let Some(out) = &args.out {
         Box::new(
             File::options()

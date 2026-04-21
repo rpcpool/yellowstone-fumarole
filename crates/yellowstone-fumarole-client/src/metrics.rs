@@ -198,10 +198,6 @@ pub(crate) fn inc_slot_download_count() {
     SLOT_DOWNLOAD_COUNT.inc();
 }
 
-pub(crate) fn inc_inflight_slot_download() {
-    INFLIGHT_SLOT_DOWNLOAD.inc();
-}
-
 pub(crate) fn dec_inflight_slot_download() {
     INFLIGHT_SLOT_DOWNLOAD.dec();
 }
@@ -212,10 +208,6 @@ pub(crate) fn inc_offset_commitment_count() {
 
 pub(crate) fn observe_slot_download_duration(duration: Duration) {
     SLOT_DOWNLOAD_DURATION.observe(duration.as_millis() as f64);
-}
-
-pub(crate) fn inc_failed_slot_download_attempt() {
-    FAILED_SLOT_DOWNLOAD_ATTEMPT.inc();
 }
 
 pub(crate) fn inc_skip_offset_commitment_count() {

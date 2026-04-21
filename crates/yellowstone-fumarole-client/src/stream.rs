@@ -420,7 +420,6 @@ impl From<FumaroleRuntimeEvent> for FumaroleEvent {
     }
 }
 
-
 impl Stream for FumaroleStream {
     type Item = Result<FumaroleEvent, FumaroleSubscribeError>;
 
@@ -428,7 +427,9 @@ impl Stream for FumaroleStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        self.inner.poll_recv(cx).map(|ev| ev.map(|ev2| ev2.map(Into::into)))
+        self.inner
+            .poll_recv(cx)
+            .map(|ev| ev.map(|ev2| ev2.map(Into::into)))
     }
 }
 

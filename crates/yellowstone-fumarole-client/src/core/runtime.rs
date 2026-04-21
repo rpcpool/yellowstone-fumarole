@@ -40,7 +40,6 @@ use {
 
 pub const DEFAULT_GC_INTERVAL: usize = 100;
 
-
 pub struct FumaroleRuntimeDataEvent {
     pub slot: Slot,
     pub update: SubscribeUpdate,
@@ -60,10 +59,6 @@ pub struct DragonsmouthSubscribeRequestBidi {
     pub rx: mpsc::Receiver<SubscribeRequest>,
 }
 
-pub enum DownloadTaskResult {
-    Ok(CompletedDownloadBlockTask),
-    Err { slot: Slot, err: DownloadBlockError },
-}
 
 pub enum BackgroundJobResult {
     #[allow(dead_code)]
@@ -98,6 +93,7 @@ where
     pub last_history_poll: Option<Instant>,
     pub gc_interval: usize, // in ticks
     pub non_critical_background_jobs: JoinSet<BackgroundJobResult>,
+    pub download_task_runner_jh: tokio::task::JoinHandle<Result<(), DownloadBlockError>>,
     pub no_commit: bool,
     pub stop: bool,
 }
@@ -106,8 +102,6 @@ const DEFAULT_HISTORY_POLL_SIZE: i64 = 100;
 const CONTROL_PLANE_REJOIN_MAX_ATTEMPTS: usize = 3;
 const CONTROL_PLANE_REJOIN_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROL_PLANE_REJOIN_BACKOFF: Duration = Duration::from_secs(2);
-
-
 
 const fn build_poll_history_cmd(from: Option<FumeOffset>) -> ControlCommand {
     ControlCommand {
@@ -244,44 +238,15 @@ where
         }
     }
 
-    async fn handle_download_result(&mut self, download_result: DownloadTaskResult) {
-        match download_result {
-            DownloadTaskResult::Ok(completed) => {
-                let CompletedDownloadBlockTask {
-                    slot,
-                    block_uid: _,
-                    shard_idx_vec,
-                } = completed;
-                for shard_idx in shard_idx_vec {
-                    self.sm.make_slot_download_progress(slot, Some(shard_idx));
-                }
-            }
-            DownloadTaskResult::Err { slot, err } => {
-                // TODO add option to let user decide what to do, by default let it crash
-                match err {
-                    DownloadBlockError::OutletDisconnected => {
-                        // Will be handled in the main loop.
-                        self.stop = true;
-                    }
-                    DownloadBlockError::FailedDownload(dataplane_err) => {
-                        if matches!(dataplane_err.kind(), DataplaneErrorKind::SlotNotFound) {
-                            self.sm.make_slot_download_progress(slot, None);
-                            tracing::error!("slot {slot} not found, skipping...");
-                        } else {
-                            self.stop = true;
-                            let _ = self
-                                .dragonsmouth_outlet
-                                .send(Err(dataplane_err.into()))
-                                .await;
-                        }
-                    }
-                    DownloadBlockError::IncompleteDownload => {
-                        self.stop = true;
-                        // This should not happen, so we panic here.
-                        panic!("Incomplete download for slot {slot}");
-                    }
-                }
-            }
+    async fn handle_download_result(&mut self, completed: CompletedDownloadBlockTask) {
+        let CompletedDownloadBlockTask {
+            slot,
+            block_uid: _,
+
+            shard_idx_vec,
+        } = completed;
+        for shard_idx in shard_idx_vec {
+            self.sm.make_slot_download_progress(slot, Some(shard_idx));
         }
     }
 
@@ -538,7 +503,7 @@ where
         }
     }
 
-    pub(crate) async fn run(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub(crate) async fn run(mut self) {
         self.poll_history_if_needed().await;
 
         // Always start to commit offset, to make sure not another instance is committing to the same offset.
@@ -614,6 +579,34 @@ where
                         }
                     }
                 }
+                result = &mut self.download_task_runner_jh => {
+                    match result {
+                        Ok(Ok(())) => {
+                            tracing::error!("download task runner exited");
+                        }
+                        Ok(Err(DownloadBlockError::FailedDownload(dataplane_err))) => {
+                            let _ = self
+                                .dragonsmouth_outlet
+                                .send(Err(dataplane_err.into()))
+                                .await;
+                        }
+                        Ok(Err(DownloadBlockError::OutletDisconnected)) => {
+                            tracing::debug!("download task runner exited due to outlet disconnection");
+                        }
+                        Err(join_err) => {
+                            let err = DataplaneStreamError::new(
+                                DataplaneErrorKind::NonRecoverable,
+                                "download task runner join error".to_string(),
+                                Some(Box::new(join_err)),
+                            );
+                            let _ = self
+                                .dragonsmouth_outlet
+                                .send(Err(err.into()))
+                                .await;
+                        }
+                    }
+                    break;
+                }
 
                 _ = tokio::time::sleep_until(commit_deadline.into()) => {
                     tracing::debug!(
@@ -630,7 +623,6 @@ where
         }
         self.stop = true;
         tracing::debug!("fumarole runtime exiting");
-        Ok(())
     }
 }
 
@@ -654,7 +646,7 @@ pub struct DownloadTaskRunnerChannels {
 
     ///
     /// Where you get back feedback from download task result.
-    pub download_result_rx: mpsc::Receiver<DownloadTaskResult>,
+    pub download_result_rx: mpsc::Receiver<CompletedDownloadBlockTask>,
 }
 
 pub enum DownloadTaskRunnerCommand {
@@ -835,8 +827,6 @@ pub(crate) enum DownloadBlockError {
     OutletDisconnected,
     #[error(transparent)]
     FailedDownload(#[from] DataplaneStreamError),
-    #[error("download finished too early")]
-    IncompleteDownload,
 }
 
 pub struct CompletedDownloadBlockTask {
@@ -970,10 +960,12 @@ where
                             return Err((ShardDownloaderErrorKind::SinkClosed, dedup_state));
                         }
                         if outlet
-                            .start_send_unpin(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-                                slot: event_slot,
-                                update,
-                            })))
+                            .start_send_unpin(Ok(FumaroleRuntimeEvent::Data(
+                                FumaroleRuntimeDataEvent {
+                                    slot: event_slot,
+                                    update,
+                                },
+                            )))
                             .is_err()
                         {
                             return Err((ShardDownloaderErrorKind::SinkClosed, dedup_state));
@@ -1271,7 +1263,7 @@ pub(crate) struct ShardedDownloadOrchestrator<C> {
     shard_downloader_handles: HashMap<task::Id, PipelinedShardDownloaderHandle>,
     cnc_rx: mpsc::Receiver<DownloadTaskRunnerCommand>,
     download_task_queue: mpsc::Receiver<DownloadTaskArgs>,
-    outlet: mpsc::Sender<DownloadTaskResult>,
+    outlet: mpsc::Sender<CompletedDownloadBlockTask>,
     max_download_attempt_per_slot: usize,
     subscribe_request: Arc<SubscribeRequest>,
     dragonsmouth_outlet: mpsc::Sender<Result<FumaroleRuntimeEvent, FumaroleSubscribeError>>,
@@ -1298,7 +1290,7 @@ where
         connector: C,
         cnc_rx: mpsc::Receiver<DownloadTaskRunnerCommand>,
         download_task_queue: mpsc::Receiver<DownloadTaskArgs>,
-        outlet: mpsc::Sender<DownloadTaskResult>,
+        outlet: mpsc::Sender<CompletedDownloadBlockTask>,
         max_download_attempt_by_slot: usize,
         subscribe_request: Arc<SubscribeRequest>,
         total_shard_downloaders: usize,
@@ -1535,17 +1527,18 @@ where
             }
             let _ = self
                 .outlet
-                .send(DownloadTaskResult::Ok(CompletedDownloadBlockTask {
+                .send(CompletedDownloadBlockTask {
                     slot,
                     block_uid: completed.block_uid,
                     shard_idx_vec: vec![completed.shard_idx],
-                }))
+                })
                 .await;
             if is_slot_complete {
                 let completed = self.slot_download_progression_map.remove(&slot).unwrap();
+                let elapsed = completed.started_at.elapsed();
+                tracing::trace!("slot {} download completed in {:?}", slot, elapsed);
                 #[cfg(feature = "prometheus")]
                 {
-                    let elapsed = completed.started_at.elapsed();
                     observe_slot_download_duration(elapsed);
                 }
                 let block_meta = completed.block_meta;
@@ -1835,7 +1828,7 @@ mod tests {
 
     fn make_test_orchestrator() -> (
         ShardedDownloadOrchestrator<TestConnector>,
-        mpsc::Receiver<DownloadTaskResult>,
+        mpsc::Receiver<CompletedDownloadBlockTask>,
         mpsc::Receiver<Result<FumaroleRuntimeEvent, FumaroleSubscribeError>>,
     ) {
         let (completed_tx, completed_rx) = mpsc::channel(8);
@@ -1875,7 +1868,7 @@ mod tests {
         total_shard_downloaders: usize,
     ) -> (
         ShardedDownloadOrchestrator<TestConnector>,
-        mpsc::Receiver<DownloadTaskResult>,
+        mpsc::Receiver<CompletedDownloadBlockTask>,
         mpsc::Receiver<Result<FumaroleRuntimeEvent, FumaroleSubscribeError>>,
     ) {
         let (completed_tx, completed_rx) = mpsc::channel(8);
@@ -2032,18 +2025,13 @@ mod tests {
             .handle_shard_download_completed(completed)
             .await;
 
-        let task_result = outlet_rx
+        let task = outlet_rx
             .recv()
             .await
             .expect("expected completed task result");
-        match task_result {
-            DownloadTaskResult::Ok(task) => {
-                assert_eq!(task.slot, 42);
-                assert_eq!(task.block_uid, [7u8; 16]);
-                assert_eq!(task.shard_idx_vec, vec![0]);
-            }
-            DownloadTaskResult::Err { .. } => panic!("expected DownloadTaskResult::Ok"),
-        }
+        assert_eq!(task.slot, 42);
+        assert_eq!(task.block_uid, [7u8; 16]);
+        assert_eq!(task.shard_idx_vec, vec![0]);
 
         let dm_msg = dragonsmouth_outlet_rx
             .recv()
@@ -2064,7 +2052,10 @@ mod tests {
             .recv()
             .await
             .expect("expected slot ended event");
-        assert!(matches!(slot_ended, Ok(FumaroleRuntimeEvent::SlotEnded(42))));
+        assert!(matches!(
+            slot_ended,
+            Ok(FumaroleRuntimeEvent::SlotEnded(42))
+        ));
         assert!(!orchestrator.slot_download_progression_map.contains_key(&42));
     }
 
@@ -2093,24 +2084,22 @@ mod tests {
             .handle_shard_download_completed(completed)
             .await;
 
-        let task_result = outlet_rx
+        let task = outlet_rx
             .recv()
             .await
             .expect("expected completed task result");
-        match task_result {
-            DownloadTaskResult::Ok(task) => {
-                assert_eq!(task.slot, 43);
-                assert_eq!(task.block_uid, [8u8; 16]);
-                assert_eq!(task.shard_idx_vec, vec![0]);
-            }
-            DownloadTaskResult::Err { .. } => panic!("expected DownloadTaskResult::Ok"),
-        }
+        assert_eq!(task.slot, 43);
+        assert_eq!(task.block_uid, [8u8; 16]);
+        assert_eq!(task.shard_idx_vec, vec![0]);
 
         let slot_ended = dragonsmouth_outlet_rx
             .recv()
             .await
             .expect("expected slot ended event");
-        assert!(matches!(slot_ended, Ok(FumaroleRuntimeEvent::SlotEnded(43))));
+        assert!(matches!(
+            slot_ended,
+            Ok(FumaroleRuntimeEvent::SlotEnded(43))
+        ));
         assert!(dragonsmouth_outlet_rx.try_recv().is_err());
         assert!(!orchestrator.slot_download_progression_map.contains_key(&43));
     }

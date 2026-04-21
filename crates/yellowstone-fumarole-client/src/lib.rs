@@ -291,10 +291,7 @@ use {
         runtime::{DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, FumaroleAsyncRuntime},
         state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
     },
-    futures::{
-        Sink, SinkExt, Stream, StreamExt,
-        future::{Either, select},
-    },
+    futures::{Sink, SinkExt, Stream, StreamExt},
     proto::control_response::Response,
     semver::Version,
     std::{
@@ -664,6 +661,7 @@ impl FumaroleClient {
     /// Subscribe to a stream of updates from the Fumarole service
     ///
     #[deprecated(note = "This method is deprecated. Please use `subscribe` instead.")]
+    #[allow(deprecated)]
     pub async fn dragonsmouth_subscribe<S>(
         &mut self,
         subscriber_name: S,
@@ -677,6 +675,7 @@ impl FumaroleClient {
     }
 
     #[deprecated(note = "This method is deprecated. Please use `subscribe_with_config` instead.")]
+    #[allow(deprecated)]
     pub async fn dragonsmouth_subscribe_with_config<S>(
         &mut self,
         subscriber_name: S,
@@ -860,28 +859,17 @@ impl FumaroleClient {
             last_tip: Instant::now(),
             gc_interval: config.gc_interval,
             non_critical_background_jobs: Default::default(),
+            download_task_runner_jh,
             last_history_poll: Default::default(),
             no_commit: config.no_commit,
             stop: false,
         };
         let fumarole_rt_jh = tokio::spawn(tokio_rt.run());
-        let fut = async move {
-            let either = select(download_task_runner_jh, fumarole_rt_jh).await;
-            match either {
-                Either::Left((result, _)) => {
-                    let _ = result.expect("fumarole download task runner failed");
-                }
-                Either::Right((result, _)) => {
-                    let _ = result.expect("fumarole runtime failed");
-                }
-            }
-        };
-        let runtime_handle = tokio::spawn(fut);
         let subscription = FumaroleSubscription {
             sink: FumaroleSink::new(dm_tx),
             stream: FumaroleStream::new(dragonsmouth_inlet),
         };
-        Ok((subscription, runtime_handle))
+        Ok((subscription, fumarole_rt_jh))
     }
 
     pub async fn list_consumer_groups(
