@@ -409,6 +409,7 @@ export class FumaroleClient {
       controlPlaneResponseObservable: ctrlPlaneResponseObservable,
       sm,
       commitIntervalMillis: config.commitInterval,
+      gcInterval: config.gcInterval,
       maxConcurrentDownload: config.concurrentDownloadLimit,
       initialSubscribeRequest,
       subscribeRequestObservable: subscribeRequestSub.asObservable(),
