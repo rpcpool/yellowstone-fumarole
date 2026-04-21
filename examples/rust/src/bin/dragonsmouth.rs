@@ -12,7 +12,7 @@ use {
     tokio_stream::{Stream, StreamExt},
     tonic::Status,
     yellowstone_fumarole_client::config::FumaroleConfig,
-    yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcBuilder, GeyserGrpcClient, Interceptor},
+    yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcBuilder, GeyserGrpcClient},
     yellowstone_grpc_proto::geyser::{
         CommitmentLevel, SlotStatus, SubscribeRequest, SubscribeRequestFilterAccounts,
         SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterSlots,
