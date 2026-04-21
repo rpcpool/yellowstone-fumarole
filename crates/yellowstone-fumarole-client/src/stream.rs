@@ -1,7 +1,15 @@
 use {
-    crate::{core::runtime::FumaroleRuntimeEvent, error::FumaroleSubscribeError},
-    futures::{Sink, Stream},
-    std::collections::{HashMap, VecDeque},
+    crate::{
+        core::runtime::{FumaroleRuntimeCommitEvent, FumaroleRuntimeEvent},
+        error::FumaroleSubscribeError,
+    },
+    crossbeam::queue::SegQueue,
+    futures::{Sink, Stream, ready},
+    std::{
+        collections::{HashMap, VecDeque},
+        sync::Arc,
+        task::Poll,
+    },
     tokio::sync::mpsc,
     yellowstone_grpc_proto::geyser,
 };
@@ -108,6 +116,9 @@ impl Sink<geyser::SubscribeRequest> for FumaroleSink {
 ///
 pub struct FumaroleStream {
     inner: mpsc::Receiver<Result<FumaroleRuntimeEvent, FumaroleSubscribeError>>,
+    commit_offset_queue: Arc<SegQueue<FumaroleRuntimeCommitEvent>>,
+    pending_commits: VecDeque<FumaroleRuntimeCommitEvent>,
+    auto_commit: bool,
 }
 
 /// Receiving half of a Fumarole subscription session.
@@ -127,25 +138,32 @@ pub struct FumaroleStream {
 /// forwards events as produced by the runtime.
 impl FumaroleStream {
     pub(crate) fn new(
+        commit_offset_queue: Arc<SegQueue<FumaroleRuntimeCommitEvent>>,
         inner: mpsc::Receiver<Result<FumaroleRuntimeEvent, FumaroleSubscribeError>>,
+        auto_commit: bool,
     ) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            pending_commits: VecDeque::new(),
+            auto_commit,
+            commit_offset_queue,
+        }
     }
 
-    pub fn like_dragonsmouth(self) -> DragonsmouthLike<Self> {
+    pub fn like_dragonsmouth(self) -> DragonsmouthLike {
         DragonsmouthLike {
             inner: self.slot_sequential(),
         }
     }
 
-    pub fn slot_sequential(self) -> SlotSequentialStream<Self> {
+    pub fn slot_sequential(self) -> SlotSequentialStream {
         SlotSequentialStream {
             inner: self,
             state: Default::default(),
         }
     }
 
-    pub fn block_stream(self) -> BlockStream<Self> {
+    pub fn block_stream(self) -> BlockStream {
         BlockStream {
             inner: self,
             state: Default::default(),
@@ -343,9 +361,18 @@ impl SlotSequentialStreamState {
 /// gives yield the first event, say slot 2, will be the only slot that is yielded until it ends, and then events from
 /// slot 1 will be yielded.
 ///
-pub struct SlotSequentialStream<S> {
-    inner: S,
+pub struct SlotSequentialStream {
+    inner: FumaroleStream,
     state: SlotSequentialStreamState,
+}
+
+impl SlotSequentialStream {
+    ///
+    /// See [`FumaroleStream::commit`] for more details.
+    ///
+    pub fn commit(&mut self) {
+        self.inner.commit();
+    }
 }
 
 /// Stream adapter that enforces slot-local sequential emission.
@@ -369,11 +396,8 @@ pub struct SlotSequentialStream<S> {
 /// Useful for consumers that want deterministic per-slot processing without
 /// interleaving payload updates from concurrent slot downloads.
 
-impl<S> Stream for SlotSequentialStream<S>
-where
-    S: Stream<Item = Result<FumaroleEvent, FumaroleSubscribeError>> + Unpin,
-{
-    type Item = S::Item;
+impl Stream for SlotSequentialStream {
+    type Item = Result<FumaroleEvent, FumaroleSubscribeError>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -408,15 +432,35 @@ where
     }
 }
 
-impl From<FumaroleRuntimeEvent> for FumaroleEvent {
-    fn from(ev: FumaroleRuntimeEvent) -> Self {
+impl TryFrom<FumaroleRuntimeEvent> for FumaroleEvent {
+    type Error = FumaroleRuntimeEvent;
+
+    fn try_from(ev: FumaroleRuntimeEvent) -> Result<Self, Self::Error> {
         match ev {
-            FumaroleRuntimeEvent::Data(data) => FumaroleEvent::Data {
+            FumaroleRuntimeEvent::Data(data) => Ok(FumaroleEvent::Data {
                 slot: data.slot,
                 update: data.update,
-            },
-            FumaroleRuntimeEvent::SlotEnded(slot) => FumaroleEvent::SlotEnded(slot),
+            }),
+            FumaroleRuntimeEvent::SlotEnded(slot) => Ok(FumaroleEvent::SlotEnded(slot)),
+            other => Err(other),
         }
+    }
+}
+
+impl FumaroleStream {
+    ///
+    /// Commits all pending progress to the fumarole service.
+    ///
+    /// If `auto_commit` is enabled, this method is called automatically after every slot ends or new commitment level update.
+    ///
+    /// If `auto_commit` is disabled, this method needs to be called manually to commit progress to the fumarole service.
+    /// In this case, the client is responsible for deciding when to commit progress, which can be useful for advanced use cases.
+    ///
+    ///
+    pub fn commit(&mut self) {
+        self.pending_commits.drain(..).for_each(|commit| {
+            self.commit_offset_queue.push(commit);
+        });
     }
 }
 
@@ -426,10 +470,32 @@ impl Stream for FumaroleStream {
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.inner
-            .poll_recv(cx)
-            .map(|ev| ev.map(|ev2| ev2.map(Into::into)))
+    ) -> Poll<Option<Self::Item>> {
+        loop {
+            let maybe = ready!(self.inner.poll_recv(cx));
+            let Some(result) = maybe else {
+                return Poll::Ready(None);
+            };
+
+            match result {
+                Ok(ev) => match FumaroleEvent::try_from(ev) {
+                    Ok(ev) => return Poll::Ready(Some(Ok(ev))),
+                    Err(other) => match other {
+                        FumaroleRuntimeEvent::Committable(commit) => {
+                            self.pending_commits.push_back(commit);
+                            if self.auto_commit {
+                                self.commit();
+                            }
+                            continue;
+                        }
+                        _ => unreachable!("try_from should only fail for commit events"),
+                    },
+                },
+                Err(e) => {
+                    return Poll::Ready(Some(Err(e)));
+                }
+            }
+        }
     }
 }
 
@@ -614,9 +680,18 @@ impl BlockStreamState {
     }
 }
 
-pub struct BlockStream<S> {
-    inner: S,
+pub struct BlockStream {
+    inner: FumaroleStream,
     state: BlockStreamState,
+}
+
+impl BlockStream {
+    ///
+    /// See [`FumaroleStream::commit`] for more details.
+    ///
+    pub fn commit(&mut self) {
+        self.inner.commit();
+    }
 }
 
 /// Stream adapter that groups payload updates into slot-scoped blocks.
@@ -639,10 +714,7 @@ pub struct BlockStream<S> {
 /// boundaries while still receiving slot-status and block-meta events as soon as
 /// they appear.
 
-impl<S> Stream for BlockStream<S>
-where
-    S: Stream<Item = Result<FumaroleEvent, FumaroleSubscribeError>> + Unpin,
-{
+impl Stream for BlockStream {
     type Item = Result<FumaroleBlockStreamEvent, FumaroleSubscribeError>;
 
     fn poll_next(
@@ -754,7 +826,7 @@ mod tests {
             .expect("send slot ended 1");
         drop(tx);
 
-        let stream = FumaroleStream::new(rx).slot_sequential();
+        let stream = FumaroleStream::new(Default::default(), rx, true).slot_sequential();
         pin_mut!(stream);
 
         let mut got = Vec::new();
@@ -791,7 +863,7 @@ mod tests {
             .expect("send slot ended 2");
         drop(tx);
 
-        let stream = FumaroleStream::new(rx).slot_sequential();
+        let stream = FumaroleStream::new(Default::default(), rx, true).slot_sequential();
         pin_mut!(stream);
 
         let mut got = Vec::new();
@@ -844,7 +916,7 @@ mod tests {
             .expect("send slot ended 1");
         drop(tx);
 
-        let stream = FumaroleStream::new(rx).slot_sequential();
+        let stream = FumaroleStream::new(Default::default(), rx, true).slot_sequential();
         pin_mut!(stream);
 
         let mut got = Vec::new();
@@ -887,7 +959,7 @@ mod tests {
             .expect("send slot ended 1");
         drop(tx);
 
-        let stream = FumaroleStream::new(rx).block_stream();
+        let stream = FumaroleStream::new(Default::default(), rx, true).block_stream();
         pin_mut!(stream);
 
         let mut got = Vec::new();
@@ -935,7 +1007,7 @@ mod tests {
             .expect("send slot ended 2");
         drop(tx);
 
-        let stream = FumaroleStream::new(rx).block_stream();
+        let stream = FumaroleStream::new(Default::default(), rx, true).block_stream();
         pin_mut!(stream);
 
         let mut got = Vec::new();
@@ -959,8 +1031,17 @@ mod tests {
 ///
 /// Prefer to use [`SlotSequentialStream`], it yields richer data types that indicate slot boundaries.
 ///
-pub struct DragonsmouthLike<S> {
-    inner: SlotSequentialStream<S>,
+pub struct DragonsmouthLike {
+    inner: SlotSequentialStream,
+}
+
+impl DragonsmouthLike {
+    ///
+    /// See [`FumaroleStream::commit`] for more details.
+    ///
+    pub fn commit(&mut self) {
+        self.inner.commit();
+    }
 }
 
 /// Compatibility adapter exposing a Dragonsmouth-like stream shape.
@@ -982,10 +1063,7 @@ pub struct DragonsmouthLike<S> {
 /// This is useful when migrating existing Dragonsmouth consumers that are not
 /// yet aware of explicit slot boundary events.
 
-impl<S> Stream for DragonsmouthLike<S>
-where
-    S: Stream<Item = Result<FumaroleEvent, FumaroleSubscribeError>> + Unpin,
-{
+impl Stream for DragonsmouthLike {
     type Item = Result<geyser::SubscribeUpdate, FumaroleSubscribeError>;
 
     fn poll_next(

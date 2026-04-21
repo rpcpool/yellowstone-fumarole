@@ -291,6 +291,7 @@ use {
         runtime::{DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, FumaroleAsyncRuntime},
         state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
     },
+    crossbeam::queue::SegQueue,
     futures::{Sink, SinkExt, Stream, StreamExt},
     proto::control_response::Response,
     semver::Version,
@@ -523,6 +524,15 @@ pub struct FumaroleSubscribeConfig {
         note = "This field is deprecated and will be removed in a future version. Sharded block download is now always enabled if the fumarole service version supports it."
     )]
     pub enable_sharded_block_download: bool,
+
+    ///
+    /// Whether to enable auto-committing progress to the fumarole service.
+    ///
+    /// If set to `true`, the fumarole client will automatically commit progress to the fumarole service.
+    /// If set to `false`, the fumarole client will not automatically commit progress, and you will need to manually commit progress.
+    ///
+    /// See [`FumaroleStream::commit`] for more details.
+    pub auto_commit: bool,
 }
 
 impl Default for FumaroleSubscribeConfig {
@@ -542,6 +552,7 @@ impl Default for FumaroleSubscribeConfig {
             refresh_tip_stats_interval: DEFAULT_REFRESH_TIP_INTERVAL, // Default to 5 seconds
             no_commit: false,
             enable_sharded_block_download: true,
+            auto_commit: true,
         }
     }
 }
@@ -561,7 +572,7 @@ pub struct DragonsmouthAdapterSession {
     /// Channel to receive updates from the fumarole service.
     /// Dropping this channel will stop the fumarole session.
     ///
-    pub source: DragonsmouthLike<FumaroleStream>,
+    pub source: DragonsmouthLike,
     ///
     /// Handle to the fumarole session client runtime.
     /// Dropping this handle does not stop the fumarole session.
@@ -841,6 +852,8 @@ impl FumaroleClient {
             download_result_rx,
         };
 
+        let shared_commit_offset_queue = Arc::new(SegQueue::new());
+
         let tokio_rt = FumaroleAsyncRuntime {
             sm,
             fumarole_client: self.clone(),
@@ -852,7 +865,7 @@ impl FumaroleClient {
             control_plane_connector: self.clone(),
             control_plane_tx: fume_control_plane_tx,
             control_plane_rx: fume_control_plane_rx,
-            dragonsmouth_outlet,
+            outlet: dragonsmouth_outlet,
             commit_interval: config.commit_interval,
             last_commit: Instant::now(),
             get_tip_interval: config.refresh_tip_stats_interval,
@@ -863,11 +876,16 @@ impl FumaroleClient {
             last_history_poll: Default::default(),
             no_commit: config.no_commit,
             stop: false,
+            shared_commit_offset_queue: Arc::clone(&shared_commit_offset_queue),
         };
         let fumarole_rt_jh = tokio::spawn(tokio_rt.run());
         let subscription = FumaroleSubscription {
             sink: FumaroleSink::new(dm_tx),
-            stream: FumaroleStream::new(dragonsmouth_inlet),
+            stream: FumaroleStream::new(
+                shared_commit_offset_queue,
+                dragonsmouth_inlet,
+                config.auto_commit,
+            ),
         };
         Ok((subscription, fumarole_rt_jh))
     }

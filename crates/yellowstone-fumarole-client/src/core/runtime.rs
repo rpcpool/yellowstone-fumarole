@@ -19,6 +19,7 @@ use {
             control_response::Response, data_command::Command, data_response,
         },
     },
+    crossbeam::queue::SegQueue,
     futures::{Sink, SinkExt, Stream, StreamExt},
     rustc_hash::FxHashSet,
     solana_clock::Slot,
@@ -45,8 +46,25 @@ pub struct FumaroleRuntimeDataEvent {
     pub update: SubscribeUpdate,
 }
 
+pub struct FumaroleRuntimeCommitEvent {
+    /// We put this inside an Option to make sure the detect if user dropped the event without processing it, which should not happen but just in case.
+    sequence: Option<u64>,
+}
+
+impl Drop for FumaroleRuntimeCommitEvent {
+    fn drop(&mut self) {
+        if self.sequence.is_some() {
+            panic!(
+                "FumaroleRuntimeCommitEvent dropped without being processed, sequence: {:?}",
+                self.sequence
+            );
+        }
+    }
+}
+
 pub enum FumaroleRuntimeEvent {
     Data(FumaroleRuntimeDataEvent),
+    Committable(FumaroleRuntimeCommitEvent),
     SlotEnded(u64),
 }
 
@@ -58,7 +76,6 @@ pub struct DragonsmouthSubscribeRequestBidi {
     pub tx: mpsc::Sender<SubscribeRequest>,
     pub rx: mpsc::Receiver<SubscribeRequest>,
 }
-
 
 pub enum BackgroundJobResult {
     #[allow(dead_code)]
@@ -85,7 +102,7 @@ where
     pub control_plane_connector: C,
     pub control_plane_tx: C::ControlPlaneSink,
     pub control_plane_rx: C::ControlPlaneStream,
-    pub dragonsmouth_outlet: mpsc::Sender<Result<FumaroleRuntimeEvent, FumaroleSubscribeError>>,
+    pub outlet: mpsc::Sender<Result<FumaroleRuntimeEvent, FumaroleSubscribeError>>,
     pub commit_interval: Duration,
     pub get_tip_interval: Duration,
     pub last_commit: Instant,
@@ -96,6 +113,7 @@ where
     pub download_task_runner_jh: tokio::task::JoinHandle<Result<(), DownloadBlockError>>,
     pub no_commit: bool,
     pub stop: bool,
+    pub shared_commit_offset_queue: Arc<SegQueue<FumaroleRuntimeCommitEvent>>,
 }
 
 const DEFAULT_HISTORY_POLL_SIZE: i64 = 100;
@@ -322,7 +340,7 @@ where
                     )),
                 };
                 if self
-                    .dragonsmouth_outlet
+                    .outlet
                     .send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
                         slot: slot_status.slot,
                         update,
@@ -333,9 +351,18 @@ where
                     return;
                 }
             }
-
-            self.sm
-                .mark_event_as_processed(slot_status.session_sequence);
+            if self
+                .outlet
+                .send(Ok(FumaroleRuntimeEvent::Committable(
+                    FumaroleRuntimeCommitEvent {
+                        sequence: Some(slot_status.session_sequence),
+                    },
+                )))
+                .await
+                .is_err()
+            {
+                return;
+            }
             #[cfg(feature = "prometheus")]
             {
                 inc_slot_status_offset_processed_count();
@@ -422,7 +449,7 @@ where
                     "exhausted control plane rejoin attempts ({CONTROL_PLANE_REJOIN_MAX_ATTEMPTS}) after disconnect: {e:?}"
                 );
                 let _ = self
-                    .dragonsmouth_outlet
+                    .outlet
                     .send(Err(FumaroleSubscribeError::ControlPlaneRejoinFailed {
                         details: Some(Box::new(std::io::Error::other(format!(
                             "exhausted control plane rejoin attempts ({CONTROL_PLANE_REJOIN_MAX_ATTEMPTS})"
@@ -434,7 +461,7 @@ where
             Err(ControlPlaneStreamError::ApplicationError(e)) => {
                 tracing::error!("control plane application error: {e:?}");
                 let _ = self
-                    .dragonsmouth_outlet
+                    .outlet
                     .send(Err(FumaroleSubscribeError::ControlPlaneDisconnected))
                     .await;
                 LoopInstruction::ErrorStop
@@ -503,6 +530,15 @@ where
         }
     }
 
+    fn drain_commit_offset_queue(&mut self) {
+        while let Some(mut commit_event) = self.shared_commit_offset_queue.pop() {
+            let Some(commit_seq) = commit_event.sequence.take() else {
+                continue;
+            };
+            self.sm.mark_event_as_processed(commit_seq);
+        }
+    }
+
     pub(crate) async fn run(mut self) {
         self.poll_history_if_needed().await;
 
@@ -517,7 +553,7 @@ where
                 self.sm.gc();
                 ticks = 0;
             }
-            if self.dragonsmouth_outlet.is_closed() {
+            if self.outlet.is_closed() {
                 tracing::debug!("Detected dragonsmouth outlet closed");
                 break;
             }
@@ -531,6 +567,7 @@ where
             let get_tip_deadline = self.last_tip + self.get_tip_interval;
             let commit_deadline = self.last_commit + self.commit_interval;
 
+            self.drain_commit_offset_queue();
             self.poll_history_if_needed().await;
             self.schedule_download_task_if_any().await;
             tokio::select! {
@@ -586,7 +623,7 @@ where
                         }
                         Ok(Err(DownloadBlockError::FailedDownload(dataplane_err))) => {
                             let _ = self
-                                .dragonsmouth_outlet
+                                .outlet
                                 .send(Err(dataplane_err.into()))
                                 .await;
                         }
@@ -600,7 +637,7 @@ where
                                 Some(Box::new(join_err)),
                             );
                             let _ = self
-                                .dragonsmouth_outlet
+                                .outlet
                                 .send(Err(err.into()))
                                 .await;
                         }
