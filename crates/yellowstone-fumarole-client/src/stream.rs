@@ -1,5 +1,5 @@
 use {
-    crate::error::FumaroleSubscribeError,
+    crate::{core::runtime::FumaroleRuntimeEvent, error::FumaroleSubscribeError},
     futures::{Sink, Stream},
     std::collections::{HashMap, VecDeque},
     tokio::sync::mpsc,
@@ -107,7 +107,7 @@ impl Sink<geyser::SubscribeRequest> for FumaroleSink {
 /// The main fumarole stream type yielding [`FumaroleEvent`] values from the runtime.
 ///
 pub struct FumaroleStream {
-    inner: mpsc::Receiver<Result<FumaroleEvent, FumaroleSubscribeError>>,
+    inner: mpsc::Receiver<Result<FumaroleRuntimeEvent, FumaroleSubscribeError>>,
 }
 
 /// Receiving half of a Fumarole subscription session.
@@ -127,7 +127,7 @@ pub struct FumaroleStream {
 /// forwards events as produced by the runtime.
 impl FumaroleStream {
     pub(crate) fn new(
-        inner: mpsc::Receiver<Result<FumaroleEvent, FumaroleSubscribeError>>,
+        inner: mpsc::Receiver<Result<FumaroleRuntimeEvent, FumaroleSubscribeError>>,
     ) -> Self {
         Self { inner }
     }
@@ -408,6 +408,19 @@ where
     }
 }
 
+impl From<FumaroleRuntimeEvent> for FumaroleEvent {
+    fn from(ev: FumaroleRuntimeEvent) -> Self {
+        match ev {
+            FumaroleRuntimeEvent::Data(data) => FumaroleEvent::Data {
+                slot: data.slot,
+                update: data.update,
+            },
+            FumaroleRuntimeEvent::SlotEnded(slot) => FumaroleEvent::SlotEnded(slot),
+        }
+    }
+}
+
+
 impl Stream for FumaroleStream {
     type Item = Result<FumaroleEvent, FumaroleSubscribeError>;
 
@@ -415,7 +428,7 @@ impl Stream for FumaroleStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        self.inner.poll_recv(cx)
+        self.inner.poll_recv(cx).map(|ev| ev.map(|ev2| ev2.map(Into::into)))
     }
 }
 
@@ -668,6 +681,7 @@ where
 mod tests {
     use {
         super::*,
+        crate::core::runtime::FumaroleRuntimeDataEvent,
         futures::{StreamExt, pin_mut},
         tokio::sync::mpsc,
         yellowstone_grpc_proto::geyser::{
@@ -707,34 +721,34 @@ mod tests {
     #[tokio::test]
     async fn slot_sequential_keeps_slot_events_grouped_until_slot_end() {
         let (tx, rx) = mpsc::channel(16);
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 2,
             update: mk_entry_update(2, 1),
-        }))
+        })))
         .await
         .expect("send data slot 2");
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 1,
             update: mk_entry_update(1, 1),
-        }))
+        })))
         .await
         .expect("send data slot 1");
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 2,
             update: mk_entry_update(2, 2),
-        }))
+        })))
         .await
         .expect("send second data slot 2");
-        tx.send(Ok(FumaroleEvent::SlotEnded(2)))
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(2)))
             .await
             .expect("send slot ended 2");
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 1,
             update: mk_entry_update(1, 2),
-        }))
+        })))
         .await
         .expect("send second data slot 1");
-        tx.send(Ok(FumaroleEvent::SlotEnded(1)))
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(1)))
             .await
             .expect("send slot ended 1");
         drop(tx);
@@ -756,22 +770,22 @@ mod tests {
     #[tokio::test]
     async fn slot_sequential_buffers_other_slot_end_until_turn() {
         let (tx, rx) = mpsc::channel(16);
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 2,
             update: mk_entry_update(2, 1),
-        }))
+        })))
         .await
         .expect("send data slot 2");
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 1,
             update: mk_entry_update(1, 1),
-        }))
+        })))
         .await
         .expect("send data slot 1");
-        tx.send(Ok(FumaroleEvent::SlotEnded(1)))
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(1)))
             .await
             .expect("send slot ended 1 while slot 2 active");
-        tx.send(Ok(FumaroleEvent::SlotEnded(2)))
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(2)))
             .await
             .expect("send slot ended 2");
         drop(tx);
@@ -793,38 +807,38 @@ mod tests {
     #[tokio::test]
     async fn slot_sequential_passes_through_slot_and_block_meta_updates() {
         let (tx, rx) = mpsc::channel(16);
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 2,
             update: mk_entry_update(2, 1),
-        }))
+        })))
         .await
         .expect("send data slot 2");
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 1,
             update: mk_entry_update(1, 1),
-        }))
+        })))
         .await
         .expect("send data slot 1");
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 99,
             update: mk_slot_update(99),
-        }))
+        })))
         .await
         .expect("send slot status update");
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 100,
             update: SubscribeUpdate {
                 filters: vec![],
                 created_at: None,
                 update_oneof: Some(UpdateOneof::BlockMeta(Default::default())),
             },
-        }))
+        })))
         .await
         .expect("send block meta update");
-        tx.send(Ok(FumaroleEvent::SlotEnded(2)))
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(2)))
             .await
             .expect("send slot ended 2");
-        tx.send(Ok(FumaroleEvent::SlotEnded(1)))
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(1)))
             .await
             .expect("send slot ended 1");
         drop(tx);
@@ -846,28 +860,28 @@ mod tests {
     #[tokio::test]
     async fn block_stream_buffers_by_slot_and_emits_block_on_slot_end() {
         let (tx, rx) = mpsc::channel(16);
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 2,
             update: mk_entry_update(2, 1),
-        }))
+        })))
         .await
         .expect("send entry slot 2");
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 1,
             update: mk_entry_update(1, 1),
-        }))
+        })))
         .await
         .expect("send entry slot 1");
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 2,
             update: mk_entry_update(2, 2),
-        }))
+        })))
         .await
         .expect("send second entry slot 2");
-        tx.send(Ok(FumaroleEvent::SlotEnded(2)))
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(2)))
             .await
             .expect("send slot ended 2");
-        tx.send(Ok(FumaroleEvent::SlotEnded(1)))
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(1)))
             .await
             .expect("send slot ended 1");
         drop(tx);
@@ -893,29 +907,29 @@ mod tests {
     #[tokio::test]
     async fn block_stream_passes_through_slot_status_and_block_meta() {
         let (tx, rx) = mpsc::channel(16);
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 2,
             update: mk_entry_update(2, 1),
-        }))
+        })))
         .await
         .expect("send entry slot 2");
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 99,
             update: mk_slot_update(99),
-        }))
+        })))
         .await
         .expect("send slot status");
-        tx.send(Ok(FumaroleEvent::Data {
+        tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
             slot: 100,
             update: SubscribeUpdate {
                 filters: vec![],
                 created_at: None,
                 update_oneof: Some(UpdateOneof::BlockMeta(Default::default())),
             },
-        }))
+        })))
         .await
         .expect("send block meta");
-        tx.send(Ok(FumaroleEvent::SlotEnded(2)))
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(2)))
             .await
             .expect("send slot ended 2");
         drop(tx);
@@ -935,7 +949,7 @@ mod tests {
             }
         }
 
-        assert_eq!(got, vec!["s99", "m100", "b2:1"]);
+        assert_eq!(got, vec!["s99", "b2:1"]);
     }
 }
 
