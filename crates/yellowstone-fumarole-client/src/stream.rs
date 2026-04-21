@@ -15,6 +15,7 @@ use {
 };
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum FumaroleEvent {
     Data {
         slot: u64,
@@ -48,7 +49,7 @@ pub struct FumaroleSink {
 }
 
 impl FumaroleSink {
-    pub(crate) fn new(inner: mpsc::Sender<geyser::SubscribeRequest>) -> Self {
+    pub(crate) const fn new(inner: mpsc::Sender<geyser::SubscribeRequest>) -> Self {
         Self { inner }
     }
 }
@@ -137,7 +138,7 @@ pub struct FumaroleStream {
 /// Ordering guarantees depend on the selected adapter. The base stream itself
 /// forwards events as produced by the runtime.
 impl FumaroleStream {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         commit_offset_queue: Arc<SegQueue<FumaroleRuntimeCommitEvent>>,
         inner: mpsc::Receiver<Result<FumaroleRuntimeEvent, FumaroleSubscribeError>>,
         auto_commit: bool,
@@ -395,7 +396,7 @@ impl SlotSequentialStream {
 ///
 /// Useful for consumers that want deterministic per-slot processing without
 /// interleaving payload updates from concurrent slot downloads.
-
+///
 impl Stream for SlotSequentialStream {
     type Item = Result<FumaroleEvent, FumaroleSubscribeError>;
 
@@ -500,6 +501,7 @@ impl Stream for FumaroleStream {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum FumaroleBlockStreamEvent {
     Block(FumaroleBlockEvent),
     SlotStatus(FumaroleSlotStatusEvent),
@@ -582,7 +584,7 @@ pub struct SlotStatusUpdateLense {
 }
 
 impl SlotStatusUpdateLense {
-    pub unsafe fn new_unchecked(update: geyser::SubscribeUpdate) -> Self {
+    const unsafe fn new_unchecked(update: geyser::SubscribeUpdate) -> Self {
         Self { inner: update }
     }
 
@@ -599,7 +601,7 @@ impl SlotStatusUpdateLense {
     ///
     /// Returns the root [`geyser::SubscribeUpdate`] the lense can focus on.
     ///
-    pub fn inner_ref(&self) -> &geyser::SubscribeUpdate {
+    pub const fn inner_ref(&self) -> &geyser::SubscribeUpdate {
         &self.inner
     }
 
@@ -713,7 +715,7 @@ impl BlockStream {
 /// This adapter is intended for block-oriented consumers that want explicit block
 /// boundaries while still receiving slot-status and block-meta events as soon as
 /// they appear.
-
+///
 impl Stream for BlockStream {
     type Item = Result<FumaroleBlockStreamEvent, FumaroleSubscribeError>;
 
@@ -745,6 +747,68 @@ impl Stream for BlockStream {
                         return std::task::Poll::Pending;
                     }
                 }
+            }
+        }
+    }
+}
+
+///
+/// A stream that yields [`geyser::SubscribeUpdate`] one by one, without any guarantee on the order of the updates.
+///
+/// Prefer to use [`SlotSequentialStream`], it yields richer data types that indicate slot boundaries.
+///
+pub struct DragonsmouthLike {
+    inner: SlotSequentialStream,
+}
+
+impl DragonsmouthLike {
+    ///
+    /// See [`FumaroleStream::commit`] for more details.
+    ///
+    pub fn commit(&mut self) {
+        self.inner.commit();
+    }
+}
+
+/// Compatibility adapter exposing a Dragonsmouth-like stream shape.
+///
+/// This adapter consumes a slot-sequential stream and yields only raw
+/// [`geyser::SubscribeUpdate`] values, filtering out explicit slot boundary
+/// markers (`SlotEnded`).
+///
+/// # Generic Parameter
+///
+/// `S` is any stream yielding `Result<FumaroleEvent, FumaroleSubscribeError>`.
+///
+/// # Behavior
+///
+/// - `FumaroleEvent::Data` -> forwarded as `Ok(SubscribeUpdate)`
+/// - `FumaroleEvent::SlotEnded` -> skipped
+/// - errors -> forwarded unchanged
+///
+/// This is useful when migrating existing Dragonsmouth consumers that are not
+/// yet aware of explicit slot boundary events.
+///
+impl Stream for DragonsmouthLike {
+    type Item = Result<geyser::SubscribeUpdate, FumaroleSubscribeError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        loop {
+            match std::pin::Pin::new(&mut self.inner).poll_next(cx) {
+                std::task::Poll::Ready(Some(Ok(FumaroleEvent::Data { slot: _, update }))) => {
+                    return std::task::Poll::Ready(Some(Ok(update)));
+                }
+                std::task::Poll::Ready(Some(Ok(FumaroleEvent::SlotEnded(_)))) => {
+                    continue;
+                }
+                std::task::Poll::Ready(Some(Err(err))) => {
+                    return std::task::Poll::Ready(Some(Err(err)));
+                }
+                std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
+                std::task::Poll::Pending => return std::task::Poll::Pending,
             }
         }
     }
@@ -1023,67 +1087,5 @@ mod tests {
         }
 
         assert_eq!(got, vec!["s99", "b2:1"]);
-    }
-}
-
-///
-/// A stream that yields [`geyser::SubscribeUpdate`] one by one, without any guarantee on the order of the updates.
-///
-/// Prefer to use [`SlotSequentialStream`], it yields richer data types that indicate slot boundaries.
-///
-pub struct DragonsmouthLike {
-    inner: SlotSequentialStream,
-}
-
-impl DragonsmouthLike {
-    ///
-    /// See [`FumaroleStream::commit`] for more details.
-    ///
-    pub fn commit(&mut self) {
-        self.inner.commit();
-    }
-}
-
-/// Compatibility adapter exposing a Dragonsmouth-like stream shape.
-///
-/// This adapter consumes a slot-sequential stream and yields only raw
-/// [`geyser::SubscribeUpdate`] values, filtering out explicit slot boundary
-/// markers (`SlotEnded`).
-///
-/// # Generic Parameter
-///
-/// `S` is any stream yielding `Result<FumaroleEvent, FumaroleSubscribeError>`.
-///
-/// # Behavior
-///
-/// - `FumaroleEvent::Data` -> forwarded as `Ok(SubscribeUpdate)`
-/// - `FumaroleEvent::SlotEnded` -> skipped
-/// - errors -> forwarded unchanged
-///
-/// This is useful when migrating existing Dragonsmouth consumers that are not
-/// yet aware of explicit slot boundary events.
-
-impl Stream for DragonsmouthLike {
-    type Item = Result<geyser::SubscribeUpdate, FumaroleSubscribeError>;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        loop {
-            match std::pin::Pin::new(&mut self.inner).poll_next(cx) {
-                std::task::Poll::Ready(Some(Ok(FumaroleEvent::Data { slot: _, update }))) => {
-                    return std::task::Poll::Ready(Some(Ok(update)));
-                }
-                std::task::Poll::Ready(Some(Ok(FumaroleEvent::SlotEnded(_)))) => {
-                    continue;
-                }
-                std::task::Poll::Ready(Some(Err(err))) => {
-                    return std::task::Poll::Ready(Some(Err(err)));
-                }
-                std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
-                std::task::Poll::Pending => return std::task::Poll::Pending,
-            }
-        }
     }
 }

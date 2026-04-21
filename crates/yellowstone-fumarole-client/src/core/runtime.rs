@@ -54,7 +54,7 @@ pub struct FumaroleRuntimeCommitEvent {
 impl Drop for FumaroleRuntimeCommitEvent {
     fn drop(&mut self) {
         if self.sequence.is_some() {
-            panic!(
+            tracing::error!(
                 "FumaroleRuntimeCommitEvent dropped without being processed, sequence: {:?}",
                 self.sequence
             );
@@ -62,6 +62,7 @@ impl Drop for FumaroleRuntimeCommitEvent {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum FumaroleRuntimeEvent {
     Data(FumaroleRuntimeDataEvent),
     Committable(FumaroleRuntimeCommitEvent),
@@ -781,24 +782,18 @@ impl DedupState {
     fn key_for_update(ev: &UpdateOneof) -> Option<DedupKey> {
         match ev {
             UpdateOneof::Account(msg) => {
-                if let Some(account_info) = msg.account.as_ref() {
-                    Some(DedupKey::Account {
-                        pubkey: account_info.pubkey.clone(),
-                        txn_signature: account_info.txn_signature.clone(),
-                    })
-                } else {
-                    None
-                }
+                msg.account.as_ref().map(|account_info| DedupKey::Account {
+                    pubkey: account_info.pubkey.clone(),
+                    txn_signature: account_info.txn_signature.clone(),
+                })
             }
             UpdateOneof::Slot(_) => None,
             UpdateOneof::Transaction(msg) => {
-                if let Some(tx_info) = msg.transaction.as_ref() {
-                    Some(DedupKey::Transaction {
+                msg.transaction
+                    .as_ref()
+                    .map(|tx_info| DedupKey::Transaction {
                         index: tx_info.index,
                     })
-                } else {
-                    None
-                }
             }
             UpdateOneof::TransactionStatus(msg) => Some(DedupKey::Transaction { index: msg.index }),
             UpdateOneof::BlockMeta(_)
@@ -1361,7 +1356,7 @@ where
         }
     }
 
-    fn queue_idx_for_shard(&self, shard_idx: FumeShardIdx) -> usize {
+    const fn queue_idx_for_shard(&self, shard_idx: FumeShardIdx) -> usize {
         shard_idx as usize % self.total_shard_downloaders
     }
 
