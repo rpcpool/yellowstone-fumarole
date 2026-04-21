@@ -9,8 +9,8 @@
 //!
 //! However, there are some differences:
 //!
-//! - The `yellowstone-fumarole` (Coming soon) client uses multiple gRPC connections to communicate with the Fumarole service : avoids [`HoL`] blocking.
-//! - The `yellowstone-fumarole` subscribers are persistent and can be reused across multiple sessions (not computer).
+//! - The `yellowstone-fumarole` client can use multiple gRPC connections to communicate with the Fumarole service, helping avoid [`HoL`] blocking.
+//! - `yellowstone-fumarole` subscribers are persistent and can be reused across multiple sessions.
 //! - The `yellowstone-fumarole` can reconnect to the Fumarole service if the connection is lost.
 //!
 //! # Examples
@@ -39,7 +39,7 @@
 //! }
 //! ```
 //!
-//! The prefered way to create `FumaroleConfig` is use `serde_yaml` to deserialize from a YAML file.
+//! The preferred way to create `FumaroleConfig` is to use `serde_yaml` deserialization from a YAML file.
 //!
 //! ```ignore
 //! let config_file = std::fs::File::open("path/to/config.yaml").unwrap();
@@ -55,7 +55,7 @@
 //! ```
 //!
 //!
-//! ## Dragonsmouth-like Subscribe
+//! ## Dragonsmouth-like Subscribe (deprecated)
 //!
 //! ```rust
 //! use {
@@ -228,6 +228,101 @@
 //!    .dragonsmouth_subscribe_with_config(args.name, request, subscribe_config)
 //!    .await
 //!    .expect("Failed to subscribe");
+//! ```
+//!
+//! ## SlotSequentialStream example (recommended for slot-ordered processing)
+//!
+//! ```ignore
+//! use futures::StreamExt;
+//! use yellowstone_fumarole_client::FumaroleClient;
+//! use yellowstone_fumarole_client::stream::FumaroleEvent;
+//! use yellowstone_grpc_proto::geyser::SubscribeRequest;
+//!
+//! async fn run(client: &mut FumaroleClient, subscriber_name: String, request: SubscribeRequest) {
+//!     let subscription = client
+//!         .subscribe(subscriber_name, request)
+//!         .await
+//!         .expect("subscribe failed");
+//!
+//!     let (_sink, stream) = subscription.split();
+//!     let mut slot_stream = stream.slot_sequential();
+//!
+//!     while let Some(item) = slot_stream.next().await {
+//!         match item.expect("stream error") {
+//!             FumaroleEvent::Data { slot, .. } => {
+//!                 println!("data for slot {slot}");
+//!             }
+//!             FumaroleEvent::SlotEnded(slot) => {
+//!                 println!("slot ended: {slot}");
+//!             }
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! ## BlockStream / Blocstream example (block-oriented processing)
+//!
+//! ```ignore
+//! use futures::StreamExt;
+//! use yellowstone_fumarole_client::FumaroleClient;
+//! use yellowstone_fumarole_client::stream::FumaroleBlockStreamEvent;
+//! use yellowstone_grpc_proto::geyser::SubscribeRequest;
+//!
+//! async fn run(client: &mut FumaroleClient, subscriber_name: String, request: SubscribeRequest) {
+//!     let subscription = client
+//!         .subscribe(subscriber_name, request)
+//!         .await
+//!         .expect("subscribe failed");
+//!
+//!     let (_sink, stream) = subscription.split();
+//!     let mut block_stream = stream.block_stream();
+//!
+//!     while let Some(item) = block_stream.next().await {
+//!         match item.expect("stream error") {
+//!             FumaroleBlockStreamEvent::Block(block) => {
+//!                 println!("block ready for slot {}", block.slot);
+//!             }
+//!             FumaroleBlockStreamEvent::SlotStatus(status) => {
+//!                 println!("slot status update for slot {}", status.slot);
+//!             }
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! ## Manual commit example (`auto_commit: false`)
+//!
+//! ```ignore
+//! use futures::StreamExt;
+//! use yellowstone_fumarole_client::{FumaroleClient, FumaroleSubscribeConfig};
+//! use yellowstone_fumarole_client::stream::FumaroleEvent;
+//! use yellowstone_grpc_proto::geyser::SubscribeRequest;
+//!
+//! async fn run(client: &mut FumaroleClient, subscriber_name: String, request: SubscribeRequest) {
+//!     let subscribe_config = FumaroleSubscribeConfig {
+//!         auto_commit: false,
+//!         ..Default::default()
+//!     };
+//!
+//!     let subscription = client
+//!         .subscribe_with_config(subscriber_name, request, subscribe_config)
+//!         .await
+//!         .expect("subscribe failed");
+//!
+//!     let (_sink, stream) = subscription.split();
+//!     let mut slot_stream = stream.slot_sequential();
+//!
+//!     while let Some(item) = slot_stream.next().await {
+//!         match item.expect("stream error") {
+//!             FumaroleEvent::Data { .. } => {}
+//!             FumaroleEvent::SlotEnded(slot) => {
+//!                 // Commit after your slot processing succeeds.
+//!                 slot_stream.commit();
+//!                 println!("committed progress at end of slot {slot}");
+//!             }
+//!         }
+//!     }
+//! }
 //! ```
 //!
 //!
