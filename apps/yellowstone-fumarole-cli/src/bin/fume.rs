@@ -2,10 +2,9 @@
 use tikv_jemallocator::Jemalloc;
 use {
     clap::Parser,
-    futures::{FutureExt, future::BoxFuture},
+    futures::{FutureExt, StreamExt, future::BoxFuture},
     serde::Deserialize,
     solana_pubkey::{ParsePubkeyError, Pubkey},
-    solana_signature::Signature,
     std::{
         collections::{HashMap, HashSet},
         env,
@@ -28,12 +27,13 @@ use {
     tracing_subscriber::EnvFilter,
     yellowstone_fumarole_cli::prom::prometheus_server,
     yellowstone_fumarole_client::{
-        DragonsmouthAdapterSession, FumaroleClient, FumaroleSubscribeConfig,
+        FumaroleClient, FumaroleSubscribeConfig,
         config::FumaroleConfig,
         proto::{
             ConsumerGroupInfo, CreateConsumerGroupRequest, DeleteConsumerGroupRequest,
             GetConsumerGroupInfoRequest, InitialOffsetPolicy, ListConsumerGroupsRequest,
         },
+        stream::{FumaroleBlockEvent, FumaroleBlockStreamEvent},
     },
     yellowstone_grpc_proto::geyser::{
         CommitmentLevel, SubscribeRequest, SubscribeRequestFilterAccounts,
@@ -53,19 +53,6 @@ const FUMAROLE_CONFIG_ENV: &str = "FUMAROLE_CONFIG";
 pub struct FumeConfig {
     #[serde(default, flatten)]
     fumarole: FumaroleConfig,
-
-    // Experimental(xx) feature to enable sharded downloads
-    #[serde(
-        default = "FumeConfig::default_enable_sharded_download",
-        alias = "xx_enable_sharded_download"
-    )]
-    enable_sharded_download: bool,
-}
-
-impl FumeConfig {
-    const fn default_enable_sharded_download() -> bool {
-        true
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -698,11 +685,7 @@ impl SubscribeArgs {
     }
 }
 
-async fn subscribe(
-    mut client: FumaroleClient,
-    args: SubscribeArgs,
-    xx_enable_sharded_download: bool,
-) {
+async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
     let mut out: Box<dyn Write> = if let Some(out) = &args.out {
         Box::new(
             File::options()
@@ -733,20 +716,16 @@ async fn subscribe(
         commit_interval: Duration::from_secs(1),
         num_data_plane_tcp_connections: args.para,
         no_commit: args.no_commit,
-        enable_sharded_block_download: xx_enable_sharded_download,
         concurrent_download_limit_per_tcp: args.con,
         ..Default::default()
     };
-    let dragonsmouth_session = client
-        .dragonsmouth_subscribe_with_config(cg_name.clone(), request, subscribe_config)
+    let fumarole_subscription = client
+        .subscribe_with_config(cg_name.clone(), request, subscribe_config)
         .await
         .expect("Failed to subscribe");
-    let DragonsmouthAdapterSession {
-        sink: _,
-        mut source,
-        fumarole_handle: _,
-    } = dragonsmouth_session;
 
+    let (_, source) = fumarole_subscription.split();
+    let mut source = source.like_dragonsmouth();
     let mut shutdown = create_shutdown();
 
     loop {
@@ -755,7 +734,7 @@ async fn subscribe(
                 println!("Shutting down...");
                 break;
             }
-            result = source.recv() => {
+            result = source.next() => {
                 let Some(result) = result else {
                     println!("grpc stream closed!");
                     break;
@@ -802,11 +781,7 @@ async fn subscribe(
     }
 }
 
-async fn block_stats(
-    mut client: FumaroleClient,
-    args: SubscribeArgs,
-    xx_enable_sharded_download: bool,
-) {
+async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
     let mut out: Box<dyn Write> = if let Some(out) = &args.out {
         Box::new(
             File::options()
@@ -853,47 +828,56 @@ async fn block_stats(
         commit_interval: Duration::from_secs(5),
         num_data_plane_tcp_connections: args.para,
         no_commit: args.no_commit,
-        enable_sharded_block_download: xx_enable_sharded_download,
         ..Default::default()
     };
-    let dragonsmouth_session = client
-        .dragonsmouth_subscribe_with_config(cg_name.clone(), request, subscribe_config)
+    let fumarole_subscription = client
+        .subscribe_with_config(cg_name.clone(), request, subscribe_config)
         .await
         .expect("Failed to subscribe");
-    let DragonsmouthAdapterSession {
-        sink: _,
-        mut source,
-        fumarole_handle: _,
-    } = dragonsmouth_session;
 
+    let (_, fumarole_stream) = fumarole_subscription.split();
+    let mut fumarole_stream = fumarole_stream.block_stream();
     let mut shutdown = create_shutdown();
-    #[derive(Default)]
-    struct BlockInfo {
-        success_tx: HashSet<Signature>,
-        failed_tx: HashSet<Signature>,
-        entry_count: u32,
-        account_updates: HashSet<(Pubkey, Signature)>,
-        block_meta: Option<SubscribeUpdateBlockMeta>,
-    }
 
-    let summarized_block = |block_info: &BlockInfo| {
-        let success_count = block_info.success_tx.len();
-        let failed_count = block_info.failed_tx.len();
-        let entry_count = block_info.entry_count;
-        let account_updates = block_info.account_updates.len();
-        let block_meta = block_info
-            .block_meta
-            .as_ref()
-            .expect("Block meta should be present");
+    let summarized_block = |block_info: &FumaroleBlockEvent| {
+        let mut num_account = 0;
+        let mut num_success_txn = 0;
+        let mut num_failed_txn = 0;
+        let mut num_entry = 0;
+        let mut block_meta: Option<SubscribeUpdateBlockMeta> = None;
+        for update in block_info.iter() {
+            match update.update_oneof.as_ref().unwrap() {
+                UpdateOneof::Account(_) => {
+                    num_account += 1;
+                }
+                UpdateOneof::Transaction(update) => {
+                    let txn = update.transaction.as_ref().unwrap();
+                    if txn.meta.as_ref().unwrap().err.is_some() {
+                        num_failed_txn += 1;
+                    } else {
+                        num_success_txn += 1;
+                    }
+                }
+                UpdateOneof::BlockMeta(subscribe_update_block_meta) => {
+                    block_meta = Some(subscribe_update_block_meta.clone());
+                }
+                UpdateOneof::Entry(_) => {
+                    num_entry += 1;
+                }
+                _ => {
+                    continue;
+                }
+            }
+        }
+        let block_meta = block_meta.as_ref().expect("Block meta should be present");
         let expected_tx_count = block_meta.executed_transaction_count;
         let expected_entry_count = block_meta.entries_count;
-        let total_tx_cnt = success_count + failed_count;
+        let total_tx_cnt = num_success_txn + num_failed_txn;
         format!(
-            "good tx: {success_count}, failed tx: {failed_count}, total tx: {total_tx_cnt}/{expected_tx_count}, entries: {entry_count}/{expected_entry_count}, account updates: {account_updates}"
+            "good tx: {num_success_txn}, failed tx: {num_failed_txn}, total tx: {total_tx_cnt}/{expected_tx_count}, entries: {num_entry}/{expected_entry_count}, account updates: {num_account}"
         )
     };
 
-    let mut block_map: HashMap<u64, BlockInfo> = HashMap::new();
     let mut one_sec_tick = tokio::time::interval(Duration::from_secs(1));
     let mut block_count_per_tick = 0u64;
     let mut block_rate_sma = SMA::new(5);
@@ -907,71 +891,31 @@ async fn block_stats(
                 block_rate_sma.record(block_count_per_tick as f64);
                 block_count_per_tick = 0;
             }
-            result = source.recv() => {
+            result = fumarole_stream.next() => {
                 let Some(result) = result else {
                     println!("grpc stream closed!");
                     break;
                 };
 
                 let event = result.expect("Failed to receive event");
-
-                if let Some(oneof) = event.update_oneof {
-                    match oneof {
-                        UpdateOneof::Account(account_update) => {
-                            let slot = account_update.slot;
-                            let account = account_update.account.expect("Failed to get account update");
-                            let pubkey = Pubkey::try_from(account.pubkey)
-                                .expect("Failed to parse pubkey");
-                            let tx_sig = if let Some(tx_sig_bytes) = account.txn_signature {
-                                Signature::try_from(tx_sig_bytes)
-                                    .expect("Failed to parse transaction signature")
-                            } else {
-                                Signature::default()
-                            };
-                            let block = block_map.entry(slot).or_default();
-                            block.account_updates.insert((pubkey, tx_sig));
-                        },
-                        UpdateOneof::Transaction(tx) => {
-                            let slot = tx.slot;
-                            let transaction = tx.transaction.expect("Failed to get transaction");
-                            let sig = Signature::try_from(transaction.signature)
-                                .expect("Failed to parse transaction signature");
-                            let is_err = transaction.meta.expect("Failed to get transaction meta").err.is_some();
-                            let block = block_map.entry(slot).or_default();
-                            if is_err {
-                                block.failed_tx.insert(sig);
-                            } else {
-                                block.success_tx.insert(sig);
-                            }
-                            continue;
-                        },
-                        UpdateOneof::Slot(_) => {
-                            continue;
-                        }
-                        UpdateOneof::BlockMeta(block_meta) => {
-                            let slot = block_meta.slot;
-                            let Some(mut block) = block_map.remove(&slot) else {
-                                continue;
-                            };
-                            block.block_meta = Some(block_meta);
-                            let msg = summarized_block(&block);
-                            block_count_per_tick += 1;
-                            let block_rate_avg = block_rate_sma.average();
-                            writeln!(out, "{slot} ({block_rate_avg}/s) -- {msg}").expect("Failed to write to output file");
-                            if let Some(tx_out) = &mut tx_out {
-                                for sig in block.success_tx.iter() {
-                                    writeln!(tx_out, "{slot} -- {sig}").expect("Failed to write to transaction output file");
+                match event {
+                    FumaroleBlockStreamEvent::Block(block) => {
+                        let slot = block.slot;
+                        block_count_per_tick += 1;
+                        let block_rate_avg = block_rate_sma.average();
+                        let msg = summarized_block(&block);
+                        writeln!(out, "{slot} ({block_rate_avg}/s) -- {msg}").expect("Failed to write to output file");
+                        if let Some(tx_out) = tx_out.as_mut() {
+                            for ev in block.iter() {
+                                if let UpdateOneof::Transaction(tx) = ev.update_oneof.as_ref().unwrap() {
+                                    let sig = bs58::encode(tx.transaction.as_ref().unwrap().signature.clone()).into_string();
+                                    writeln!(tx_out, "{slot},{sig}").expect("Failed to write to transaction output file");
                                 }
                             }
                         }
-                        UpdateOneof::Entry(entry) => {
-                            let slot = entry.slot;
-                            let block = block_map.entry(slot).or_default();
-                            block.entry_count += 1;
-                        }
-                        _ => {
-                            continue;
-                        }
+                    }
+                    FumaroleBlockStreamEvent::SlotStatus(_) => {
+                        continue;
                     }
                 }
             }
@@ -1087,18 +1031,13 @@ async fn main() {
             delete_all_cg(fumarole_client).await;
         }
         Action::Subscribe(subscribe_args) => {
-            subscribe(
-                fumarole_client,
-                subscribe_args,
-                config.enable_sharded_download,
-            )
-            .await;
+            subscribe(fumarole_client, subscribe_args).await;
         }
         Action::SlotRange => {
             slot_range(fumarole_client).await;
         }
         Action::Block(blocks_args) => {
-            block_stats(fumarole_client, blocks_args, config.enable_sharded_download).await;
+            block_stats(fumarole_client, blocks_args).await;
         }
     }
 }

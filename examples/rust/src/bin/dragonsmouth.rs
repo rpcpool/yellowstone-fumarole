@@ -12,7 +12,7 @@ use {
     tokio_stream::{Stream, StreamExt},
     tonic::Status,
     yellowstone_fumarole_client::config::FumaroleConfig,
-    yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcBuilder, GeyserGrpcClient, Interceptor},
+    yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcBuilder, GeyserGrpcClient},
     yellowstone_grpc_proto::geyser::{
         CommitmentLevel, SlotStatus, SubscribeRequest, SubscribeRequestFilterAccounts,
         SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterSlots,
@@ -363,7 +363,7 @@ where
 }
 
 /// This code serves as a reference to compare fumarole against dragonsmouth original client
-async fn block_stats_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, args: SubscribeArgs) {
+async fn block_stats_example(mut client: GeyserGrpcClient, args: SubscribeArgs) {
     let mut request = args.as_subscribe_request();
     // For block stats, we need to track block meta and entry updates and slot intra update
     request
@@ -512,7 +512,7 @@ impl SubscribeArgs {
     }
 }
 
-async fn stream_example<I: Interceptor>(mut client: GeyserGrpcClient<I>, args: SubscribeArgs) {
+async fn stream_example(mut client: GeyserGrpcClient, args: SubscribeArgs) {
     let request = args.as_subscribe_request();
 
     let (_sink, mut rx) = client

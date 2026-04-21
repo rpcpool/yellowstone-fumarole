@@ -9,8 +9,8 @@
 //!
 //! However, there are some differences:
 //!
-//! - The `yellowstone-fumarole` (Coming soon) client uses multiple gRPC connections to communicate with the Fumarole service : avoids [`HoL`] blocking.
-//! - The `yellowstone-fumarole` subscribers are persistent and can be reused across multiple sessions (not computer).
+//! - The `yellowstone-fumarole` client can use multiple gRPC connections to communicate with the Fumarole service, helping avoid [`HoL`] blocking.
+//! - `yellowstone-fumarole` subscribers are persistent and can be reused across multiple sessions.
 //! - The `yellowstone-fumarole` can reconnect to the Fumarole service if the connection is lost.
 //!
 //! # Examples
@@ -39,7 +39,7 @@
 //! }
 //! ```
 //!
-//! The prefered way to create `FumaroleConfig` is use `serde_yaml` to deserialize from a YAML file.
+//! The preferred way to create `FumaroleConfig` is to use `serde_yaml` deserialization from a YAML file.
 //!
 //! ```ignore
 //! let config_file = std::fs::File::open("path/to/config.yaml").unwrap();
@@ -55,7 +55,7 @@
 //! ```
 //!
 //!
-//! ## Dragonsmouth-like Subscribe
+//! ## Dragonsmouth-like Subscribe (deprecated)
 //!
 //! ```rust
 //! use {
@@ -230,6 +230,101 @@
 //!    .expect("Failed to subscribe");
 //! ```
 //!
+//! ## SlotSequentialStream example (recommended for slot-ordered processing)
+//!
+//! ```ignore
+//! use futures::StreamExt;
+//! use yellowstone_fumarole_client::FumaroleClient;
+//! use yellowstone_fumarole_client::stream::FumaroleEvent;
+//! use yellowstone_grpc_proto::geyser::SubscribeRequest;
+//!
+//! async fn run(client: &mut FumaroleClient, subscriber_name: String, request: SubscribeRequest) {
+//!     let subscription = client
+//!         .subscribe(subscriber_name, request)
+//!         .await
+//!         .expect("subscribe failed");
+//!
+//!     let (_sink, stream) = subscription.split();
+//!     let mut slot_stream = stream.slot_sequential();
+//!
+//!     while let Some(item) = slot_stream.next().await {
+//!         match item.expect("stream error") {
+//!             FumaroleEvent::Data { slot, .. } => {
+//!                 println!("data for slot {slot}");
+//!             }
+//!             FumaroleEvent::SlotEnded(slot) => {
+//!                 println!("slot ended: {slot}");
+//!             }
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! ## BlockStream / Blocstream example (block-oriented processing)
+//!
+//! ```ignore
+//! use futures::StreamExt;
+//! use yellowstone_fumarole_client::FumaroleClient;
+//! use yellowstone_fumarole_client::stream::FumaroleBlockStreamEvent;
+//! use yellowstone_grpc_proto::geyser::SubscribeRequest;
+//!
+//! async fn run(client: &mut FumaroleClient, subscriber_name: String, request: SubscribeRequest) {
+//!     let subscription = client
+//!         .subscribe(subscriber_name, request)
+//!         .await
+//!         .expect("subscribe failed");
+//!
+//!     let (_sink, stream) = subscription.split();
+//!     let mut block_stream = stream.block_stream();
+//!
+//!     while let Some(item) = block_stream.next().await {
+//!         match item.expect("stream error") {
+//!             FumaroleBlockStreamEvent::Block(block) => {
+//!                 println!("block ready for slot {}", block.slot);
+//!             }
+//!             FumaroleBlockStreamEvent::SlotStatus(status) => {
+//!                 println!("slot status update for slot {}", status.slot);
+//!             }
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! ## Manual commit example (`auto_commit: false`)
+//!
+//! ```ignore
+//! use futures::StreamExt;
+//! use yellowstone_fumarole_client::{FumaroleClient, FumaroleSubscribeConfig};
+//! use yellowstone_fumarole_client::stream::FumaroleEvent;
+//! use yellowstone_grpc_proto::geyser::SubscribeRequest;
+//!
+//! async fn run(client: &mut FumaroleClient, subscriber_name: String, request: SubscribeRequest) {
+//!     let subscribe_config = FumaroleSubscribeConfig {
+//!         auto_commit: false,
+//!         ..Default::default()
+//!     };
+//!
+//!     let subscription = client
+//!         .subscribe_with_config(subscriber_name, request, subscribe_config)
+//!         .await
+//!         .expect("subscribe failed");
+//!
+//!     let (_sink, stream) = subscription.split();
+//!     let mut slot_stream = stream.slot_sequential();
+//!
+//!     while let Some(item) = slot_stream.next().await {
+//!         match item.expect("stream error") {
+//!             FumaroleEvent::Data { .. } => {}
+//!             FumaroleEvent::SlotEnded(slot) => {
+//!                 // Commit after your slot processing succeeds.
+//!                 slot_stream.commit();
+//!                 println!("committed progress at end of slot {slot}");
+//!             }
+//!         }
+//!     }
+//! }
+//! ```
+//!
 //!
 //! ## Enable Prometheus Metrics
 //!
@@ -266,26 +361,34 @@
 //! [`HoL`]: https://en.wikipedia.org/wiki/Head-of-line_blocking
 
 pub mod config;
+pub mod error;
+pub mod stream;
 
 #[cfg(feature = "prometheus")]
 pub mod metrics;
 
+pub(crate) mod connectors;
+pub(crate) mod core;
 pub(crate) mod grpc;
-pub(crate) mod runtime;
-pub(crate) mod util;
 
+pub use crate::{
+    error::{
+        ConnectError, DataplaneErrorKind, DataplaneStreamError, FumaroleSubscribeError,
+        InvalidMetadataHeader,
+    },
+    stream::{DragonsmouthLike, FumaroleEvent, FumaroleSink, FumaroleStream},
+};
 use {
     crate::proto::GetSlotRangeRequest,
     config::FumaroleConfig,
-    futures::future::{Either, select},
-    proto::control_response::Response,
-    runtime::{
+    core::{
+        ports::{ControlPlaneConnector, ControlPlaneStreamError},
+        runtime::{DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, FumaroleAsyncRuntime},
         state_machine::{DEFAULT_SLOT_MEMORY_RETENTION, FumaroleSM},
-        tokio::{
-            DEFAULT_GC_INTERVAL, DownloadTaskRunnerChannels, LegacyGrpcDownloadTaskRunner,
-            TokioFumeDragonsmouthRuntime,
-        },
     },
+    crossbeam::queue::SegQueue,
+    futures::{Sink, SinkExt, Stream, StreamExt},
+    proto::control_response::Response,
     semver::Version,
     std::{
         collections::HashMap,
@@ -293,18 +396,14 @@ use {
         sync::Arc,
         time::{Duration, Instant},
     },
-    tokio::sync::mpsc,
-    tokio_stream::wrappers::ReceiverStream,
+    tokio::{sync::mpsc, task::JoinHandle},
     tonic::{
-        metadata::{
-            Ascii, MetadataKey, MetadataValue,
-            errors::{InvalidMetadataKey, InvalidMetadataValue},
-        },
+        metadata::{Ascii, MetadataKey, MetadataValue},
         service::{Interceptor, interceptor::InterceptedService},
         transport::{Channel, ClientTlsConfig},
     },
-    util::grpc::into_bounded_mpsc_rx,
     uuid::Uuid,
+    yellowstone_grpc_proto::geyser::SubscribeRequest,
 };
 
 mod solana {
@@ -328,9 +427,11 @@ pub mod proto {
 use {
     crate::grpc::FumaroleGrpcConnector,
     proto::{JoinControlPlane, fumarole_client::FumaroleClient as TonicFumaroleClient},
-    runtime::tokio::DataPlaneConn,
     tonic::transport::Endpoint,
 };
+
+const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 
 #[derive(Clone)]
 struct FumeInterceptor {
@@ -359,26 +460,6 @@ impl Interceptor for FumeInterceptor {
 pub struct FumaroleClientBuilder {
     pub metadata: HashMap<MetadataKey<Ascii>, MetadataValue<Ascii>>,
     pub with_compression: bool,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum InvalidMetadataHeader {
-    #[error(transparent)]
-    InvalidMetadataKey(#[from] InvalidMetadataKey),
-    #[error(transparent)]
-    InvalidMetadataValue(#[from] InvalidMetadataValue),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ConnectError {
-    #[error(transparent)]
-    InvalidUri(#[from] http::uri::InvalidUri),
-    #[error(transparent)]
-    TransportError(#[from] tonic::transport::Error),
-    #[error(transparent)]
-    InvalidXToken(#[from] tonic::metadata::errors::InvalidMetadataValue),
-    #[error(transparent)]
-    InvalidMetadataHeader(#[from] InvalidMetadataHeader),
 }
 
 ///
@@ -424,24 +505,62 @@ pub(crate) type GrpcFumaroleClient =
 ///
 #[derive(Clone)]
 pub struct FumaroleClient {
-    connector: FumaroleGrpcConnector,
+    pub(crate) connector: FumaroleGrpcConnector,
     inner: GrpcFumaroleClient,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum DragonsmouthSubscribeError {
-    #[error(transparent)]
-    GrpcStatus(#[from] tonic::Status),
-    #[error("grpc stream closed")]
-    StreamClosed,
+pub struct FumaroleSubscription {
+    stream: FumaroleStream,
+    sink: FumaroleSink,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum FumaroleStreamError {
-    #[error(transparent)]
-    Custom(Box<dyn std::error::Error + Send + Sync>),
-    #[error("grpc stream closed")]
-    StreamClosed,
+impl Stream for FumaroleSubscription {
+    type Item = Result<FumaroleEvent, FumaroleSubscribeError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.stream.poll_next_unpin(cx)
+    }
+}
+
+impl Sink<SubscribeRequest> for FumaroleSubscription {
+    type Error = tonic::Status;
+
+    fn poll_ready(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.sink.poll_ready_unpin(cx)
+    }
+
+    fn start_send(
+        mut self: std::pin::Pin<&mut Self>,
+        item: SubscribeRequest,
+    ) -> Result<(), Self::Error> {
+        self.sink.start_send_unpin(item)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.sink.poll_flush_unpin(cx)
+    }
+
+    fn poll_close(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.sink.poll_close_unpin(cx)
+    }
+}
+
+impl FumaroleSubscription {
+    pub fn split(self) -> (FumaroleSink, FumaroleStream) {
+        (self.sink, self.stream)
+    }
 }
 
 ///
@@ -496,14 +615,23 @@ pub struct FumaroleSubscribeConfig {
     /// If set to `true`, [`FumaroleSubscribeConfig::commit_interval`] will be ignored.
     pub no_commit: bool,
 
-    ///
-    /// Whether to enable sharded block download. If enabled, the fumarole will download block in shards and reassemble them in the client.
-    /// set to `true` by default.
-    ///
+    #[deprecated(
+        note = "This field is deprecated and will be removed in a future version. Sharded block download is now always enabled if the fumarole service version supports it."
+    )]
     pub enable_sharded_block_download: bool,
+
+    ///
+    /// Whether to enable auto-committing progress to the fumarole service.
+    ///
+    /// If set to `true`, the fumarole client will automatically commit progress to the fumarole service.
+    /// If set to `false`, the fumarole client will not automatically commit progress, and you will need to manually commit progress.
+    ///
+    /// See [`FumaroleStream::commit`] for more details.
+    pub auto_commit: bool,
 }
 
 impl Default for FumaroleSubscribeConfig {
+    #[allow(deprecated)]
     fn default() -> Self {
         Self {
             num_data_plane_tcp_connections: NonZeroU8::new(DEFAULT_PARA_DATA_STREAMS).unwrap(),
@@ -519,30 +647,7 @@ impl Default for FumaroleSubscribeConfig {
             refresh_tip_stats_interval: DEFAULT_REFRESH_TIP_INTERVAL, // Default to 5 seconds
             no_commit: false,
             enable_sharded_block_download: true,
-        }
-    }
-}
-
-pub enum FumeControlPlaneError {
-    Disconnected,
-}
-
-pub enum FumeDataPlaneError {
-    Disconnected,
-}
-
-pub enum FumaroleError {
-    ControlPlaneDisconnected,
-    DataPlaneDisconnected,
-    InvalidSubscribeRequest,
-}
-
-impl From<tonic::Status> for FumaroleError {
-    fn from(status: tonic::Status) -> Self {
-        match status.code() {
-            tonic::Code::Unavailable => FumaroleError::ControlPlaneDisconnected,
-            tonic::Code::Internal => FumaroleError::DataPlaneDisconnected,
-            _ => FumaroleError::InvalidSubscribeRequest,
+            auto_commit: true,
         }
     }
 }
@@ -551,17 +656,18 @@ impl From<tonic::Status> for FumaroleError {
 /// Dragonsmouth flavor fumarole session.
 /// Mimics the same API as dragonsmouth but uses fumarole as the backend.
 ///
+#[deprecated(note = "This struct is deprecated. Please use `FumaroleSubscription` instead.")]
 pub struct DragonsmouthAdapterSession {
     ///
     /// Channel to send requests to the fumarole service.
     /// If you don't need to change the subscribe request, you can drop this channel.
     ///
-    pub sink: mpsc::Sender<geyser::SubscribeRequest>,
+    pub sink: FumaroleSink,
     ///
     /// Channel to receive updates from the fumarole service.
     /// Dropping this channel will stop the fumarole session.
     ///
-    pub source: mpsc::Receiver<Result<geyser::SubscribeUpdate, tonic::Status>>,
+    pub source: DragonsmouthLike,
     ///
     /// Handle to the fumarole session client runtime.
     /// Dropping this handle does not stop the fumarole session.
@@ -578,8 +684,19 @@ fn string_pairs_to_metadata_header(
     headers
         .into_iter()
         .map(|(k, v)| {
-            let key = MetadataKey::from_bytes(k.as_ref().as_bytes())?;
-            let value: MetadataValue<Ascii> = v.as_ref().try_into()?;
+            let key_string = k.as_ref().to_owned();
+            let key = MetadataKey::from_bytes(key_string.as_bytes()).map_err(|err| {
+                InvalidMetadataHeader::InvalidMetadataKey {
+                    key: key_string.clone(),
+                    source: Some(Box::new(err)),
+                }
+            })?;
+            let value: MetadataValue<Ascii> = v.as_ref().try_into().map_err(|err| {
+                InvalidMetadataHeader::InvalidMetadataValue {
+                    key: key_string,
+                    source: Some(Box::new(err)),
+                }
+            })?;
             Ok((key, value))
         })
         .collect()
@@ -601,11 +718,21 @@ impl FumaroleClient {
         let mut tonic_endpoints = Vec::with_capacity(1);
         #[allow(clippy::single_element_loop)]
         for endpoint_str in [config.endpoint.clone()] {
-            let endpoints = Endpoint::from_shared(endpoint_str)?
-                .tls_config(ClientTlsConfig::new().with_native_roots())?
+            let endpoints = Endpoint::from_shared(endpoint_str.clone())
+                .map_err(|err| ConnectError::InvalidEndpoint {
+                    endpoint: endpoint_str.clone(),
+                    source: Some(Box::new(err)),
+                })?
+                .tls_config(ClientTlsConfig::new().with_native_roots())
+                .map_err(|err| ConnectError::TlsConfiguration {
+                    source: Some(Box::new(err)),
+                })?
+                .tcp_nodelay(true)
+                .connect_timeout(DEFAULT_CONNECTION_TIMEOUT)
+                .tcp_keepalive(Some(DEFAULT_KEEPALIVE_INTERVAL))
                 .initial_connection_window_size(connection_window_size)
                 .initial_stream_window_size(stream_window_size)
-                .http2_adaptive_window(config.enable_http2_adaptive_window);
+                .http2_adaptive_window(true);
             tonic_endpoints.push(endpoints);
         }
 
@@ -615,7 +742,12 @@ impl FumaroleClient {
             connect_cnt: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
 
-        let client = connector.connect().await?;
+        let client = connector
+            .connect()
+            .await
+            .map_err(|err| ConnectError::Transport {
+                source: Some(Box::new(err)),
+            })?;
         Ok(FumaroleClient {
             connector,
             inner: client,
@@ -634,6 +766,8 @@ impl FumaroleClient {
     ///
     /// Subscribe to a stream of updates from the Fumarole service
     ///
+    #[deprecated(note = "This method is deprecated. Please use `subscribe` instead.")]
+    #[allow(deprecated)]
     pub async fn dragonsmouth_subscribe<S>(
         &mut self,
         subscriber_name: S,
@@ -642,41 +776,66 @@ impl FumaroleClient {
     where
         S: AsRef<str>,
     {
-        let handle = tokio::runtime::Handle::current();
-        self.dragonsmouth_subscribe_with_config_on(
-            subscriber_name,
-            request,
-            Default::default(),
-            handle,
-        )
-        .await
+        self.dragonsmouth_subscribe_with_config(subscriber_name, request, Default::default())
+            .await
     }
 
+    #[deprecated(note = "This method is deprecated. Please use `subscribe_with_config` instead.")]
+    #[allow(deprecated)]
     pub async fn dragonsmouth_subscribe_with_config<S>(
         &mut self,
-        consumer_group_name: S,
+        subscriber_name: S,
         request: geyser::SubscribeRequest,
         config: FumaroleSubscribeConfig,
     ) -> Result<DragonsmouthAdapterSession, tonic::Status>
     where
         S: AsRef<str>,
     {
-        let handle = tokio::runtime::Handle::current();
-        self.dragonsmouth_subscribe_with_config_on(consumer_group_name, request, config, handle)
+        let (subscription, handle) = self
+            .internal_subscribe_with_config(subscriber_name, request, config)
+            .await?;
+        let (sink, source) = subscription.split();
+        let dm = source.like_dragonsmouth();
+        Ok(DragonsmouthAdapterSession {
+            sink,
+            source: dm,
+            fumarole_handle: handle,
+        })
+    }
+
+    pub async fn subscribe<S>(
+        &mut self,
+        subscriber_name: S,
+        request: geyser::SubscribeRequest,
+    ) -> Result<FumaroleSubscription, tonic::Status>
+    where
+        S: AsRef<str>,
+    {
+        self.subscribe_with_config(subscriber_name, request, Default::default())
             .await
     }
 
-    ///
-    /// Same as [`FumaroleClient::dragonsmouth_subscribe`] but allows you to specify a custom runtime handle
-    /// the underlying fumarole runtie will use
-    ///
-    pub async fn dragonsmouth_subscribe_with_config_on<S>(
+    pub async fn subscribe_with_config<S>(
         &mut self,
         subscriber_name: S,
         request: geyser::SubscribeRequest,
         config: FumaroleSubscribeConfig,
-        handle: tokio::runtime::Handle,
-    ) -> Result<DragonsmouthAdapterSession, tonic::Status>
+    ) -> Result<FumaroleSubscription, tonic::Status>
+    where
+        S: AsRef<str>,
+    {
+        let (subscription, _handle) = self
+            .internal_subscribe_with_config(subscriber_name, request, config)
+            .await?;
+        Ok(subscription)
+    }
+
+    async fn internal_subscribe_with_config<S>(
+        &mut self,
+        subscriber_name: S,
+        request: geyser::SubscribeRequest,
+        config: FumaroleSubscribeConfig,
+    ) -> Result<(FumaroleSubscription, JoinHandle<()>), tonic::Status>
     where
         S: AsRef<str>,
     {
@@ -691,23 +850,15 @@ impl FumaroleClient {
             );
         }
         const SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION: u64 = 39;
-        let use_sharded_downlaod = config.enable_sharded_block_download
-            && semver_version
-                .filter(|v| v.minor > SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION)
-                .is_none();
+        let fumarole_frontend_version_supported = semver_version
+            .as_ref()
+            .filter(|v| v.minor >= SHARDED_DOWNLOAD_MINIMUM_MINOR_VERSION)
+            .is_some();
 
-        if config.enable_sharded_block_download && !use_sharded_downlaod {
-            tracing::warn!(
-                "Sharded block download is enabled in the config, but the fumarole service version {} does not support it. Falling back to non-sharded download.",
-                version.version
-            );
-        }
-
-        if use_sharded_downlaod {
-            tracing::debug!("using sharded block download");
-        } else {
-            tracing::debug!("using non-sharded block download");
-        }
+        assert!(
+            fumarole_frontend_version_supported,
+            "Fumarole service version {semver_version:?} is not supported",
+        );
 
         let request = Arc::new(request);
         assert!(
@@ -720,40 +871,34 @@ impl FumaroleClient {
             "refresh_tip_stats_interval must be greater than or equal to 5 seconds"
         );
 
-        use {proto::ControlCommand, runtime::tokio::DragonsmouthSubscribeRequestBidi};
+        use core::runtime::DragonsmouthSubscribeRequestBidi;
 
         let (dragonsmouth_outlet, dragonsmouth_inlet) =
             mpsc::channel(DEFAULT_DRAGONSMOUTH_CAPACITY);
-        let (fume_control_plane_tx, fume_control_plane_rx) = mpsc::channel(100);
 
         let initial_join = JoinControlPlane {
             consumer_group_name: Some(subscriber_name.as_ref().to_string()),
         };
-        let initial_join_command = ControlCommand {
-            command: Some(proto::control_command::Command::InitialJoin(initial_join)),
+        let (fume_control_plane_tx, mut fume_control_plane_rx) =
+            ControlPlaneConnector::subscribe(self, initial_join).await?;
+        let control_response = match fume_control_plane_rx.next().await {
+            Some(Ok(resp)) => resp,
+            Some(Err(ControlPlaneStreamError::Disconnected(err))) => {
+                tracing::error!("control plane disconnected before init: {err}");
+                return Err(tonic::Status::unavailable(
+                    "control plane disconnected before init",
+                ));
+            }
+            Some(Err(ControlPlaneStreamError::ApplicationError(err))) => {
+                tracing::error!("control plane application error before init: {err}");
+                return Err(tonic::Status::internal("control plane init failed"));
+            }
+            None => {
+                return Err(tonic::Status::unavailable(
+                    "control plane stream closed before init",
+                ));
+            }
         };
-
-        // IMPORTANT: Make sure we send the request here before we subscribe to the stream
-        // Otherwise this will block until timeout by remote server.
-        fume_control_plane_tx
-            .send(initial_join_command)
-            .await
-            .expect("failed to send initial join");
-
-        let resp = if use_sharded_downlaod {
-            self.inner
-                .subscribe_v2(ReceiverStream::new(fume_control_plane_rx))
-                .await?
-        } else {
-            self.inner
-                .subscribe(ReceiverStream::new(fume_control_plane_rx))
-                .await?
-        };
-
-        let mut streaming = resp.into_inner();
-        let fume_control_plane_tx = fume_control_plane_tx.clone();
-        let control_response = streaming.message().await?.expect("none");
-        let fume_control_plane_rx = into_bounded_mpsc_rx(100, streaming);
         let response = control_response.response.expect("none");
         let Response::Init(initial_state) = response else {
             panic!("unexpected initial response: {response:?}")
@@ -777,52 +922,24 @@ impl FumaroleClient {
             rx: dm_rx,
         };
 
-        let mut data_plane_channel_vec =
-            Vec::with_capacity(config.num_data_plane_tcp_connections.get() as usize);
-        // TODO: support config.num_data_plane_tcp_connections
-        for _ in 0..config.num_data_plane_tcp_connections.get() {
-            let client = self
-                .connector
-                .connect()
-                .await
-                .expect("failed to connect to fumarole");
-            let conn = DataPlaneConn::new(client);
-            data_plane_channel_vec.push(conn);
-        }
+        let total_shard_downloaders = config.num_data_plane_tcp_connections.get() as usize
+            * config.concurrent_download_limit_per_tcp.get();
         let (download_task_runner_cnc_tx, download_task_runner_cnc_rx) = mpsc::channel(10);
         // Make sure the channel capacity is really low, since the grpc runner already implements its own concurrency control
         let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(100);
         let (download_result_tx, download_result_rx) = mpsc::channel(1000);
 
-        let download_task_runner_jh = if use_sharded_downlaod {
-            let grpc_download_task_runner = runtime::tokio::GrpcShardedDownloadOrchestrator::new(
-                data_plane_channel_vec,
-                self.connector.clone(),
-                download_task_runner_cnc_rx,
-                download_task_queue_rx,
-                download_result_tx,
-                config.max_failed_slot_download_attempt,
-                Arc::clone(&request),
-                config.concurrent_download_limit_per_tcp,
-                dragonsmouth_outlet.clone(),
-            );
-            handle.spawn(grpc_download_task_runner.run())
-        } else {
-            let grpc_download_task_runner = LegacyGrpcDownloadTaskRunner::new(
-                data_plane_channel_vec,
-                self.connector.clone(),
-                download_task_runner_cnc_rx,
-                download_task_queue_rx,
-                download_result_tx,
-                config.max_failed_slot_download_attempt,
-                Arc::clone(&request),
-                config.concurrent_download_limit_per_tcp.get()
-                    * config.num_data_plane_tcp_connections.get() as usize,
-                dragonsmouth_outlet.clone(),
-            );
-
-            handle.spawn(grpc_download_task_runner.run())
-        };
+        let grpc_download_task_runner = core::runtime::ShardedDownloadOrchestrator::new(
+            self.connector.clone(),
+            download_task_runner_cnc_rx,
+            download_task_queue_rx,
+            download_result_tx,
+            config.max_failed_slot_download_attempt,
+            Arc::clone(&request),
+            total_shard_downloaders,
+            dragonsmouth_outlet.clone(),
+        );
+        let download_task_runner_jh = tokio::spawn(grpc_download_task_runner.run());
 
         let download_task_runner_chans = DownloadTaskRunnerChannels {
             download_task_queue_tx,
@@ -830,7 +947,9 @@ impl FumaroleClient {
             download_result_rx,
         };
 
-        let tokio_rt = TokioFumeDragonsmouthRuntime {
+        let shared_commit_offset_queue = Arc::new(SegQueue::new());
+
+        let tokio_rt = FumaroleAsyncRuntime {
             sm,
             fumarole_client: self.clone(),
             blockchain_id: initial_state.blockchain_id,
@@ -838,39 +957,32 @@ impl FumaroleClient {
             subscribe_request: request,
             download_task_runner_chans,
             persistent_subscriber_name: subscriber_name.as_ref().to_string(),
+            control_plane_connector: self.clone(),
             control_plane_tx: fume_control_plane_tx,
             control_plane_rx: fume_control_plane_rx,
-            dragonsmouth_outlet,
+            outlet: dragonsmouth_outlet,
             commit_interval: config.commit_interval,
             last_commit: Instant::now(),
             get_tip_interval: config.refresh_tip_stats_interval,
             last_tip: Instant::now(),
             gc_interval: config.gc_interval,
             non_critical_background_jobs: Default::default(),
+            download_task_runner_jh,
             last_history_poll: Default::default(),
             no_commit: config.no_commit,
             stop: false,
-            enable_sharded_block_download: use_sharded_downlaod,
+            shared_commit_offset_queue: Arc::clone(&shared_commit_offset_queue),
         };
-        let fumarole_rt_jh = handle.spawn(tokio_rt.run());
-        let fut = async move {
-            let either = select(download_task_runner_jh, fumarole_rt_jh).await;
-            match either {
-                Either::Left((result, _)) => {
-                    let _ = result.expect("fumarole download task runner failed");
-                }
-                Either::Right((result, _)) => {
-                    let _ = result.expect("fumarole runtime failed");
-                }
-            }
+        let fumarole_rt_jh = tokio::spawn(tokio_rt.run());
+        let subscription = FumaroleSubscription {
+            sink: FumaroleSink::new(dm_tx),
+            stream: FumaroleStream::new(
+                shared_commit_offset_queue,
+                dragonsmouth_inlet,
+                config.auto_commit,
+            ),
         };
-        let fumarole_handle = handle.spawn(fut);
-        let dm_session = DragonsmouthAdapterSession {
-            sink: dm_tx,
-            source: dragonsmouth_inlet,
-            fumarole_handle,
-        };
-        Ok(dm_session)
+        Ok((subscription, fumarole_rt_jh))
     }
 
     pub async fn list_consumer_groups(

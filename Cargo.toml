@@ -22,7 +22,7 @@ bs58 = "~0.5.1"
 bytesize = "2"
 clap = "^4.5.7"
 clap-verbosity-flag = "^3.0.2"
-flume = "0.12.0"
+crossbeam = "0.8.0"
 futures = "~0.3.31"
 http = "^1.2.0"
 http-body-util = "~0.1"
@@ -45,7 +45,8 @@ solana-signature = "3.0.0"
 tabled = "~0.20.0"
 thiserror = "2.0.0"
 tokio = "1"
-tokio-stream = "~0.1.17"
+tokio-stream = "0.1.17"
+tokio-util = "0.7.0"
 tonic = "~0.14.0"
 tonic-build = "~0.14.0"
 tonic-prost = "~0.14.0"
@@ -54,11 +55,11 @@ tower = "~0.5.2"
 tracing = "~0.1.41"
 tracing-subscriber = { version = "~0.3.18", features = ["env-filter"] }
 uuid = { version = "1" }
-yellowstone-fumarole-client = { path = "crates/yellowstone-fumarole-client", version = "0.4.0+solana.3" }
-yellowstone-grpc-client = "12.0.0"
+yellowstone-fumarole-client = { path = "crates/yellowstone-fumarole-client", version = "0.5.0+solana.3" }
+yellowstone-grpc-client = "13.0.0"
 yellowstone-grpc-proto = "12.0.0"
 
 [workspace.lints.clippy]
 clone_on_ref_ptr = "deny"
-missing_const_for_fn = "deny"
+missing_const_for_fn = "warn"
 trivially_copy_pass_by_ref = "deny"
