@@ -15,25 +15,7 @@ builds:
           - --bin=fume
           - -p=yellowstone-fumarole-cli
 
-    - id: example-fumarole
-      builder: rust
-      binary: example-fumarole
-      targets:
-          - x86_64-unknown-linux-gnu
-      flags:
-          - --release
-          - --bin=example-fumarole
-          - -p=yellowstone-fumarole-client-simple
-
-    - id: dragonsmouth
-      builder: rust
-      binary: dragonsmouth
-      targets:
-          - x86_64-unknown-linux-gnu
-      flags:
-          - --release
-          - --bin=dragonsmouth
-          - -p=yellowstone-fumarole-client-simple
+  
 
 archives:
     - id: fume
