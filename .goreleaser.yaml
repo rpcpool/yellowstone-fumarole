@@ -42,17 +42,6 @@ archives:
       ids:
           - fume
 
-    - id: example-fumarole
-      name_template: example-fumarole-linux-amd64
-      formats: [binary]
-      ids:
-          - example-fumarole
-
-    - id: dragonsmouth
-      name_template: dragonsmouth-linux-amd64
-      formats: [binary]
-      ids:
-          - dragonsmouth
 
 release:
     disable: "{{ .Prerelease }}"
