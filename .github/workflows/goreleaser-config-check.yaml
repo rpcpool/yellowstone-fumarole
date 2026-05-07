@@ -1,0 +1,26 @@
+---
+name: GoReleaser config check
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    paths:
+      - .goreleaser.yaml
+  workflow_dispatch:
+
+jobs:
+  goreleaser-check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a
+        with:
+          install-only: true
+
+      - name: goreleaser check
+        run: goreleaser check
