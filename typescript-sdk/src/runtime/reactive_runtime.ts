@@ -134,6 +134,7 @@ export type FumaroleRuntimeArgs = {
   controlPlaneResponseObservable: Observable<ControlResponse>;
   sm: FumaroleSM;
   commitIntervalMillis: number;
+  gcInterval: number;
   maxConcurrentDownload: number;
   initialSubscribeRequest: SubscribeRequest;
   subscribeRequestObservable: Observable<SubscribeRequest>;
@@ -531,6 +532,7 @@ export function fumaroleObservable(
     downloadTaskResultObservable,
     controlPlaneResponseObservable,
     commitIntervalMillis,
+    gcInterval,
     sm,
     maxConcurrentDownload,
     initialSubscribeRequest,
@@ -601,7 +603,7 @@ export function fumaroleObservable(
     const ctx: FumaroleRuntimeCtx = {
       currentTick: 0,
       sm,
-      gcInterval: 1000,
+      gcInterval,
       maxConcurrentDownload,
       lastCommit: Date.now(),
       inflightDownloads: new Map(),
