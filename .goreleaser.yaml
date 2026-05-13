@@ -1,5 +1,7 @@
 version: 2
 
+project_name: yellowstone-fumarole
+
 before:
     hooks:
         - bash -c 'if [ -n "$GITHUB_ENV" ]; then echo "YELLOWSTONE_GRPC_CLIENT_VERSION=$(cargo --quiet metadata --format-version 1 | jq -r '\''.packages[] | select(.name=="yellowstone-grpc-client") | .version'\'')" >> "$GITHUB_ENV"; fi'
