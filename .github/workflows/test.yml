@@ -12,6 +12,12 @@ permissions:
 
 on:
   push:
+    paths-ignore:
+      - '.goreleaser.yaml'
+      - '.github/workflows/goreleaser-config-check.yaml'
+      - 'docs/**'
+      - '**/*.md'
+      - 'LICENSE*'
   workflow_dispatch:
 
 env:
