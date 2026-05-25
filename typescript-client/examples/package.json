@@ -1,0 +1,21 @@
+{
+  "name": "yellowstone-fumarole-client-examples",
+  "version": "0.1.0",
+  "license": "AGPL-3.0",
+  "author": "Triton One",
+  "description": "Examples for the native Yellowstone Fumarole client",
+  "private": true,
+  "scripts": {
+    "list-consumer-groups": "tsx src/list-consumer-groups-with-group-info.ts",
+    "subscribe-token-transactions": "tsx src/subscribe-token-transactions.ts"
+  },
+  "dependencies": {
+    "@triton-one/yellowstone-fumarole-client": "file:../",
+    "dotenv": "^17.2.1",
+    "tsx": "^4.20.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.2.2"
+  }
+}

@@ -1,7 +1,8 @@
 [workspace]
-members = [ 
+members = [
     "apps/yellowstone-fumarole-cli",
     "crates/yellowstone-fumarole-client",
+    "crates/yellowstone-fumarole-napi",
     "examples/rust",
 ]
 resolver = "2"
