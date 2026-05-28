@@ -22,9 +22,9 @@
     "prepublishOnly": "napi prepublish -t npm"
   },
   "devDependencies": {
-    "@napi-rs/cli": "^2"
+    "@napi-rs/cli": "^3"
   },
   "engines": {
-    "node": ">= 14"
+    "node": ">= 22"
   }
 }

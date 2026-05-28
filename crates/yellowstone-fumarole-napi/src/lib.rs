@@ -13,12 +13,9 @@ use {
     },
     tokio::sync::{Mutex, mpsc},
     yellowstone_fumarole_client::{
-        FumaroleClient as RustFumaroleClient,
-        FumaroleEvent as RustFumaroleEvent,
-        FumaroleSink,
+        FumaroleClient as RustFumaroleClient, FumaroleEvent as RustFumaroleEvent, FumaroleSink,
         FumaroleSubscribeConfig as RustFumaroleSubscribeConfig,
-        config::FumaroleConfig as RustFumaroleConfig,
-        proto as fumarole_proto,
+        config::FumaroleConfig as RustFumaroleConfig, proto as fumarole_proto,
     },
     yellowstone_grpc_proto::geyser,
 };
@@ -36,6 +33,7 @@ pub struct FumaroleConfigOptions {
 
 /// Tuning options for a [`FumaroleSubscription`].
 #[napi(object)]
+#[derive(Default)]
 pub struct FumaroleSubscribeConfigOptions {
     /// Number of parallel data-plane TCP connections (default: 1).
     pub num_data_plane_tcp_connections: Option<u8>,
@@ -53,21 +51,6 @@ pub struct FumaroleSubscribeConfigOptions {
     pub no_commit: Option<bool>,
     /// Automatically commit progress after each event.
     pub auto_commit: Option<bool>,
-}
-
-impl Default for FumaroleSubscribeConfigOptions {
-    fn default() -> Self {
-        Self {
-            num_data_plane_tcp_connections: None,
-            concurrent_download_limit_per_tcp: None,
-            commit_interval_ms: None,
-            max_failed_slot_download_attempt: None,
-            gc_interval: None,
-            slot_memory_retention: None,
-            no_commit: None,
-            auto_commit: None,
-        }
-    }
 }
 
 // ─── Event ───────────────────────────────────────────────────────────────────
@@ -105,10 +88,7 @@ fn to_rust_config(options: FumaroleConfigOptions) -> Result<RustFumaroleConfig> 
         Value::String(options.endpoint),
     );
     if let Some(token) = options.x_token {
-        map.insert(
-            Value::String("x-token".to_string()),
-            Value::String(token),
-        );
+        map.insert(Value::String("x-token".to_string()), Value::String(token));
     }
     if let Some(max_size) = options.max_decoding_message_size_bytes {
         map.insert(
@@ -116,10 +96,12 @@ fn to_rust_config(options: FumaroleConfigOptions) -> Result<RustFumaroleConfig> 
             Value::Number(max_size.into()),
         );
     }
-    serde_yaml::from_value(Value::Mapping(map)).map_err(|e| napi_err(e))
+    serde_yaml::from_value(Value::Mapping(map)).map_err(napi_err)
 }
 
-fn to_rust_subscribe_config(options: FumaroleSubscribeConfigOptions) -> RustFumaroleSubscribeConfig {
+fn to_rust_subscribe_config(
+    options: FumaroleSubscribeConfigOptions,
+) -> RustFumaroleSubscribeConfig {
     #[allow(deprecated)]
     let mut config = RustFumaroleSubscribeConfig::default();
     if let Some(n) = options.num_data_plane_tcp_connections {
@@ -194,7 +176,7 @@ impl FumaroleSubscription {
         let request = geyser::SubscribeRequest::decode(request.as_ref())
             .map_err(|e| napi_err(format!("failed to decode SubscribeRequest: {e}")))?;
         let mut guard = self.sink.lock().await;
-        guard.send(request).await.map_err(|e| napi_err(e))
+        guard.send(request).await.map_err(napi_err)
     }
 }
 
@@ -214,7 +196,7 @@ impl FumaroleClient {
         let rust_config = to_rust_config(config)?;
         let client = RustFumaroleClient::connect(rust_config)
             .await
-            .map_err(|e| napi_err(e))?;
+            .map_err(napi_err)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(client)),
         })
@@ -223,13 +205,7 @@ impl FumaroleClient {
     /// Returns the service version as a protobuf-encoded `VersionResponse`.
     #[napi]
     pub async fn version(&self) -> Result<Buffer> {
-        let response = self
-            .inner
-            .lock()
-            .await
-            .version()
-            .await
-            .map_err(|e| napi_err(e))?;
+        let response = self.inner.lock().await.version().await.map_err(napi_err)?;
         Ok(Buffer::from(response.encode_to_vec()))
     }
 
@@ -266,11 +242,10 @@ impl FumaroleClient {
             .await
             .subscribe_with_config(subscriber_name, subscribe_request, rust_config)
             .await
-            .map_err(|e| napi_err(e))?;
+            .map_err(napi_err)?;
 
         let (sink, stream) = subscription.split();
-        let (event_tx, event_rx) =
-            mpsc::channel::<std::result::Result<RawEvent, String>>(256);
+        let (event_tx, event_rx) = mpsc::channel::<std::result::Result<RawEvent, String>>(256);
 
         tokio::spawn(async move {
             use futures::StreamExt as _;
@@ -315,7 +290,7 @@ impl FumaroleClient {
             .await
             .list_consumer_groups(req)
             .await
-            .map_err(|e| napi_err(e))?
+            .map_err(napi_err)?
             .into_inner();
         Ok(Buffer::from(response.encode_to_vec()))
     }
@@ -333,7 +308,7 @@ impl FumaroleClient {
             .await
             .get_consumer_group_info(req)
             .await
-            .map_err(|e| napi_err(e))?
+            .map_err(napi_err)?
             .into_inner();
         Ok(Buffer::from(response.encode_to_vec()))
     }
@@ -351,7 +326,7 @@ impl FumaroleClient {
             .await
             .delete_consumer_group(req)
             .await
-            .map_err(|e| napi_err(e))?
+            .map_err(napi_err)?
             .into_inner();
         Ok(Buffer::from(response.encode_to_vec()))
     }
@@ -369,7 +344,7 @@ impl FumaroleClient {
             .await
             .create_consumer_group(req)
             .await
-            .map_err(|e| napi_err(e))?
+            .map_err(napi_err)?
             .into_inner();
         Ok(Buffer::from(response.encode_to_vec()))
     }
@@ -387,7 +362,7 @@ impl FumaroleClient {
             .await
             .get_chain_tip(req)
             .await
-            .map_err(|e| napi_err(e))?
+            .map_err(napi_err)?
             .into_inner();
         Ok(Buffer::from(response.encode_to_vec()))
     }
@@ -401,7 +376,7 @@ impl FumaroleClient {
             .await
             .get_slot_range()
             .await
-            .map_err(|e| napi_err(e))?
+            .map_err(napi_err)?
             .into_inner();
         Ok(Buffer::from(response.encode_to_vec()))
     }

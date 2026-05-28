@@ -1,12 +1,12 @@
 #[cfg(feature = "prometheus")]
 use crate::{
+    FumaroleClient,
     metrics::{
         dec_inflight_slot_download, inc_offset_commitment_count, inc_skip_offset_commitment_count,
-        inc_slot_download_count, inc_slot_status_offset_processed_count, inc_total_event_downloaded,
-        observe_slot_download_duration, set_max_slot_detected,
+        inc_slot_download_count, inc_slot_status_offset_processed_count,
+        inc_total_event_downloaded, observe_slot_download_duration, set_max_slot_detected,
         set_processed_slot_status_offset_queue_len, set_slot_status_update_queue_len,
     },
-    FumaroleClient
 };
 use {
     super::{
