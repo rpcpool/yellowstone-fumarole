@@ -1,0 +1,78 @@
+---
+name: NAPI Build
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    paths:
+      - 'crates/yellowstone-fumarole-napi/**'
+      - 'crates/yellowstone-fumarole-client/**'
+      - 'rust-toolchain.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/napi-build.yaml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-apple-darwin
+            os: macos-15
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ./target
+          key: v0001-${{ matrix.os }}-rust-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            v0001-${{ matrix.os }}-rust-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Set rust version
+        run: |
+          echo "channel=$(grep channel rust-toolchain.toml | awk '{print $3}' | sed 's/"//g')" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.channel }}
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install npm dependencies
+        working-directory: crates/yellowstone-fumarole-napi
+        run: npm install
+
+      - name: Build NAPI bindings
+        working-directory: crates/yellowstone-fumarole-napi
+        run: npx napi build --platform --release --target ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-${{ matrix.target }}
+          path: crates/yellowstone-fumarole-napi/*.node
+          if-no-files-found: error

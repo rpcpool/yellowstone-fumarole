@@ -24,4 +24,4 @@ yellowstone-grpc
 .env
 *.tgz
 .codex
-.node
+*.node
