@@ -1,9 +1,12 @@
 #[cfg(feature = "prometheus")]
-use crate::metrics::{
-    dec_inflight_slot_download, inc_offset_commitment_count, inc_skip_offset_commitment_count,
-    inc_slot_download_count, inc_slot_status_offset_processed_count, inc_total_event_downloaded,
-    observe_slot_download_duration, set_max_slot_detected,
-    set_processed_slot_status_offset_queue_len, set_slot_status_update_queue_len,
+use crate::{
+    metrics::{
+        dec_inflight_slot_download, inc_offset_commitment_count, inc_skip_offset_commitment_count,
+        inc_slot_download_count, inc_slot_status_offset_processed_count, inc_total_event_downloaded,
+        observe_slot_download_duration, set_max_slot_detected,
+        set_processed_slot_status_offset_queue_len, set_slot_status_update_queue_len,
+    },
+    FumaroleClient
 };
 use {
     super::{
@@ -11,7 +14,6 @@ use {
         state_machine::{FumaroleSM, FumeDownloadRequest, FumeOffset, FumeShardIdx},
     },
     crate::{
-        FumaroleClient,
         error::FumaroleSubscribeError,
         proto::{
             self, BlockFilters, CommitOffset, ControlCommand, DataCommand, DataResponse,
@@ -95,6 +97,7 @@ where
     pub sm: FumaroleSM,
     #[allow(dead_code)]
     pub blockchain_id: Vec<u8>,
+    #[cfg(feature = "prometheus")]
     pub fumarole_client: FumaroleClient,
     pub download_task_runner_chans: DownloadTaskRunnerChannels,
     pub dragonsmouth_bidi: DragonsmouthSubscribeRequestBidi,

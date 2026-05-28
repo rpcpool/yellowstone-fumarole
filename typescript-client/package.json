@@ -21,12 +21,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.esm.json && tsc -p tsconfig.cjs.json && tsc -p tsconfig.types.json",
     "build:native": "cd ../crates/yellowstone-fumarole-napi && npm install && npm run build",
-    "generate-proto": "mkdir -p src/grpc && protoc -I../yellowstone-grpc/yellowstone-grpc-proto/proto -I../proto --plugin=node_modules/.bin/protoc-gen-ts_proto --ts_proto_opt=forceLong=bigint --ts_proto_opt=outputServices=grpc-js --experimental_allow_proto3_optional --ts_proto_out=src/grpc fumarole.proto --ts_proto_opt=esModuleInterop=true",
+    "generate-proto": "mkdir -p src/grpc && protoc -I../yellowstone-grpc/yellowstone-grpc-proto/proto -I../proto --plugin=node_modules/.bin/protoc-gen-ts_proto --ts_proto_opt=forceLong=bigint --ts_proto_opt=outputServices=false --experimental_allow_proto3_optional --ts_proto_out=src/grpc fumarole.proto --ts_proto_opt=esModuleInterop=true",
     "clean": "rm -rf dist"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rpcpool/yellowstone-fumarole.git"
+  },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.6.3",
-    "@grpc/grpc-js": "^1.13.4",
     "@triton-one/yellowstone-fumarole-napi": "file:../crates/yellowstone-fumarole-napi"
   },
   "devDependencies": {
@@ -36,5 +38,11 @@
   },
   "engines": {
     "node": ">= 14"
-  }
+  },
+  "keywords": [
+    "solana",
+    "yellowstone",
+    "grpc",
+    "fumarole"
+  ]
 }

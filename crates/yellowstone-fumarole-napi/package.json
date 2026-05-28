@@ -10,16 +10,11 @@
     "*.node"
   ],
   "napi": {
-    "name": "yellowstone-fumarole-napi",
-    "triples": {
-      "defaults": true,
-      "additional": [
-        "aarch64-apple-darwin",
-        "aarch64-unknown-linux-gnu",
-        "aarch64-unknown-linux-musl",
-        "x86_64-unknown-linux-musl"
-      ]
-    }
+    "binaryName": "yellowstone-fumarole-napi",
+    "targets": [
+      "x86_64-unknown-linux-gnu",
+      "aarch64-apple-darwin"
+    ]
   },
   "scripts": {
     "build": "napi build --platform --release",
