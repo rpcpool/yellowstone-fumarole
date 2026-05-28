@@ -60,7 +60,7 @@ jobs:
       - name: Regenerate bindings
         run: |
           cargo clean -p yellowstone-fumarole-napi
-          cd crates/yellowstone-fumarole-napi && npx napi build --platform --target x86_64-unknown-linux-gnu
+          cd crates/yellowstone-fumarole-napi && npx napi build --platform --target x86_64-unknown-linux-gnu --dts index.d.ts --js index.js
 
       - name: Check index.d.ts and index.js are up to date
         run: |
@@ -119,10 +119,14 @@ jobs:
 
       - name: Build NAPI bindings
         working-directory: crates/yellowstone-fumarole-napi
-        run: npx napi build --platform --release --target ${{ matrix.target }}
+        run: npx napi build --platform --release --target ${{ matrix.target }} --dts index.d.ts --js index.js
 
       - name: Verify index.d.ts was generated
-        run: test -s crates/yellowstone-fumarole-napi/index.d.ts
+        run: |
+          echo "--- index.d.ts ---"
+          cat crates/yellowstone-fumarole-napi/index.d.ts
+          echo "------------------"
+          test -s crates/yellowstone-fumarole-napi/index.d.ts
 
       - name: Upload .node binary
         uses: actions/upload-artifact@v4
