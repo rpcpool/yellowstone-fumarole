@@ -5,9 +5,11 @@
   "author": "Triton One",
   "description": "Examples for the native Yellowstone Fumarole client",
   "private": true,
+  "type": "module",
   "scripts": {
     "list-consumer-groups": "tsx src/list-consumer-groups-with-group-info.ts",
-    "subscribe-token-transactions": "tsx src/subscribe-token-transactions.ts"
+    "subscribe-token-transactions": "tsx src/subscribe-token-transactions.ts",
+    "subscribe-firehose": "tsx src/subscribe-firehose.ts"
   },
   "dependencies": {
     "@triton-one/yellowstone-fumarole-client": "file:../",
