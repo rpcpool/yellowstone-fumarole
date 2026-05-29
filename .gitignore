@@ -25,3 +25,4 @@ yellowstone-grpc
 *.tgz
 .codex
 *.node
+.claude

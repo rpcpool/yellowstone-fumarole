@@ -17,8 +17,8 @@
     ]
   },
   "scripts": {
-    "build": "napi build --platform --release",
-    "build:debug": "napi build --platform",
+    "build": "napi build --platform --release --dts index.d.ts --js index.js",
+    "build:debug": "napi build --platform --dts index.d.ts --js index.js",
     "prepublishOnly": "napi prepublish -t npm"
   },
   "devDependencies": {

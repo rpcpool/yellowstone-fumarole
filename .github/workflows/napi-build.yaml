@@ -60,7 +60,7 @@ jobs:
       - name: Regenerate bindings
         run: |
           cargo clean -p yellowstone-fumarole-napi
-          cd crates/yellowstone-fumarole-napi && npx napi build --platform --target x86_64-unknown-linux-gnu --dts index.d.ts --js index.js
+          cd crates/yellowstone-fumarole-napi && npm run build -- --target x86_64-unknown-linux-gnu
 
       - name: Check index.d.ts and index.js are up to date
         run: |
@@ -119,7 +119,7 @@ jobs:
 
       - name: Build NAPI bindings
         working-directory: crates/yellowstone-fumarole-napi
-        run: npx napi build --platform --release --target ${{ matrix.target }} --dts index.d.ts --js index.js
+        run: npm run build -- --target ${{ matrix.target }}
 
       - name: Verify index.d.ts was generated
         run: |

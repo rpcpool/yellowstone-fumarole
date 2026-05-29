@@ -11,8 +11,8 @@ license = { workspace = true }
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = { version = "2", features = ["async", "tokio_rt", "napi6"] }
-napi-derive = "2"
+napi = { workspace = true, features = ["async", "tokio_rt", "napi9"] }
+napi-derive = { workspace = true }
 yellowstone-fumarole-client = { path = "../yellowstone-fumarole-client" }
 yellowstone-grpc-proto = { workspace = true }
 prost = { workspace = true }
@@ -21,7 +21,7 @@ futures = { workspace = true }
 serde_yaml = { workspace = true }
 
 [build-dependencies]
-napi-build = "2"
+napi-build = { workspace = true }
 
 [lints]
 workspace = true
