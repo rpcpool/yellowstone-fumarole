@@ -97,7 +97,7 @@ async fn subscribe(args: SubscribeArgs, config: FumaroleConfig) {
                         };
 
                         if let Some(message) = message {
-                            println!("{}", message);
+                            println!("{message}");
                         }
                     }
                 }

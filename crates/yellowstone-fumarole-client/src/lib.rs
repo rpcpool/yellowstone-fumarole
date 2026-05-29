@@ -951,6 +951,7 @@ impl FumaroleClient {
 
         let tokio_rt = FumaroleAsyncRuntime {
             sm,
+            #[cfg(feature = "prometheus")]
             fumarole_client: self.clone(),
             blockchain_id: initial_state.blockchain_id,
             dragonsmouth_bidi: dm_bidi,

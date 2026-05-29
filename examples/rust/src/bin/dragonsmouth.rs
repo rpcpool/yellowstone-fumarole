@@ -218,7 +218,7 @@ fn summarize_account(account: SubscribeUpdateAccount) -> Option<String> {
     let account = account.account?;
     let pubkey = Pubkey::try_from(account.pubkey).expect("Failed to parse pubkey");
     let owner = Pubkey::try_from(account.owner).expect("Failed to parse owner");
-    Some(format!("account,{},{},{}", slot, pubkey, owner))
+    Some(format!("account,{slot},{pubkey},{owner}"))
 }
 
 fn summarize_tx(tx: SubscribeUpdateTransaction) -> Option<String> {
@@ -526,12 +526,12 @@ async fn stream_example(mut client: GeyserGrpcClient, args: SubscribeArgs) {
             match oneof {
                 UpdateOneof::Account(account_update) => {
                     if let Some(message) = summarize_account(account_update) {
-                        println!("{}", message);
+                        println!("{message}");
                     }
                 }
                 UpdateOneof::Transaction(tx) => {
                     if let Some(message) = summarize_tx(tx) {
-                        println!("{}", message);
+                        println!("{message}");
                     }
                 }
                 _ => {}

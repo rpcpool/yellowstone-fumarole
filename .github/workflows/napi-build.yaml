@@ -1,0 +1,191 @@
+---
+name: NAPI Build
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    paths:
+      - 'crates/yellowstone-fumarole-napi/**'
+      - 'crates/yellowstone-fumarole-client/**'
+      - 'rust-toolchain.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/napi-build.yaml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-generated:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ./target
+          key: v0001-ubuntu-22.04-rust-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            v0001-ubuntu-22.04-rust-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Set rust version
+        run: |
+          echo "channel=$(grep channel rust-toolchain.toml | awk '{print $3}' | sed 's/"//g')" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.channel }}
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Install npm dependencies
+        working-directory: crates/yellowstone-fumarole-napi
+        run: npm install
+
+      - name: Regenerate bindings
+        run: |
+          cargo clean -p yellowstone-fumarole-napi
+          cd crates/yellowstone-fumarole-napi && npm run build -- --target x86_64-unknown-linux-gnu
+
+      - name: Check index.d.ts and index.js are up to date
+        run: |
+          git diff --exit-code crates/yellowstone-fumarole-napi/index.d.ts crates/yellowstone-fumarole-napi/index.js || \
+          (echo "index.d.ts or index.js is out of date — run 'napi build' and commit the result" && exit 1)
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-apple-darwin
+            os: macos-15
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ./target
+          key: v0001-${{ matrix.os }}-rust-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            v0001-${{ matrix.os }}-rust-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Set rust version
+        run: |
+          echo "channel=$(grep channel rust-toolchain.toml | awk '{print $3}' | sed 's/"//g')" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.channel }}
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Install npm dependencies
+        working-directory: crates/yellowstone-fumarole-napi
+        run: npm install
+
+      - name: Force recompile napi crate
+        run: cargo clean -p yellowstone-fumarole-napi
+
+      - name: Build NAPI bindings
+        working-directory: crates/yellowstone-fumarole-napi
+        run: npm run build -- --target ${{ matrix.target }}
+
+      - name: Verify index.d.ts was generated
+        run: |
+          echo "--- index.d.ts ---"
+          cat crates/yellowstone-fumarole-napi/index.d.ts
+          echo "------------------"
+          test -s crates/yellowstone-fumarole-napi/index.d.ts
+
+      - name: Upload .node binary
+        uses: actions/upload-artifact@v5
+        with:
+          name: napi-${{ matrix.target }}
+          path: crates/yellowstone-fumarole-napi/*.node
+          if-no-files-found: error
+
+      - name: Upload JS/TS bindings
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v5
+        with:
+          name: napi-js
+          path: |
+            crates/yellowstone-fumarole-napi/index.js
+            crates/yellowstone-fumarole-napi/index.d.ts
+          if-no-files-found: error
+
+  prepublish:
+    needs: [check-generated, build]
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Install npm dependencies
+        working-directory: crates/yellowstone-fumarole-napi
+        run: npm install
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: crates/yellowstone-fumarole-napi/artifacts
+
+      - name: Move JS/TS bindings into place
+        working-directory: crates/yellowstone-fumarole-napi
+        run: |
+          cp artifacts/napi-js/index.js .
+          cp artifacts/napi-js/index.d.ts .
+
+      - name: Prepare platform packages
+        working-directory: crates/yellowstone-fumarole-napi
+        run: |
+          npx napi create-npm-dirs
+          npx napi artifacts --npm-dir ./npm
+
+      - name: Upload publish-ready package
+        uses: actions/upload-artifact@v5
+        with:
+          name: npm-publish-ready
+          path: |
+            crates/yellowstone-fumarole-napi/npm/**
+            crates/yellowstone-fumarole-napi/package.json
+            crates/yellowstone-fumarole-napi/index.js
+            crates/yellowstone-fumarole-napi/index.d.ts
+            crates/yellowstone-fumarole-napi/*.node
+          if-no-files-found: error

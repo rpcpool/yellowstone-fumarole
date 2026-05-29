@@ -24,3 +24,6 @@ yellowstone-grpc
 .env
 *.tgz
 .codex
+*.node
+.claude
+npm-publish-ready

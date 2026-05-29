@@ -1,0 +1,27 @@
+[package]
+name = "yellowstone-fumarole-napi"
+version = "0.1.0"
+edition = { workspace = true }
+authors = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { workspace = true, features = ["async", "tokio_rt", "napi9"] }
+napi-derive = { workspace = true }
+yellowstone-fumarole-client = { path = "../yellowstone-fumarole-client" }
+yellowstone-grpc-proto = { workspace = true }
+prost = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+serde_yaml = { workspace = true }
+
+[build-dependencies]
+napi-build = { workspace = true }
+
+[lints]
+workspace = true
