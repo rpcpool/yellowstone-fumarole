@@ -29,7 +29,7 @@
     "url": "https://github.com/rpcpool/yellowstone-fumarole.git"
   },
   "dependencies": {
-    "@triton-one/yellowstone-fumarole-napi": "file:../crates/yellowstone-fumarole-napi"
+    "@triton-one/yellowstone-fumarole-napi": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

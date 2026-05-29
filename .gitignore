@@ -26,3 +26,4 @@ yellowstone-grpc
 .codex
 *.node
 .claude
+npm-publish-ready

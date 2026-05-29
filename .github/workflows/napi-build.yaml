@@ -129,7 +129,7 @@ jobs:
           test -s crates/yellowstone-fumarole-napi/index.d.ts
 
       - name: Upload .node binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: napi-${{ matrix.target }}
           path: crates/yellowstone-fumarole-napi/*.node
@@ -137,10 +137,55 @@ jobs:
 
       - name: Upload JS/TS bindings
         if: matrix.target == 'x86_64-unknown-linux-gnu'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: napi-js
           path: |
             crates/yellowstone-fumarole-napi/index.js
             crates/yellowstone-fumarole-napi/index.d.ts
+          if-no-files-found: error
+
+  prepublish:
+    needs: [check-generated, build]
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Install npm dependencies
+        working-directory: crates/yellowstone-fumarole-napi
+        run: npm install
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: crates/yellowstone-fumarole-napi/artifacts
+
+      - name: Move JS/TS bindings into place
+        working-directory: crates/yellowstone-fumarole-napi
+        run: |
+          cp artifacts/napi-js/index.js .
+          cp artifacts/napi-js/index.d.ts .
+
+      - name: Prepare platform packages
+        working-directory: crates/yellowstone-fumarole-napi
+        run: |
+          npx napi create-npm-dirs
+          npx napi artifacts --npm-dir ./npm
+
+      - name: Upload publish-ready package
+        uses: actions/upload-artifact@v5
+        with:
+          name: npm-publish-ready
+          path: |
+            crates/yellowstone-fumarole-napi/npm/**
+            crates/yellowstone-fumarole-napi/package.json
+            crates/yellowstone-fumarole-napi/index.js
+            crates/yellowstone-fumarole-napi/index.d.ts
+            crates/yellowstone-fumarole-napi/*.node
           if-no-files-found: error
