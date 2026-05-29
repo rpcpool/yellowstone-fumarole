@@ -1,6 +1,3 @@
-#![deny(clippy::all)]
-#![allow(clippy::missing_const_for_fn)]
-
 use {
     futures::SinkExt as _,
     napi::bindgen_prelude::*,

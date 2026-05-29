@@ -1833,7 +1833,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use {super::*, futures::channel::mpsc as futures_mpsc, std::pin::Pin};
+    use {
+        super::*,
+        futures::channel::mpsc::{self as futures_mpsc, TryRecvError},
+        std::pin::Pin,
+    };
 
     #[derive(Clone, Default)]
     struct TestConnector;
@@ -2264,7 +2268,7 @@ mod tests {
             panic!("expected data event")
         };
         assert!(matches!(forwarded.update_oneof, Some(UpdateOneof::Slot(_))));
-        assert!(matches!(outlet_rx.try_next(), Ok(None)));
+        assert!(matches!(outlet_rx.try_recv(), Err(TryRecvError::Closed)));
 
         let completed = completed_rx
             .recv()
