@@ -3,4 +3,8 @@ all-features = true
 
 [advisories]
 ignore = [
+    # ID: RUSTSEC-2026-0173
+    # ├ Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0173
+    # ├ The author of `proc-macro-error2` has [confirmed](https://github.com/GnomedDev/proc-macro-error-2/issues/17#issuecomment-4643215473) that the crate is no longer maintained and recommends that users migrate away from it.
+    "RUSTSEC-2026-0173",
 ]

@@ -871,10 +871,8 @@ impl FumaroleClient {
             "refresh_tip_stats_interval must be greater than or equal to 5 seconds"
         );
 
-        use core::runtime::DragonsmouthSubscribeRequestBidi;
-
         let (dragonsmouth_outlet, dragonsmouth_inlet) =
-            mpsc::channel(DEFAULT_DRAGONSMOUTH_CAPACITY);
+            mpsc::channel(config.data_channel_capacity.get());
 
         let initial_join = JoinControlPlane {
             consumer_group_name: Some(subscriber_name.as_ref().to_string()),
@@ -916,12 +914,7 @@ impl FumaroleClient {
 
         let sm = FumaroleSM::new(*last_committed_offset, config.slot_memory_retention);
 
-        let (dm_tx, dm_rx) = mpsc::channel(config.data_channel_capacity.get());
-        let dm_bidi = DragonsmouthSubscribeRequestBidi {
-            tx: dm_tx.clone(),
-            rx: dm_rx,
-        };
-
+        let (dm_tx, dm_rx) = mpsc::channel(100);
         let total_shard_downloaders = config.num_data_plane_tcp_connections.get() as usize
             * config.concurrent_download_limit_per_tcp.get();
         let (download_task_runner_cnc_tx, download_task_runner_cnc_rx) = mpsc::channel(10);
@@ -954,7 +947,7 @@ impl FumaroleClient {
             #[cfg(feature = "prometheus")]
             fumarole_client: self.clone(),
             blockchain_id: initial_state.blockchain_id,
-            dragonsmouth_bidi: dm_bidi,
+            subscribe_request_rx: dm_rx,
             subscribe_request: request,
             download_task_runner_chans,
             persistent_subscriber_name: subscriber_name.as_ref().to_string(),

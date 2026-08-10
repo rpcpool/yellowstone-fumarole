@@ -470,10 +470,7 @@ impl FumaroleSM {
         self.processed_offset
             .push(Reverse((event_seq_number, fume_offset)));
 
-        loop {
-            let Some(tuple) = self.processed_offset.peek().copied() else {
-                break;
-            };
+        while let Some(tuple) = self.processed_offset.peek().copied() {
             let (blocked_event_seq_number2, fume_offset2) = tuple.0;
             if blocked_event_seq_number2 != self.last_processed_fume_sequence + 1 {
                 break;

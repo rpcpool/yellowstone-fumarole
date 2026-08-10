@@ -198,14 +198,11 @@ impl<T> RopeDeque<T> {
 
     fn pop_front(&mut self) -> Option<T> {
         loop {
-            if let Some(front) = self.inner.front_mut() {
-                if let Some(item) = front.pop_front() {
-                    return Some(item);
-                } else {
-                    self.inner.pop_front();
-                }
+            let front = self.inner.front_mut()?;
+            if let Some(item) = front.pop_front() {
+                return Some(item);
             } else {
-                return None;
+                self.inner.pop_front();
             }
         }
     }
