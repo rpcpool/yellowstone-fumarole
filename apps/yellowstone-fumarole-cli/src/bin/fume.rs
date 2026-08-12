@@ -39,7 +39,8 @@ use {
         CommitmentLevel, SubscribeRequest, SubscribeRequestFilterAccounts,
         SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterSlots,
         SubscribeRequestFilterTransactions, SubscribeUpdateAccount, SubscribeUpdateBlockMeta,
-        SubscribeUpdateSlot, SubscribeUpdateTransaction, subscribe_update::UpdateOneof,
+        SubscribeUpdateSlot, SubscribeUpdateTransaction, SubscribeUpdateTransactionStatus,
+        subscribe_update::UpdateOneof,
     },
 };
 
@@ -207,6 +208,7 @@ impl From<CommitmentOption> for CommitmentLevel {
 pub enum SubscribeDataType {
     Account,
     Transaction,
+    TransactionStatus,
     Slot,
     BlockMeta,
     Entry,
@@ -257,6 +259,7 @@ impl FromStr for SubscribeInclude {
             .map(|s| match s {
                 "account" => Ok(vec![SubscribeDataType::Account]),
                 "tx" | "txn" => Ok(vec![SubscribeDataType::Transaction]),
+                "tx-status" | "txn-status" => Ok(vec![SubscribeDataType::TransactionStatus]),
                 "meta" => Ok(vec![SubscribeDataType::BlockMeta]),
                 "slot" => Ok(vec![SubscribeDataType::Slot]),
                 "all" => Ok(vec![
@@ -271,6 +274,11 @@ impl FromStr for SubscribeInclude {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let include = include.into_iter().flatten().collect::<HashSet<_>>();
+        if include.contains(&SubscribeDataType::Transaction)
+            && include.contains(&SubscribeDataType::TransactionStatus)
+        {
+            return Err("Cannot include both txn and txn-status".to_string());
+        }
         Ok(SubscribeInclude { set: include })
     }
 }
@@ -402,6 +410,12 @@ fn summarize_account(account: SubscribeUpdateAccount) -> Option<String> {
 fn summarize_tx(tx: SubscribeUpdateTransaction) -> Option<String> {
     let slot = tx.slot;
     let tx = tx.transaction?;
+    let sig = bs58::encode(tx.signature).into_string();
+    Some(format!("tx,{slot},{sig}"))
+}
+
+fn summarize_tx_status(tx: SubscribeUpdateTransactionStatus) -> Option<String> {
+    let slot = tx.slot;
     let sig = bs58::encode(tx.signature).into_string();
     Some(format!("tx,{slot},{sig}"))
 }
@@ -658,7 +672,12 @@ impl SubscribeArgs {
                     request.accounts = self.build_subscribe_account_filter();
                 }
                 SubscribeDataType::Transaction => {
-                    request.transactions = self.build_subscribe_tx_filter();
+                    // request.transactions = self.build_subscribe_tx_filter();
+                    continue;
+                }
+                SubscribeDataType::TransactionStatus => {
+                    // continue;
+                    request.transactions_status = self.build_subscribe_tx_filter();
                 }
                 SubscribeDataType::Slot => {
                     request.slots = HashMap::from([(
@@ -747,6 +766,9 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
                         UpdateOneof::Account(account_update) => {
                             summarize_account(account_update)
                         },
+                        UpdateOneof::TransactionStatus(tx_status) => {
+                            summarize_tx_status(tx_status)
+                        }
                         UpdateOneof::Transaction(tx) => {
                             summarize_tx(tx)
                         },
@@ -849,6 +871,13 @@ async fn block_stats(mut client: FumaroleClient, args: SubscribeArgs) {
             match update.update_oneof.as_ref().unwrap() {
                 UpdateOneof::Account(_) => {
                     num_account += 1;
+                }
+                UpdateOneof::TransactionStatus(update) => {
+                    if update.err.is_some() {
+                        num_failed_txn += 1;
+                    } else {
+                        num_success_txn += 1;
+                    }
                 }
                 UpdateOneof::Transaction(update) => {
                     let txn = update.transaction.as_ref().unwrap();

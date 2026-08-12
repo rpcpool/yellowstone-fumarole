@@ -93,6 +93,7 @@ message BlockFilters {
     map<string, geyser.SubscribeRequestFilterTransactions> transactions = 2;
     map<string, geyser.SubscribeRequestFilterEntry> entries = 3;
     map<string, geyser.SubscribeRequestFilterBlocksMeta> blocks_meta = 4;
+    map<string, geyser.SubscribeRequestFilterTransactions> transactions_status = 5;
 }
 
 message DownloadBlockShard {

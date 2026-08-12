@@ -71,15 +71,6 @@ pub enum FumaroleRuntimeEvent {
     SlotEnded(u64),
 }
 
-///
-/// Mimics Dragonsmouth subscribe request bidirectional stream.
-///
-pub struct DragonsmouthSubscribeRequestBidi {
-    #[allow(dead_code)]
-    pub tx: mpsc::Sender<SubscribeRequest>,
-    pub rx: mpsc::Receiver<SubscribeRequest>,
-}
-
 pub enum BackgroundJobResult {
     #[allow(dead_code)]
     UpdateTip(GetChainTipResponse),
@@ -100,7 +91,7 @@ where
     #[cfg(feature = "prometheus")]
     pub fumarole_client: FumaroleClient,
     pub download_task_runner_chans: DownloadTaskRunnerChannels,
-    pub dragonsmouth_bidi: DragonsmouthSubscribeRequestBidi,
+    pub subscribe_request_rx: mpsc::Receiver<SubscribeRequest>,
     pub subscribe_request: Arc<SubscribeRequest>,
     pub persistent_subscriber_name: String,
     pub control_plane_connector: C,
@@ -156,6 +147,7 @@ impl From<SubscribeRequest> for BlockFilters {
             transactions: val.transactions,
             entries: val.entry,
             blocks_meta: val.blocks_meta,
+            transactions_status: val.transactions_status,
         }
     }
 }
@@ -575,7 +567,7 @@ where
             self.poll_history_if_needed().await;
             self.schedule_download_task_if_any().await;
             tokio::select! {
-                Some(subscribe_request) = self.dragonsmouth_bidi.rx.recv() => {
+                Some(subscribe_request) = self.subscribe_request_rx.recv() => {
                     tracing::debug!("dragonsmouth subscribe request received");
                     // self.subscribe_request = subscribe_request
                     self.handle_new_subscribe_request(subscribe_request).await;
