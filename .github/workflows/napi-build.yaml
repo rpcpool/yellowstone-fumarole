@@ -74,6 +74,8 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
           - target: aarch64-apple-darwin
             os: macos-15
           - target: x86_64-pc-windows-msvc
@@ -109,6 +111,12 @@ jobs:
           toolchain: ${{ env.channel }}
           targets: ${{ matrix.target }}
 
+      - name: Install musl cross tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
@@ -122,6 +130,9 @@ jobs:
 
       - name: Build NAPI bindings
         working-directory: crates/yellowstone-fumarole-napi
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: npm run build -- --target ${{ matrix.target }}
 
       - name: Verify index.d.ts was generated
