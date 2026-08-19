@@ -498,6 +498,23 @@ impl FumaroleSM {
             || (self.slot_status_update_queue.is_empty()
                 && self.blocked_slot_status_update.is_empty())
     }
+
+    ///
+    /// Number of slots currently registered as "inflight" (known about, but not yet fully
+    /// downloaded) -- i.e. `pop_slot_to_download` has returned them but `make_slot_download_progress`
+    /// hasn't yet reported `SlotDownloadState::Done` for them.
+    ///
+    /// A push-based runtime that eagerly drains every newly-queued event into this bookkeeping
+    /// (rather than pacing itself by how much it's actually requested/downloaded, the way the
+    /// pull-based runtime naturally does) needs this to avoid a specific failure mode: if
+    /// nothing throttles how far ahead of actual download completion the "known" frontier is
+    /// allowed to run, a slow consumer can fall behind by more than any fixed-size bookkeeping
+    /// window elsewhere (e.g. a "recently known slots" cache), permanently losing track of a
+    /// slot it still needs. See `core::runtime_v3::driver`'s `grant_history_credits_if_needed`.
+    ///
+    pub fn inflight_download_count(&self) -> usize {
+        self.inflight_slot_shard_download.len()
+    }
 }
 
 #[cfg(test)]

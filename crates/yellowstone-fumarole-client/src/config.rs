@@ -50,6 +50,16 @@ pub struct FumaroleConfig {
 
     #[serde(default = "FumaroleConfig::default_initial_stream_window_size")]
     pub initial_stream_window_size: ByteSize,
+
+    /// Enables the V3 push-based runtime (`SubscribeV3`/`SubscribeDataV3`) instead of the
+    /// default poll/pull-based runtime, when the connected Fumarole service advertises support
+    /// for it. Has no effect against a service that doesn't support V3 yet — the client falls
+    /// back to the poll-based runtime in that case.
+    ///
+    /// `xx_`-prefixed, matching this crate's convention for experimental/pre-stabilization flags
+    /// (see e.g. `xx_enable_sharded_download` historically).
+    #[serde(default, rename = "xx_enable_push_based_runtime")]
+    pub enable_push_based_runtime: bool,
 }
 
 impl FumaroleConfig {

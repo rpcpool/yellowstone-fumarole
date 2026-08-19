@@ -53,6 +53,18 @@ pub struct FumaroleRuntimeCommitEvent {
     sequence: Option<u64>,
 }
 
+impl FumaroleRuntimeCommitEvent {
+    pub(crate) const fn new(sequence: u64) -> Self {
+        Self {
+            sequence: Some(sequence),
+        }
+    }
+
+    pub(crate) const fn take_sequence(&mut self) -> Option<u64> {
+        self.sequence.take()
+    }
+}
+
 impl Drop for FumaroleRuntimeCommitEvent {
     fn drop(&mut self) {
         if self.sequence.is_some() {
@@ -722,7 +734,7 @@ const ORCHESTRATOR_DOWNLOADER_QUEUE_CAPACITY: usize = 2;
 const PENDING_SHARD_DOWNLOAD_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Default, Debug, Clone)]
-struct DedupState {
+pub(crate) struct DedupState {
     seen: HashMap<(u64, FumeShardIdx), FxHashSet<DedupKey>>,
     completed_shards: FxHashSet<(u64, FumeShardIdx)>,
     completed_order: VecDeque<(u64, FumeShardIdx)>,
@@ -730,7 +742,7 @@ struct DedupState {
 
 impl DedupState {
     /// Returns true when the event should be skipped as duplicate.
-    fn dedup(&mut self, slot: u64, shard_idx: FumeShardIdx, ev: &UpdateOneof) -> bool {
+    pub(crate) fn dedup(&mut self, slot: u64, shard_idx: FumeShardIdx, ev: &UpdateOneof) -> bool {
         if self.is_shard_done(slot, shard_idx) {
             return true;
         }
@@ -744,10 +756,14 @@ impl DedupState {
         !shard_seen.insert(key)
     }
 
-    fn mark_shard_done(&mut self, slot: u64, shard_idx: FumeShardIdx) {
+    /// Returns `true` the first time this shard is marked done, `false` if it already was --
+    /// callers that report shard completion onward (e.g. to a slot-download state machine that
+    /// isn't itself idempotent to duplicate completions) should treat `false` as "skip, this is
+    /// a duplicate" rather than reporting it again.
+    pub(crate) fn mark_shard_done(&mut self, slot: u64, shard_idx: FumeShardIdx) -> bool {
         let shard_key = (slot, shard_idx);
         if !self.completed_shards.insert(shard_key) {
-            return;
+            return false;
         }
         self.completed_order.push_back(shard_key);
 
@@ -758,13 +774,14 @@ impl DedupState {
                 self.completed_shards.remove(&oldest);
             }
         }
+        true
     }
 
     fn is_shard_done(&self, slot: u64, shard_idx: FumeShardIdx) -> bool {
         self.completed_shards.contains(&(slot, shard_idx))
     }
 
-    fn shrink_seen_if_needed(&mut self) {
+    pub(crate) fn shrink_seen_if_needed(&mut self) {
         // `seen` is keyed by shard (slot, shard_idx) and is aggressively removed
         // in `mark_shard_done`, so no additional key-level compaction is required.
         while self.completed_order.len() > DEDUP_WINDOW_SIZE {

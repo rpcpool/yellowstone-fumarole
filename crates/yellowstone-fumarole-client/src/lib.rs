@@ -874,6 +874,46 @@ impl FumaroleClient {
         let (dragonsmouth_outlet, dragonsmouth_inlet) =
             mpsc::channel(config.data_channel_capacity.get());
 
+        // V3 push-based runtime opt-in. See FUMAROLE_V3_PLAN.md and `core::runtime_v3` for the
+        // full design -- this branch produces the exact same `(FumaroleSubscription, JoinHandle)`
+        // shape as the V1/V2 path below, so nothing downstream needs to know which runtime is
+        // actually driving the subscription.
+        const PUSH_V3_MINIMUM_MINOR_VERSION: u64 = 40;
+        if self.connector.config.enable_push_based_runtime {
+            let push_v3_supported = semver_version
+                .as_ref()
+                .filter(|v| v.minor >= PUSH_V3_MINIMUM_MINOR_VERSION)
+                .is_some();
+            if push_v3_supported {
+                let (dm_tx, dm_rx) = mpsc::channel(100);
+                let shared_commit_offset_queue = Arc::new(SegQueue::new());
+                let fumarole_rt_jh = core::runtime_v3::bootstrap(
+                    self,
+                    subscriber_name.as_ref().to_string(),
+                    Arc::clone(&request),
+                    &config,
+                    dragonsmouth_outlet,
+                    dm_rx,
+                    Arc::clone(&shared_commit_offset_queue),
+                )
+                .await?;
+                let subscription = FumaroleSubscription {
+                    sink: FumaroleSink::new(dm_tx),
+                    stream: FumaroleStream::new(
+                        shared_commit_offset_queue,
+                        dragonsmouth_inlet,
+                        config.auto_commit,
+                    ),
+                };
+                return Ok((subscription, fumarole_rt_jh));
+            }
+            tracing::warn!(
+                "enable_push_based_runtime is set, but Fumarole service version {semver_version:?} \
+                 does not advertise V3 support (needs minor >= {PUSH_V3_MINIMUM_MINOR_VERSION}); \
+                 falling back to the poll-based runtime"
+            );
+        }
+
         let initial_join = JoinControlPlane {
             consumer_group_name: Some(subscriber_name.as_ref().to_string()),
         };

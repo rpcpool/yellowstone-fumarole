@@ -25,8 +25,14 @@ service Fumarole {
   rpc SubscribeV2(stream ControlCommand) returns (stream ControlResponse) {}
 
   rpc Version(VersionRequest) returns (VersionResponse) {}
-  
+
   rpc GetSlotRange(GetSlotRangeRequest) returns (GetSlotRangeResponse) {}
+
+  // V3 control plane: server-pushed history with explicit credit-based backpressure.
+  rpc SubscribeV3(stream ControlCommandV3) returns (stream ControlResponseV3) {}
+
+  // V3 data plane: N persistent, server-pushed shard lanes, explicit start gate.
+  rpc SubscribeDataV3(stream DataCommandV3) returns (stream DataResponseV3) {}
 }
 
 
@@ -221,4 +227,114 @@ message CreateConsumerGroupRequest {
   string consumer_group_name = 1;
   InitialOffsetPolicy initial_offset_policy = 2;
   optional uint64 from_slot = 3;
+}
+
+//
+// V3 push-based protocol.
+//
+// Both planes are server-push: the client declares itself once per stream
+// (JoinControlPlaneV3 / JoinDataPlane), then the server decides what/when to
+// send. See FUMAROLE_V3_PLAN.md at the repo root for the full design
+// rationale.
+//
+
+// ---- Control plane V3 ----
+
+message JoinControlPlaneV3 {
+  optional string consumer_group_name = 1;
+  // Required: the offset this session should start reading history from. The server only
+  // validates the named consumer group exists (and is owned by this subscription) -- it does
+  // not choose a starting offset on the client's behalf (in particular, it never substitutes
+  // the consumer group's durably-committed offset for this, even though InitialConsumerGroupState
+  // reports that back too). A client that wants to resume from its last commit reads that value
+  // back from a prior session and hands it straight back in here -- that's a client-side policy
+  // choice, not something the server infers.
+  optional int64 initial_offset = 2;
+}
+
+message GrantHistoryCredits {
+  // Additional events the server is allowed to push, on top of any outstanding grant.
+  uint32 max_events = 1;
+}
+
+message ControlCommandV3 {
+  oneof command {
+    JoinControlPlaneV3 initial_join = 1;
+    CommitOffset commit_offset = 2;
+    GrantHistoryCredits grant_history_credits = 3;
+    Ping ping = 4;
+  }
+}
+
+message ControlResponseV3 {
+  oneof response {
+    InitialConsumerGroupState init = 1;
+    CommitOffsetResult commit_offset = 2;
+    // Sent unsolicited, as history credits allow.
+    BlockchainHistory history_push = 3;
+    Pong pong = 4;
+  }
+}
+
+// ---- Data plane V3 ----
+
+message JoinDataPlane {
+  uint32 lane_idx = 1;
+  uint32 num_lanes = 2;
+  optional BlockFilters block_filters = 3;
+  // Required: control-plane offset (same space as BlockchainEvent.offset) this lane starts
+  // tailing shards from. The server never infers or defaults this -- in particular, never to
+  // "current tip": doing that unconditionally was an earlier bug in this design, since it
+  // silently stranded any consumer with a real backlog (its data-plane lanes would only ever
+  // push shards for blocks arriving from now on, never the backlog its control-plane session
+  // was still working through). See JoinControlPlaneV3.initial_offset for the identical stance
+  // on the control plane -- the client should track its own resume point the same way on both.
+  optional int64 starting_offset = 4;
+}
+
+// The "open the valve" signal. One-shot, per-lane, empty by design: the server
+// must not push any shard data for this lane until it receives this.
+message StartDataPlane {}
+
+message ReportHistoryProgress {
+  // Same offset space as BlockchainEvent.offset. A soft pacing hint for the
+  // data-plane server, not a correctness gate.
+  int64 highest_known_offset = 1;
+}
+
+message DataCommandV3 {
+  oneof command {
+    JoinDataPlane join = 1;
+    StartDataPlane start = 2;
+    BlockFilters filter_update = 3;
+    ReportHistoryProgress report_history_progress = 4;
+  }
+}
+
+message BlockShardDownloadStart {
+  bytes blockchain_id = 1;
+  bytes block_uid = 2;
+  uint64 slot = 3;
+  uint32 shard_idx = 4;
+  uint32 num_shards = 5;
+  // A separate, purely connection-local monotonic counter (always starting at 0 on a fresh
+  // Join), for the client's own gap/duplicate detection within one lane's lifetime. Plays no
+  // role in resumption -- see JoinDataPlane.starting_offset for that.
+  uint64 log_offset = 6;
+}
+
+message BlockShardDownloadFinishV3 {
+  bytes block_uid = 1;
+  uint64 slot = 2;
+  repeated uint32 shard_indices = 3;
+  // Same connection-local counter as BlockShardDownloadStart.log_offset -- not used for resumption.
+  uint64 log_offset = 4;
+}
+
+message DataResponseV3 {
+  oneof response {
+    BlockShardDownloadStart shard_start = 1;
+    geyser.SubscribeUpdate update = 2;
+    BlockShardDownloadFinishV3 shard_finish = 3;
+  }
 }
