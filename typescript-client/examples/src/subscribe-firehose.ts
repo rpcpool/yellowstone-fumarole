@@ -39,7 +39,7 @@ async function main() {
         filters: []
       }
     },
-    transactions: {
+    transactionsStatus: {
       all: {
         accountInclude: [],
         accountExclude: [],
@@ -49,7 +49,8 @@ async function main() {
     slots: {
       all: { filterByCommitment: true },
     },
-    transactionsStatus: {},
+    // transactionsStatus: {},
+    transactions: {},
     blocks: {},
     blocksMeta: {},
     entry: {},
@@ -96,7 +97,7 @@ async function main() {
     const update: SubscribeUpdate = event.update;
 
     if (update.account) block.accounts++;
-    if (update.transaction) block.transactions++;
+    if (update.transactionStatus) block.transactions++;
   }
 }
 
