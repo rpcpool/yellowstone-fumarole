@@ -672,8 +672,7 @@ impl SubscribeArgs {
                     request.accounts = self.build_subscribe_account_filter();
                 }
                 SubscribeDataType::Transaction => {
-                    // request.transactions = self.build_subscribe_tx_filter();
-                    continue;
+                    request.transactions = self.build_subscribe_tx_filter();
                 }
                 SubscribeDataType::TransactionStatus => {
                     // continue;
