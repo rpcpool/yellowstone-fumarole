@@ -116,6 +116,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
+          # musl-tools' sysroot doesn't ship libgcc.a, which makes musl-gcc
+          # fail looking for the (glibc-side) libgcc_s.so.1 at link time.
+          # Symlinking glibc's static libgcc.a in fixes it.
+          sudo ln -sf "$(gcc -print-libgcc-file-name)" /usr/lib/x86_64-linux-musl/libgcc.a
 
       - uses: actions/setup-node@v5
         with:

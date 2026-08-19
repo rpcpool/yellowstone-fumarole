@@ -7,16 +7,24 @@ set -euo pipefail
 # must exist on the registry first).
 #
 # Usage:
-#   scripts/publish-from-artifact.sh [path/to/npm-publish-ready.zip] [--dry-run]
+#   scripts/publish-from-artifact.sh [path/to/npm-publish-ready.zip] [--dry-run] [--only <platform-dir-name>]
+#
+# --only restricts publishing to a single platform dir under npm/ (e.g.
+# "linux-x64-musl") and skips every other platform package and the root
+# package. Use this when only some platform packages are new/changed and the
+# rest (including root) are already published at this version.
 
 zip_path="npm-publish-ready.zip"
 dry_run=false
+only_platform=""
 
-for arg in "$@"; do
-    case "$arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --dry-run) dry_run=true ;;
-        *) zip_path="$arg" ;;
+        --only) shift; only_platform="$1" ;;
+        *) zip_path="$1" ;;
     esac
+    shift
 done
 
 if [ ! -f "$zip_path" ]; then
@@ -48,6 +56,20 @@ publish_flags=(--access public)
 if [ "$dry_run" = true ]; then
     publish_flags+=(--dry-run)
     echo "(dry run — nothing will actually be published)"
+fi
+
+if [ -n "$only_platform" ]; then
+    platform_dir="$work_dir/npm/$only_platform"
+    if [ ! -d "$platform_dir" ]; then
+        echo "No such platform dir in artifact: npm/$only_platform" >&2
+        echo "Available: $(cd "$work_dir/npm" && ls)" >&2
+        exit 1
+    fi
+    platform_name="$(node -p "require('$platform_dir/package.json').name")"
+    echo "--- Publishing $platform_name only ---"
+    (cd "$platform_dir" && npm publish "${publish_flags[@]}")
+    echo "Done. (root package and other platforms skipped due to --only)"
+    exit 0
 fi
 
 for platform_dir in "$work_dir"/npm/*/; do
