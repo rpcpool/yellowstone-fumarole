@@ -76,6 +76,8 @@ jobs:
             os: ubuntu-22.04
           - target: aarch64-apple-darwin
             os: macos-15
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
 
     runs-on: ${{ matrix.os }}
 
@@ -98,6 +100,7 @@ jobs:
             v0001-${{ matrix.os }}-rust-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Set rust version
+        shell: bash
         run: |
           echo "channel=$(grep channel rust-toolchain.toml | awk '{print $3}' | sed 's/"//g')" >> "$GITHUB_ENV"
 
@@ -119,9 +122,13 @@ jobs:
 
       - name: Build NAPI bindings
         working-directory: crates/yellowstone-fumarole-napi
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: npm run build -- --target ${{ matrix.target }}
 
       - name: Verify index.d.ts was generated
+        shell: bash
         run: |
           echo "--- index.d.ts ---"
           cat crates/yellowstone-fumarole-napi/index.d.ts

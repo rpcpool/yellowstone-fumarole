@@ -27,3 +27,4 @@ yellowstone-grpc
 *.node
 .claude
 npm-publish-ready
+.napi-publish-*

@@ -1,6 +1,6 @@
 {
   "name": "@triton-one/yellowstone-fumarole-napi",
-  "version": "0.0.1",
+  "version": "0.2.0",
   "description": "Native Node.js bindings for the Yellowstone Fumarole client",
   "main": "index.js",
   "types": "index.d.ts",
@@ -13,7 +13,8 @@
     "binaryName": "yellowstone-fumarole-napi",
     "targets": [
       "x86_64-unknown-linux-gnu",
-      "aarch64-apple-darwin"
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc"
     ]
   },
   "scripts": {
@@ -28,7 +29,8 @@
     "node": ">= 22"
   },
   "optionalDependencies": {
-    "@triton-one/yellowstone-fumarole-napi-linux-x64-gnu": "0.0.1",
-    "@triton-one/yellowstone-fumarole-napi-darwin-arm64": "0.0.1"
+    "@triton-one/yellowstone-fumarole-napi-linux-x64-gnu": "0.2.0",
+    "@triton-one/yellowstone-fumarole-napi-darwin-arm64": "0.2.0",
+    "@triton-one/yellowstone-fumarole-napi-win32-x64-msvc": "0.2.0"
   }
 }
