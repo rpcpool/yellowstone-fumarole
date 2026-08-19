@@ -74,8 +74,6 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-22.04
           - target: aarch64-apple-darwin
             os: macos-15
           - target: x86_64-pc-windows-msvc
@@ -110,16 +108,6 @@ jobs:
         with:
           toolchain: ${{ env.channel }}
           targets: ${{ matrix.target }}
-
-      - name: Install musl cross tools
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-          # musl-tools' sysroot doesn't ship libgcc.a, which makes musl-gcc
-          # fail looking for the (glibc-side) libgcc_s.so.1 at link time.
-          # Symlinking glibc's static libgcc.a in fixes it.
-          sudo ln -sf "$(gcc -print-libgcc-file-name)" /usr/lib/x86_64-linux-musl/libgcc.a
 
       - uses: actions/setup-node@v5
         with:
