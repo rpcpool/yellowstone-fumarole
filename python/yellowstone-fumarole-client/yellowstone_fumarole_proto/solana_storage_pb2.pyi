@@ -14,11 +14,13 @@ class RewardType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     Rent: _ClassVar[RewardType]
     Staking: _ClassVar[RewardType]
     Voting: _ClassVar[RewardType]
+    DeactivatedStake: _ClassVar[RewardType]
 Unspecified: RewardType
 Fee: RewardType
 Rent: RewardType
 Staking: RewardType
 Voting: RewardType
+DeactivatedStake: RewardType
 
 class ConfirmedBlock(_message.Message):
     __slots__ = ("previous_blockhash", "blockhash", "parent_slot", "transactions", "rewards", "block_time", "block_height", "num_partitions")
@@ -57,20 +59,34 @@ class Transaction(_message.Message):
     def __init__(self, signatures: _Optional[_Iterable[bytes]] = ..., message: _Optional[_Union[Message, _Mapping]] = ...) -> None: ...
 
 class Message(_message.Message):
-    __slots__ = ("header", "account_keys", "recent_blockhash", "instructions", "versioned", "address_table_lookups")
+    __slots__ = ("header", "account_keys", "recent_blockhash", "instructions", "versioned", "address_table_lookups", "config")
     HEADER_FIELD_NUMBER: _ClassVar[int]
     ACCOUNT_KEYS_FIELD_NUMBER: _ClassVar[int]
     RECENT_BLOCKHASH_FIELD_NUMBER: _ClassVar[int]
     INSTRUCTIONS_FIELD_NUMBER: _ClassVar[int]
     VERSIONED_FIELD_NUMBER: _ClassVar[int]
     ADDRESS_TABLE_LOOKUPS_FIELD_NUMBER: _ClassVar[int]
+    CONFIG_FIELD_NUMBER: _ClassVar[int]
     header: MessageHeader
     account_keys: _containers.RepeatedScalarFieldContainer[bytes]
     recent_blockhash: bytes
     instructions: _containers.RepeatedCompositeFieldContainer[CompiledInstruction]
     versioned: bool
     address_table_lookups: _containers.RepeatedCompositeFieldContainer[MessageAddressTableLookup]
-    def __init__(self, header: _Optional[_Union[MessageHeader, _Mapping]] = ..., account_keys: _Optional[_Iterable[bytes]] = ..., recent_blockhash: _Optional[bytes] = ..., instructions: _Optional[_Iterable[_Union[CompiledInstruction, _Mapping]]] = ..., versioned: bool = ..., address_table_lookups: _Optional[_Iterable[_Union[MessageAddressTableLookup, _Mapping]]] = ...) -> None: ...
+    config: TransactionConfig
+    def __init__(self, header: _Optional[_Union[MessageHeader, _Mapping]] = ..., account_keys: _Optional[_Iterable[bytes]] = ..., recent_blockhash: _Optional[bytes] = ..., instructions: _Optional[_Iterable[_Union[CompiledInstruction, _Mapping]]] = ..., versioned: bool = ..., address_table_lookups: _Optional[_Iterable[_Union[MessageAddressTableLookup, _Mapping]]] = ..., config: _Optional[_Union[TransactionConfig, _Mapping]] = ...) -> None: ...
+
+class TransactionConfig(_message.Message):
+    __slots__ = ("priority_fee", "compute_unit_limit", "loaded_accounts_data_size_limit", "heap_size")
+    PRIORITY_FEE_FIELD_NUMBER: _ClassVar[int]
+    COMPUTE_UNIT_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    LOADED_ACCOUNTS_DATA_SIZE_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    HEAP_SIZE_FIELD_NUMBER: _ClassVar[int]
+    priority_fee: int
+    compute_unit_limit: int
+    loaded_accounts_data_size_limit: int
+    heap_size: int
+    def __init__(self, priority_fee: _Optional[int] = ..., compute_unit_limit: _Optional[int] = ..., loaded_accounts_data_size_limit: _Optional[int] = ..., heap_size: _Optional[int] = ...) -> None: ...
 
 class MessageHeader(_message.Message):
     __slots__ = ("num_required_signatures", "num_readonly_signed_accounts", "num_readonly_unsigned_accounts")
@@ -201,18 +217,20 @@ class ReturnData(_message.Message):
     def __init__(self, program_id: _Optional[bytes] = ..., data: _Optional[bytes] = ...) -> None: ...
 
 class Reward(_message.Message):
-    __slots__ = ("pubkey", "lamports", "post_balance", "reward_type", "commission")
+    __slots__ = ("pubkey", "lamports", "post_balance", "reward_type", "commission", "commission_bps")
     PUBKEY_FIELD_NUMBER: _ClassVar[int]
     LAMPORTS_FIELD_NUMBER: _ClassVar[int]
     POST_BALANCE_FIELD_NUMBER: _ClassVar[int]
     REWARD_TYPE_FIELD_NUMBER: _ClassVar[int]
     COMMISSION_FIELD_NUMBER: _ClassVar[int]
+    COMMISSION_BPS_FIELD_NUMBER: _ClassVar[int]
     pubkey: str
     lamports: int
     post_balance: int
     reward_type: RewardType
     commission: str
-    def __init__(self, pubkey: _Optional[str] = ..., lamports: _Optional[int] = ..., post_balance: _Optional[int] = ..., reward_type: _Optional[_Union[RewardType, str]] = ..., commission: _Optional[str] = ...) -> None: ...
+    commission_bps: str
+    def __init__(self, pubkey: _Optional[str] = ..., lamports: _Optional[int] = ..., post_balance: _Optional[int] = ..., reward_type: _Optional[_Union[RewardType, str]] = ..., commission: _Optional[str] = ..., commission_bps: _Optional[str] = ...) -> None: ...
 
 class Rewards(_message.Message):
     __slots__ = ("rewards", "num_partitions")

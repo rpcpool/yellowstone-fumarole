@@ -3,6 +3,7 @@ import uuid
 import logging
 import asyncio
 from os import environ
+from dotenv import load_dotenv
 from yellowstone_fumarole_client.config import FumaroleConfig
 from yellowstone_fumarole_client import FumaroleClient, FumaroleSubscribeConfig
 from yellowstone_fumarole_proto.fumarole_pb2 import CreateConsumerGroupRequest
@@ -34,11 +35,11 @@ def random_string(length=8):
 
 
 def fumarole_config() -> FumaroleConfig:
-
-    path = environ["TEST_FUMAROLE_CONFIG"]
-
-    with open(path, "r") as f:
-        return FumaroleConfig.from_yaml(f)
+    load_dotenv()
+    return FumaroleConfig(
+        endpoint=environ["FUMAROLE_ENDPOINT"],
+        x_token=environ.get("FUMAROLE_X_TOKEN"),
+    )
 
 TOKEN_ADDRESS = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 # BGUM_ADDRESS = "BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY";

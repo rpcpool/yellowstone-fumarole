@@ -12,6 +12,7 @@ from yellowstone_fumarole_proto.solana_storage_pb2 import ConfirmedBlock as Conf
 from yellowstone_fumarole_proto.solana_storage_pb2 import ConfirmedTransaction as ConfirmedTransaction
 from yellowstone_fumarole_proto.solana_storage_pb2 import Transaction as Transaction
 from yellowstone_fumarole_proto.solana_storage_pb2 import Message as Message
+from yellowstone_fumarole_proto.solana_storage_pb2 import TransactionConfig as TransactionConfig
 from yellowstone_fumarole_proto.solana_storage_pb2 import MessageHeader as MessageHeader
 from yellowstone_fumarole_proto.solana_storage_pb2 import MessageAddressTableLookup as MessageAddressTableLookup
 from yellowstone_fumarole_proto.solana_storage_pb2 import TransactionStatusMeta as TransactionStatusMeta
@@ -35,6 +36,7 @@ Fee: _solana_storage_pb2.RewardType
 Rent: _solana_storage_pb2.RewardType
 Staking: _solana_storage_pb2.RewardType
 Voting: _solana_storage_pb2.RewardType
+DeactivatedStake: _solana_storage_pb2.RewardType
 
 class CommitmentLevel(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -51,6 +53,15 @@ class SlotStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     SLOT_COMPLETED: _ClassVar[SlotStatus]
     SLOT_CREATED_BANK: _ClassVar[SlotStatus]
     SLOT_DEAD: _ClassVar[SlotStatus]
+
+class CuckooHashAlgorithm(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    SIP_HASH: _ClassVar[CuckooHashAlgorithm]
+
+class TokenAccountExpansionControlFlag(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    ALL: _ClassVar[TokenAccountExpansionControlFlag]
+    BALANCE_CHANGED: _ClassVar[TokenAccountExpansionControlFlag]
 PROCESSED: CommitmentLevel
 CONFIRMED: CommitmentLevel
 FINALIZED: CommitmentLevel
@@ -61,6 +72,9 @@ SLOT_FIRST_SHRED_RECEIVED: SlotStatus
 SLOT_COMPLETED: SlotStatus
 SLOT_CREATED_BANK: SlotStatus
 SLOT_DEAD: SlotStatus
+SIP_HASH: CuckooHashAlgorithm
+ALL: TokenAccountExpansionControlFlag
+BALANCE_CHANGED: TokenAccountExpansionControlFlag
 
 class SubscribeRequest(_message.Message):
     __slots__ = ("accounts", "slots", "transactions", "transactions_status", "blocks", "blocks_meta", "entry", "commitment", "accounts_data_slice", "ping", "from_slot")
@@ -137,17 +151,35 @@ class SubscribeRequest(_message.Message):
     from_slot: int
     def __init__(self, accounts: _Optional[_Mapping[str, SubscribeRequestFilterAccounts]] = ..., slots: _Optional[_Mapping[str, SubscribeRequestFilterSlots]] = ..., transactions: _Optional[_Mapping[str, SubscribeRequestFilterTransactions]] = ..., transactions_status: _Optional[_Mapping[str, SubscribeRequestFilterTransactions]] = ..., blocks: _Optional[_Mapping[str, SubscribeRequestFilterBlocks]] = ..., blocks_meta: _Optional[_Mapping[str, SubscribeRequestFilterBlocksMeta]] = ..., entry: _Optional[_Mapping[str, SubscribeRequestFilterEntry]] = ..., commitment: _Optional[_Union[CommitmentLevel, str]] = ..., accounts_data_slice: _Optional[_Iterable[_Union[SubscribeRequestAccountsDataSlice, _Mapping]]] = ..., ping: _Optional[_Union[SubscribeRequestPing, _Mapping]] = ..., from_slot: _Optional[int] = ...) -> None: ...
 
+class CuckooFilter(_message.Message):
+    __slots__ = ("data", "bucket_count", "entries_per_bucket", "fingerprint_bits", "hash_seed", "hash_algorithm")
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    BUCKET_COUNT_FIELD_NUMBER: _ClassVar[int]
+    ENTRIES_PER_BUCKET_FIELD_NUMBER: _ClassVar[int]
+    FINGERPRINT_BITS_FIELD_NUMBER: _ClassVar[int]
+    HASH_SEED_FIELD_NUMBER: _ClassVar[int]
+    HASH_ALGORITHM_FIELD_NUMBER: _ClassVar[int]
+    data: bytes
+    bucket_count: int
+    entries_per_bucket: int
+    fingerprint_bits: int
+    hash_seed: int
+    hash_algorithm: CuckooHashAlgorithm
+    def __init__(self, data: _Optional[bytes] = ..., bucket_count: _Optional[int] = ..., entries_per_bucket: _Optional[int] = ..., fingerprint_bits: _Optional[int] = ..., hash_seed: _Optional[int] = ..., hash_algorithm: _Optional[_Union[CuckooHashAlgorithm, str]] = ...) -> None: ...
+
 class SubscribeRequestFilterAccounts(_message.Message):
-    __slots__ = ("account", "owner", "filters", "nonempty_txn_signature")
+    __slots__ = ("account", "owner", "filters", "nonempty_txn_signature", "cuckoo_accounts_filter")
     ACCOUNT_FIELD_NUMBER: _ClassVar[int]
     OWNER_FIELD_NUMBER: _ClassVar[int]
     FILTERS_FIELD_NUMBER: _ClassVar[int]
     NONEMPTY_TXN_SIGNATURE_FIELD_NUMBER: _ClassVar[int]
+    CUCKOO_ACCOUNTS_FILTER_FIELD_NUMBER: _ClassVar[int]
     account: _containers.RepeatedScalarFieldContainer[str]
     owner: _containers.RepeatedScalarFieldContainer[str]
     filters: _containers.RepeatedCompositeFieldContainer[SubscribeRequestFilterAccountsFilter]
     nonempty_txn_signature: bool
-    def __init__(self, account: _Optional[_Iterable[str]] = ..., owner: _Optional[_Iterable[str]] = ..., filters: _Optional[_Iterable[_Union[SubscribeRequestFilterAccountsFilter, _Mapping]]] = ..., nonempty_txn_signature: bool = ...) -> None: ...
+    cuckoo_accounts_filter: CuckooFilter
+    def __init__(self, account: _Optional[_Iterable[str]] = ..., owner: _Optional[_Iterable[str]] = ..., filters: _Optional[_Iterable[_Union[SubscribeRequestFilterAccountsFilter, _Mapping]]] = ..., nonempty_txn_signature: bool = ..., cuckoo_accounts_filter: _Optional[_Union[CuckooFilter, _Mapping]] = ...) -> None: ...
 
 class SubscribeRequestFilterAccountsFilter(_message.Message):
     __slots__ = ("memcmp", "datasize", "token_account_state", "lamports")
@@ -194,32 +226,38 @@ class SubscribeRequestFilterSlots(_message.Message):
     def __init__(self, filter_by_commitment: bool = ..., interslot_updates: bool = ...) -> None: ...
 
 class SubscribeRequestFilterTransactions(_message.Message):
-    __slots__ = ("vote", "failed", "signature", "account_include", "account_exclude", "account_required")
+    __slots__ = ("vote", "failed", "signature", "account_include", "account_exclude", "account_required", "cuckoo_account_include", "token_accounts")
     VOTE_FIELD_NUMBER: _ClassVar[int]
     FAILED_FIELD_NUMBER: _ClassVar[int]
     SIGNATURE_FIELD_NUMBER: _ClassVar[int]
     ACCOUNT_INCLUDE_FIELD_NUMBER: _ClassVar[int]
     ACCOUNT_EXCLUDE_FIELD_NUMBER: _ClassVar[int]
     ACCOUNT_REQUIRED_FIELD_NUMBER: _ClassVar[int]
+    CUCKOO_ACCOUNT_INCLUDE_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_ACCOUNTS_FIELD_NUMBER: _ClassVar[int]
     vote: bool
     failed: bool
     signature: str
     account_include: _containers.RepeatedScalarFieldContainer[str]
     account_exclude: _containers.RepeatedScalarFieldContainer[str]
     account_required: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, vote: bool = ..., failed: bool = ..., signature: _Optional[str] = ..., account_include: _Optional[_Iterable[str]] = ..., account_exclude: _Optional[_Iterable[str]] = ..., account_required: _Optional[_Iterable[str]] = ...) -> None: ...
+    cuckoo_account_include: CuckooFilter
+    token_accounts: TokenAccountExpansionControlFlag
+    def __init__(self, vote: bool = ..., failed: bool = ..., signature: _Optional[str] = ..., account_include: _Optional[_Iterable[str]] = ..., account_exclude: _Optional[_Iterable[str]] = ..., account_required: _Optional[_Iterable[str]] = ..., cuckoo_account_include: _Optional[_Union[CuckooFilter, _Mapping]] = ..., token_accounts: _Optional[_Union[TokenAccountExpansionControlFlag, str]] = ...) -> None: ...
 
 class SubscribeRequestFilterBlocks(_message.Message):
-    __slots__ = ("account_include", "include_transactions", "include_accounts", "include_entries")
+    __slots__ = ("account_include", "include_transactions", "include_accounts", "include_entries", "cuckoo_account_include")
     ACCOUNT_INCLUDE_FIELD_NUMBER: _ClassVar[int]
     INCLUDE_TRANSACTIONS_FIELD_NUMBER: _ClassVar[int]
     INCLUDE_ACCOUNTS_FIELD_NUMBER: _ClassVar[int]
     INCLUDE_ENTRIES_FIELD_NUMBER: _ClassVar[int]
+    CUCKOO_ACCOUNT_INCLUDE_FIELD_NUMBER: _ClassVar[int]
     account_include: _containers.RepeatedScalarFieldContainer[str]
     include_transactions: bool
     include_accounts: bool
     include_entries: bool
-    def __init__(self, account_include: _Optional[_Iterable[str]] = ..., include_transactions: bool = ..., include_accounts: bool = ..., include_entries: bool = ...) -> None: ...
+    cuckoo_account_include: CuckooFilter
+    def __init__(self, account_include: _Optional[_Iterable[str]] = ..., include_transactions: bool = ..., include_accounts: bool = ..., include_entries: bool = ..., cuckoo_account_include: _Optional[_Union[CuckooFilter, _Mapping]] = ...) -> None: ...
 
 class SubscribeRequestFilterBlocksMeta(_message.Message):
     __slots__ = ()
@@ -228,6 +266,18 @@ class SubscribeRequestFilterBlocksMeta(_message.Message):
 class SubscribeRequestFilterEntry(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
+
+class SubscribeRequestFilterDeshredTransactions(_message.Message):
+    __slots__ = ("vote", "account_include", "account_exclude", "account_required")
+    VOTE_FIELD_NUMBER: _ClassVar[int]
+    ACCOUNT_INCLUDE_FIELD_NUMBER: _ClassVar[int]
+    ACCOUNT_EXCLUDE_FIELD_NUMBER: _ClassVar[int]
+    ACCOUNT_REQUIRED_FIELD_NUMBER: _ClassVar[int]
+    vote: bool
+    account_include: _containers.RepeatedScalarFieldContainer[str]
+    account_exclude: _containers.RepeatedScalarFieldContainer[str]
+    account_required: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, vote: bool = ..., account_include: _Optional[_Iterable[str]] = ..., account_exclude: _Optional[_Iterable[str]] = ..., account_required: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class SubscribeRequestAccountsDataSlice(_message.Message):
     __slots__ = ("offset", "length")
@@ -242,6 +292,30 @@ class SubscribeRequestPing(_message.Message):
     ID_FIELD_NUMBER: _ClassVar[int]
     id: int
     def __init__(self, id: _Optional[int] = ...) -> None: ...
+
+class SubscribeDeshredRequest(_message.Message):
+    __slots__ = ("deshred_transactions", "ping", "slots")
+    class DeshredTransactionsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: SubscribeRequestFilterDeshredTransactions
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[SubscribeRequestFilterDeshredTransactions, _Mapping]] = ...) -> None: ...
+    class SlotsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: SubscribeRequestFilterSlots
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[SubscribeRequestFilterSlots, _Mapping]] = ...) -> None: ...
+    DESHRED_TRANSACTIONS_FIELD_NUMBER: _ClassVar[int]
+    PING_FIELD_NUMBER: _ClassVar[int]
+    SLOTS_FIELD_NUMBER: _ClassVar[int]
+    deshred_transactions: _containers.MessageMap[str, SubscribeRequestFilterDeshredTransactions]
+    ping: SubscribeRequestPing
+    slots: _containers.MessageMap[str, SubscribeRequestFilterSlots]
+    def __init__(self, deshred_transactions: _Optional[_Mapping[str, SubscribeRequestFilterDeshredTransactions]] = ..., ping: _Optional[_Union[SubscribeRequestPing, _Mapping]] = ..., slots: _Optional[_Mapping[str, SubscribeRequestFilterSlots]] = ...) -> None: ...
 
 class SubscribeUpdate(_message.Message):
     __slots__ = ("filters", "account", "slot", "transaction", "transaction_status", "block", "ping", "pong", "block_meta", "entry", "created_at")
@@ -270,14 +344,16 @@ class SubscribeUpdate(_message.Message):
     def __init__(self, filters: _Optional[_Iterable[str]] = ..., account: _Optional[_Union[SubscribeUpdateAccount, _Mapping]] = ..., slot: _Optional[_Union[SubscribeUpdateSlot, _Mapping]] = ..., transaction: _Optional[_Union[SubscribeUpdateTransaction, _Mapping]] = ..., transaction_status: _Optional[_Union[SubscribeUpdateTransactionStatus, _Mapping]] = ..., block: _Optional[_Union[SubscribeUpdateBlock, _Mapping]] = ..., ping: _Optional[_Union[SubscribeUpdatePing, _Mapping]] = ..., pong: _Optional[_Union[SubscribeUpdatePong, _Mapping]] = ..., block_meta: _Optional[_Union[SubscribeUpdateBlockMeta, _Mapping]] = ..., entry: _Optional[_Union[SubscribeUpdateEntry, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class SubscribeUpdateAccount(_message.Message):
-    __slots__ = ("account", "slot", "is_startup")
+    __slots__ = ("account", "slot", "is_startup", "bank_id")
     ACCOUNT_FIELD_NUMBER: _ClassVar[int]
     SLOT_FIELD_NUMBER: _ClassVar[int]
     IS_STARTUP_FIELD_NUMBER: _ClassVar[int]
+    BANK_ID_FIELD_NUMBER: _ClassVar[int]
     account: SubscribeUpdateAccountInfo
     slot: int
     is_startup: bool
-    def __init__(self, account: _Optional[_Union[SubscribeUpdateAccountInfo, _Mapping]] = ..., slot: _Optional[int] = ..., is_startup: bool = ...) -> None: ...
+    bank_id: int
+    def __init__(self, account: _Optional[_Union[SubscribeUpdateAccountInfo, _Mapping]] = ..., slot: _Optional[int] = ..., is_startup: bool = ..., bank_id: _Optional[int] = ...) -> None: ...
 
 class SubscribeUpdateAccountInfo(_message.Message):
     __slots__ = ("pubkey", "lamports", "owner", "executable", "rent_epoch", "data", "write_version", "txn_signature")
@@ -300,24 +376,28 @@ class SubscribeUpdateAccountInfo(_message.Message):
     def __init__(self, pubkey: _Optional[bytes] = ..., lamports: _Optional[int] = ..., owner: _Optional[bytes] = ..., executable: bool = ..., rent_epoch: _Optional[int] = ..., data: _Optional[bytes] = ..., write_version: _Optional[int] = ..., txn_signature: _Optional[bytes] = ...) -> None: ...
 
 class SubscribeUpdateSlot(_message.Message):
-    __slots__ = ("slot", "parent", "status", "dead_error")
+    __slots__ = ("slot", "parent", "status", "dead_error", "bank_id")
     SLOT_FIELD_NUMBER: _ClassVar[int]
     PARENT_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     DEAD_ERROR_FIELD_NUMBER: _ClassVar[int]
+    BANK_ID_FIELD_NUMBER: _ClassVar[int]
     slot: int
     parent: int
     status: SlotStatus
     dead_error: str
-    def __init__(self, slot: _Optional[int] = ..., parent: _Optional[int] = ..., status: _Optional[_Union[SlotStatus, str]] = ..., dead_error: _Optional[str] = ...) -> None: ...
+    bank_id: int
+    def __init__(self, slot: _Optional[int] = ..., parent: _Optional[int] = ..., status: _Optional[_Union[SlotStatus, str]] = ..., dead_error: _Optional[str] = ..., bank_id: _Optional[int] = ...) -> None: ...
 
 class SubscribeUpdateTransaction(_message.Message):
-    __slots__ = ("transaction", "slot")
+    __slots__ = ("transaction", "slot", "bank_id")
     TRANSACTION_FIELD_NUMBER: _ClassVar[int]
     SLOT_FIELD_NUMBER: _ClassVar[int]
+    BANK_ID_FIELD_NUMBER: _ClassVar[int]
     transaction: SubscribeUpdateTransactionInfo
     slot: int
-    def __init__(self, transaction: _Optional[_Union[SubscribeUpdateTransactionInfo, _Mapping]] = ..., slot: _Optional[int] = ...) -> None: ...
+    bank_id: int
+    def __init__(self, transaction: _Optional[_Union[SubscribeUpdateTransactionInfo, _Mapping]] = ..., slot: _Optional[int] = ..., bank_id: _Optional[int] = ...) -> None: ...
 
 class SubscribeUpdateTransactionInfo(_message.Message):
     __slots__ = ("signature", "is_vote", "transaction", "meta", "index")
@@ -378,7 +458,7 @@ class SubscribeUpdateBlock(_message.Message):
     def __init__(self, slot: _Optional[int] = ..., blockhash: _Optional[str] = ..., rewards: _Optional[_Union[_solana_storage_pb2.Rewards, _Mapping]] = ..., block_time: _Optional[_Union[_solana_storage_pb2.UnixTimestamp, _Mapping]] = ..., block_height: _Optional[_Union[_solana_storage_pb2.BlockHeight, _Mapping]] = ..., parent_slot: _Optional[int] = ..., parent_blockhash: _Optional[str] = ..., executed_transaction_count: _Optional[int] = ..., transactions: _Optional[_Iterable[_Union[SubscribeUpdateTransactionInfo, _Mapping]]] = ..., updated_account_count: _Optional[int] = ..., accounts: _Optional[_Iterable[_Union[SubscribeUpdateAccountInfo, _Mapping]]] = ..., entries_count: _Optional[int] = ..., entries: _Optional[_Iterable[_Union[SubscribeUpdateEntry, _Mapping]]] = ...) -> None: ...
 
 class SubscribeUpdateBlockMeta(_message.Message):
-    __slots__ = ("slot", "blockhash", "rewards", "block_time", "block_height", "parent_slot", "parent_blockhash", "executed_transaction_count", "entries_count")
+    __slots__ = ("slot", "blockhash", "rewards", "block_time", "block_height", "parent_slot", "parent_blockhash", "executed_transaction_count", "entries_count", "bank_id")
     SLOT_FIELD_NUMBER: _ClassVar[int]
     BLOCKHASH_FIELD_NUMBER: _ClassVar[int]
     REWARDS_FIELD_NUMBER: _ClassVar[int]
@@ -388,6 +468,7 @@ class SubscribeUpdateBlockMeta(_message.Message):
     PARENT_BLOCKHASH_FIELD_NUMBER: _ClassVar[int]
     EXECUTED_TRANSACTION_COUNT_FIELD_NUMBER: _ClassVar[int]
     ENTRIES_COUNT_FIELD_NUMBER: _ClassVar[int]
+    BANK_ID_FIELD_NUMBER: _ClassVar[int]
     slot: int
     blockhash: str
     rewards: _solana_storage_pb2.Rewards
@@ -397,23 +478,52 @@ class SubscribeUpdateBlockMeta(_message.Message):
     parent_blockhash: str
     executed_transaction_count: int
     entries_count: int
-    def __init__(self, slot: _Optional[int] = ..., blockhash: _Optional[str] = ..., rewards: _Optional[_Union[_solana_storage_pb2.Rewards, _Mapping]] = ..., block_time: _Optional[_Union[_solana_storage_pb2.UnixTimestamp, _Mapping]] = ..., block_height: _Optional[_Union[_solana_storage_pb2.BlockHeight, _Mapping]] = ..., parent_slot: _Optional[int] = ..., parent_blockhash: _Optional[str] = ..., executed_transaction_count: _Optional[int] = ..., entries_count: _Optional[int] = ...) -> None: ...
+    bank_id: int
+    def __init__(self, slot: _Optional[int] = ..., blockhash: _Optional[str] = ..., rewards: _Optional[_Union[_solana_storage_pb2.Rewards, _Mapping]] = ..., block_time: _Optional[_Union[_solana_storage_pb2.UnixTimestamp, _Mapping]] = ..., block_height: _Optional[_Union[_solana_storage_pb2.BlockHeight, _Mapping]] = ..., parent_slot: _Optional[int] = ..., parent_blockhash: _Optional[str] = ..., executed_transaction_count: _Optional[int] = ..., entries_count: _Optional[int] = ..., bank_id: _Optional[int] = ...) -> None: ...
 
 class SubscribeUpdateEntry(_message.Message):
-    __slots__ = ("slot", "index", "num_hashes", "hash", "executed_transaction_count", "starting_transaction_index")
+    __slots__ = ("slot", "index", "num_hashes", "hash", "executed_transaction_count", "starting_transaction_index", "bank_id")
     SLOT_FIELD_NUMBER: _ClassVar[int]
     INDEX_FIELD_NUMBER: _ClassVar[int]
     NUM_HASHES_FIELD_NUMBER: _ClassVar[int]
     HASH_FIELD_NUMBER: _ClassVar[int]
     EXECUTED_TRANSACTION_COUNT_FIELD_NUMBER: _ClassVar[int]
     STARTING_TRANSACTION_INDEX_FIELD_NUMBER: _ClassVar[int]
+    BANK_ID_FIELD_NUMBER: _ClassVar[int]
     slot: int
     index: int
     num_hashes: int
     hash: bytes
     executed_transaction_count: int
     starting_transaction_index: int
-    def __init__(self, slot: _Optional[int] = ..., index: _Optional[int] = ..., num_hashes: _Optional[int] = ..., hash: _Optional[bytes] = ..., executed_transaction_count: _Optional[int] = ..., starting_transaction_index: _Optional[int] = ...) -> None: ...
+    bank_id: int
+    def __init__(self, slot: _Optional[int] = ..., index: _Optional[int] = ..., num_hashes: _Optional[int] = ..., hash: _Optional[bytes] = ..., executed_transaction_count: _Optional[int] = ..., starting_transaction_index: _Optional[int] = ..., bank_id: _Optional[int] = ...) -> None: ...
+
+class SubscribeUpdateDeshredTransaction(_message.Message):
+    __slots__ = ("transaction", "slot")
+    TRANSACTION_FIELD_NUMBER: _ClassVar[int]
+    SLOT_FIELD_NUMBER: _ClassVar[int]
+    transaction: SubscribeUpdateDeshredTransactionInfo
+    slot: int
+    def __init__(self, transaction: _Optional[_Union[SubscribeUpdateDeshredTransactionInfo, _Mapping]] = ..., slot: _Optional[int] = ...) -> None: ...
+
+class SubscribeUpdateDeshredTransactionInfo(_message.Message):
+    __slots__ = ("signature", "is_vote", "transaction", "loaded_writable_addresses", "loaded_readonly_addresses", "completed_data_set_starting_shred_index", "completed_data_set_ending_shred_index_exclusive")
+    SIGNATURE_FIELD_NUMBER: _ClassVar[int]
+    IS_VOTE_FIELD_NUMBER: _ClassVar[int]
+    TRANSACTION_FIELD_NUMBER: _ClassVar[int]
+    LOADED_WRITABLE_ADDRESSES_FIELD_NUMBER: _ClassVar[int]
+    LOADED_READONLY_ADDRESSES_FIELD_NUMBER: _ClassVar[int]
+    COMPLETED_DATA_SET_STARTING_SHRED_INDEX_FIELD_NUMBER: _ClassVar[int]
+    COMPLETED_DATA_SET_ENDING_SHRED_INDEX_EXCLUSIVE_FIELD_NUMBER: _ClassVar[int]
+    signature: bytes
+    is_vote: bool
+    transaction: _solana_storage_pb2.Transaction
+    loaded_writable_addresses: _containers.RepeatedScalarFieldContainer[bytes]
+    loaded_readonly_addresses: _containers.RepeatedScalarFieldContainer[bytes]
+    completed_data_set_starting_shred_index: int
+    completed_data_set_ending_shred_index_exclusive: int
+    def __init__(self, signature: _Optional[bytes] = ..., is_vote: bool = ..., transaction: _Optional[_Union[_solana_storage_pb2.Transaction, _Mapping]] = ..., loaded_writable_addresses: _Optional[_Iterable[bytes]] = ..., loaded_readonly_addresses: _Optional[_Iterable[bytes]] = ..., completed_data_set_starting_shred_index: _Optional[int] = ..., completed_data_set_ending_shred_index_exclusive: _Optional[int] = ...) -> None: ...
 
 class SubscribeUpdatePing(_message.Message):
     __slots__ = ()
@@ -424,6 +534,22 @@ class SubscribeUpdatePong(_message.Message):
     ID_FIELD_NUMBER: _ClassVar[int]
     id: int
     def __init__(self, id: _Optional[int] = ...) -> None: ...
+
+class SubscribeUpdateDeshred(_message.Message):
+    __slots__ = ("filters", "deshred_transaction", "ping", "pong", "slot", "created_at")
+    FILTERS_FIELD_NUMBER: _ClassVar[int]
+    DESHRED_TRANSACTION_FIELD_NUMBER: _ClassVar[int]
+    PING_FIELD_NUMBER: _ClassVar[int]
+    PONG_FIELD_NUMBER: _ClassVar[int]
+    SLOT_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    filters: _containers.RepeatedScalarFieldContainer[str]
+    deshred_transaction: SubscribeUpdateDeshredTransaction
+    ping: SubscribeUpdatePing
+    pong: SubscribeUpdatePong
+    slot: SubscribeUpdateSlot
+    created_at: _timestamp_pb2.Timestamp
+    def __init__(self, filters: _Optional[_Iterable[str]] = ..., deshred_transaction: _Optional[_Union[SubscribeUpdateDeshredTransaction, _Mapping]] = ..., ping: _Optional[_Union[SubscribeUpdatePing, _Mapping]] = ..., pong: _Optional[_Union[SubscribeUpdatePong, _Mapping]] = ..., slot: _Optional[_Union[SubscribeUpdateSlot, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class SubscribeReplayInfoRequest(_message.Message):
     __slots__ = ()
