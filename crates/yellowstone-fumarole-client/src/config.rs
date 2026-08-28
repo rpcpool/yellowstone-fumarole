@@ -45,9 +45,11 @@ pub struct FumaroleConfig {
     )]
     pub request_compression: Option<CompressionEncoding>,
 
+    #[deprecated(note = "http2 adaptive window size is used and overrides this value")]
     #[serde(default = "FumaroleConfig::default_initial_connection_window_size")]
     pub initial_connection_window_size: ByteSize,
 
+    #[deprecated(note = "http2 adaptive window size is used and overrides this value")]
     #[serde(default = "FumaroleConfig::default_initial_stream_window_size")]
     pub initial_stream_window_size: ByteSize,
 }

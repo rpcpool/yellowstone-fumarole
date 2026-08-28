@@ -94,8 +94,6 @@ export interface FumaroleEvent {
 export interface FumaroleSubscribeConfigOptions {
   /** Number of parallel data-plane TCP connections (default: 1). */
   numDataPlaneTcpConnections?: number
-  /** Max concurrent downloads per TCP connection (default: 2). */
-  concurrentDownloadLimitPerTcp?: number
   /** Offset commit interval in milliseconds (default: 10 000). */
   commitIntervalMs?: number
   /** Max consecutive failed slot downloads before the session fails (default: 3). */

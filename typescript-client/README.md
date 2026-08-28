@@ -75,7 +75,6 @@ The `subscriberName` is a persistent identifier — Fumarole tracks your offset 
 ```ts
 const subscription = await client.subscribeWithConfig('my-subscriber', request, {
   numDataPlaneTcpConnections: 1,    // parallel TCP connections (default: 1)
-  concurrentDownloadLimitPerTcp: 2, // concurrent downloads per connection (default: 2)
   commitIntervalMs: 10_000,         // offset commit interval in ms (default: 10 000)
   maxFailedSlotDownloadAttempt: 3,  // failures before session fails (default: 3)
   gcInterval: 100,                  // GC tick interval (default: 100)

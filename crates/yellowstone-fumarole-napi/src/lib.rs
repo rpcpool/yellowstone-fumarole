@@ -3,11 +3,7 @@ use {
     napi::bindgen_prelude::*,
     napi_derive::napi,
     prost::Message as ProstMessage,
-    std::{
-        num::{NonZeroU8, NonZeroUsize},
-        sync::Arc,
-        time::Duration,
-    },
+    std::{num::NonZeroU8, sync::Arc, time::Duration},
     tokio::sync::{Mutex, mpsc},
     yellowstone_fumarole_client::{
         FumaroleClient as RustFumaroleClient, FumaroleEvent as RustFumaroleEvent, FumaroleSink,
@@ -34,8 +30,6 @@ pub struct FumaroleConfigOptions {
 pub struct FumaroleSubscribeConfigOptions {
     /// Number of parallel data-plane TCP connections (default: 1).
     pub num_data_plane_tcp_connections: Option<u8>,
-    /// Max concurrent downloads per TCP connection (default: 2).
-    pub concurrent_download_limit_per_tcp: Option<u32>,
     /// Offset commit interval in milliseconds (default: 10 000).
     pub commit_interval_ms: Option<u32>,
     /// Max consecutive failed slot downloads before the session fails (default: 3).
@@ -99,16 +93,10 @@ fn to_rust_config(options: FumaroleConfigOptions) -> Result<RustFumaroleConfig> 
 fn to_rust_subscribe_config(
     options: FumaroleSubscribeConfigOptions,
 ) -> RustFumaroleSubscribeConfig {
-    #[allow(deprecated)]
     let mut config = RustFumaroleSubscribeConfig::default();
     if let Some(n) = options.num_data_plane_tcp_connections {
         if let Some(nz) = NonZeroU8::new(n) {
             config.num_data_plane_tcp_connections = nz;
-        }
-    }
-    if let Some(n) = options.concurrent_download_limit_per_tcp {
-        if let Some(nz) = NonZeroUsize::new(n as usize) {
-            config.concurrent_download_limit_per_tcp = nz;
         }
     }
     if let Some(ms) = options.commit_interval_ms {

@@ -56,7 +56,7 @@ pub struct FumaroleRuntimeCommitEvent {
 impl Drop for FumaroleRuntimeCommitEvent {
     fn drop(&mut self) {
         if self.sequence.is_some() {
-            tracing::error!(
+            tracing::info!(
                 "FumaroleRuntimeCommitEvent dropped without being processed, sequence: {:?}",
                 self.sequence
             );
@@ -194,7 +194,7 @@ where
         }
     }
 
-    async fn poll_history_if_needed(&mut self) {
+    async fn poll_history_if_needed(&mut self) -> LoopInstruction {
         if self.last_history_poll.is_none() && self.sm.need_new_blockchain_events() {
             #[cfg(feature = "prometheus")]
             {
@@ -207,10 +207,20 @@ where
             );
             let cmd = build_poll_history_cmd(Some(self.sm.committable_offset));
             if self.control_plane_tx.send(cmd).await.is_err() {
-                panic!("control plane disconnected");
+                tracing::warn!(
+                    "control plane tx closed while polling history, attempting to rejoin..."
+                );
+                if !self.reconnect_control_plane().await {
+                    self.report_rejoin_exhausted().await;
+                    return LoopInstruction::ErrorStop;
+                }
+                // `rejoin_controle_plane` resets `last_history_poll` to `None`, so the
+                // next call to this function will retry sending the poll command.
+                return LoopInstruction::Continue;
             }
             self.last_history_poll = Some(Instant::now());
         }
+        LoopInstruction::Continue
     }
 
     fn commitment_level(&self) -> Option<geyser::CommitmentLevel> {
@@ -227,7 +237,7 @@ where
                 .download_task_runner_chans
                 .download_task_queue_tx
                 .try_reserve();
-            let permit = match result {
+            let permit: mpsc::Permit<'_, DownloadTaskArgs> = match result {
                 Ok(permit) => permit,
                 Err(TrySendError::Full(_)) => {
                     #[cfg(feature = "prometheus")]
@@ -264,16 +274,27 @@ where
         }
     }
 
-    async unsafe fn force_commit_offset(&mut self) {
+    async unsafe fn force_commit_offset(&mut self) -> LoopInstruction {
         if self.no_commit {
             tracing::debug!("no_commit is set, skipping offset commitment");
             self.sm.update_committed_offset(self.sm.committable_offset);
-            return;
+            return LoopInstruction::Continue;
         }
-        self.control_plane_tx
-            .send(build_commit_offset_cmd(self.sm.committable_offset))
-            .await
-            .unwrap_or_else(|_| panic!("failed to commit offset"));
+        let cmd = build_commit_offset_cmd(self.sm.committable_offset);
+        if self.control_plane_tx.send(cmd.clone()).await.is_err() {
+            tracing::warn!(
+                "control plane tx closed while committing offset, attempting to rejoin..."
+            );
+            if !self.reconnect_control_plane().await {
+                self.report_rejoin_exhausted().await;
+                return LoopInstruction::ErrorStop;
+            }
+            if self.control_plane_tx.send(cmd).await.is_err() {
+                tracing::error!("control plane tx closed again immediately after rejoin");
+                self.report_rejoin_exhausted().await;
+                return LoopInstruction::ErrorStop;
+            }
+        }
         #[cfg(feature = "prometheus")]
         {
             use crate::metrics::set_max_offset_committed;
@@ -281,21 +302,22 @@ where
             inc_offset_commitment_count();
             set_max_offset_committed(self.sm.committable_offset);
         }
+        LoopInstruction::Continue
     }
 
-    async fn commit_offset(&mut self) {
-        if self.sm.last_committed_offset < self.sm.committable_offset {
-            unsafe {
-                self.force_commit_offset().await;
-            }
+    async fn commit_offset(&mut self) -> LoopInstruction {
+        let instruction = if self.sm.last_committed_offset < self.sm.committable_offset {
+            unsafe { self.force_commit_offset().await }
         } else {
             #[cfg(feature = "prometheus")]
             {
                 inc_skip_offset_commitment_count();
             }
-        }
+            LoopInstruction::Continue
+        };
 
         self.last_commit = Instant::now();
+        instruction
     }
 
     async fn drain_slot_status(&mut self) {
@@ -393,6 +415,65 @@ where
         Ok(())
     }
 
+    /// Retries [`Self::rejoin_controle_plane`] up to `CONTROL_PLANE_REJOIN_MAX_ATTEMPTS` times,
+    /// each bounded by `CONTROL_PLANE_REJOIN_ATTEMPT_TIMEOUT` and separated by
+    /// `CONTROL_PLANE_REJOIN_BACKOFF`.
+    ///
+    /// Returns `true` once a rejoin attempt succeeds, `false` once all attempts are exhausted.
+    async fn reconnect_control_plane(&mut self) -> bool {
+        for attempt in 1..=CONTROL_PLANE_REJOIN_MAX_ATTEMPTS {
+            tracing::warn!(
+                "control plane rejoin attempt {attempt}/{CONTROL_PLANE_REJOIN_MAX_ATTEMPTS}"
+            );
+
+            match tokio::time::timeout(
+                CONTROL_PLANE_REJOIN_ATTEMPT_TIMEOUT,
+                self.rejoin_controle_plane(),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {
+                    tracing::info!(
+                        "control plane rejoin succeeded on attempt {attempt}/{CONTROL_PLANE_REJOIN_MAX_ATTEMPTS}"
+                    );
+                    return true;
+                }
+                Ok(Err(rejoin_err)) => {
+                    tracing::warn!(
+                        "control plane rejoin attempt {attempt}/{CONTROL_PLANE_REJOIN_MAX_ATTEMPTS} failed: {rejoin_err:?}"
+                    );
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "control plane rejoin attempt {attempt}/{CONTROL_PLANE_REJOIN_MAX_ATTEMPTS} timed out after {:?}",
+                        CONTROL_PLANE_REJOIN_ATTEMPT_TIMEOUT
+                    );
+                }
+            }
+
+            if attempt < CONTROL_PLANE_REJOIN_MAX_ATTEMPTS {
+                tokio::time::sleep(CONTROL_PLANE_REJOIN_BACKOFF).await;
+            }
+        }
+
+        false
+    }
+
+    /// Reports to the outlet that all control plane rejoin attempts were exhausted.
+    async fn report_rejoin_exhausted(&mut self) {
+        tracing::error!(
+            "exhausted control plane rejoin attempts ({CONTROL_PLANE_REJOIN_MAX_ATTEMPTS})"
+        );
+        let _ = self
+            .outlet
+            .send(Err(FumaroleSubscribeError::ControlPlaneRejoinFailed {
+                details: Some(Box::new(std::io::Error::other(format!(
+                    "exhausted control plane rejoin attempts ({CONTROL_PLANE_REJOIN_MAX_ATTEMPTS})"
+                )))),
+            }))
+            .await;
+    }
+
     async fn handle_control_plane_resp(
         &mut self,
         result: Result<proto::ControlResponse, ControlPlaneStreamError>,
@@ -406,52 +487,10 @@ where
                 tracing::warn!(
                     "control plane connection lost with error: {e:?}, attempting to rejoin..."
                 );
-                for attempt in 1..=CONTROL_PLANE_REJOIN_MAX_ATTEMPTS {
-                    tracing::warn!(
-                        "control plane rejoin attempt {attempt}/{CONTROL_PLANE_REJOIN_MAX_ATTEMPTS}"
-                    );
-
-                    match tokio::time::timeout(
-                        CONTROL_PLANE_REJOIN_ATTEMPT_TIMEOUT,
-                        self.rejoin_controle_plane(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(_)) => {
-                            tracing::info!(
-                                "control plane rejoin succeeded on attempt {attempt}/{CONTROL_PLANE_REJOIN_MAX_ATTEMPTS}"
-                            );
-                            return LoopInstruction::Continue;
-                        }
-                        Ok(Err(rejoin_err)) => {
-                            tracing::warn!(
-                                "control plane rejoin attempt {attempt}/{CONTROL_PLANE_REJOIN_MAX_ATTEMPTS} failed: {rejoin_err:?}"
-                            );
-                        }
-                        Err(_) => {
-                            tracing::warn!(
-                                "control plane rejoin attempt {attempt}/{CONTROL_PLANE_REJOIN_MAX_ATTEMPTS} timed out after {:?}",
-                                CONTROL_PLANE_REJOIN_ATTEMPT_TIMEOUT
-                            );
-                        }
-                    }
-
-                    if attempt < CONTROL_PLANE_REJOIN_MAX_ATTEMPTS {
-                        tokio::time::sleep(CONTROL_PLANE_REJOIN_BACKOFF).await;
-                    }
+                if self.reconnect_control_plane().await {
+                    return LoopInstruction::Continue;
                 }
-
-                tracing::error!(
-                    "exhausted control plane rejoin attempts ({CONTROL_PLANE_REJOIN_MAX_ATTEMPTS}) after disconnect: {e:?}"
-                );
-                let _ = self
-                    .outlet
-                    .send(Err(FumaroleSubscribeError::ControlPlaneRejoinFailed {
-                        details: Some(Box::new(std::io::Error::other(format!(
-                            "exhausted control plane rejoin attempts ({CONTROL_PLANE_REJOIN_MAX_ATTEMPTS})"
-                        )))),
-                    }))
-                    .await;
+                self.report_rejoin_exhausted().await;
                 LoopInstruction::ErrorStop
             }
             Err(ControlPlaneStreamError::ApplicationError(e)) => {
@@ -536,11 +575,15 @@ where
     }
 
     pub(crate) async fn run(mut self) {
-        self.poll_history_if_needed().await;
+        if let LoopInstruction::ErrorStop = self.poll_history_if_needed().await {
+            self.stop = true;
+        }
 
         // Always start to commit offset, to make sure not another instance is committing to the same offset.
-        unsafe {
-            self.force_commit_offset().await;
+        if !self.stop {
+            if let LoopInstruction::ErrorStop = unsafe { self.force_commit_offset().await } {
+                self.stop = true;
+            }
         }
         let mut ticks = 0;
         while !self.stop {
@@ -564,7 +607,10 @@ where
             let commit_deadline = self.last_commit + self.commit_interval;
 
             self.drain_commit_offset_queue();
-            self.poll_history_if_needed().await;
+            if let LoopInstruction::ErrorStop = self.poll_history_if_needed().await {
+                tracing::debug!("control plane error while polling history");
+                break;
+            }
             self.schedule_download_task_if_any().await;
             tokio::select! {
                 Some(subscribe_request) = self.subscribe_request_rx.recv() => {
@@ -646,7 +692,10 @@ where
                         download_queue_capacity = self.download_task_runner_chans.download_task_queue_tx.capacity(),
                         "commit deadline reached"
                     );
-                    self.commit_offset().await;
+                    if let LoopInstruction::ErrorStop = self.commit_offset().await {
+                        tracing::debug!("control plane error while committing offset");
+                        break;
+                    }
                 }
                 _ = tokio::time::sleep_until(get_tip_deadline.into()) => {
                     self.update_tip().await;
@@ -718,7 +767,7 @@ enum DedupKey {
 }
 
 const DEDUP_WINDOW_SIZE: usize = 100_000;
-const ORCHESTRATOR_DOWNLOADER_QUEUE_CAPACITY: usize = 2;
+const ORCHESTRATOR_DOWNLOADER_QUEUE_CAPACITY: usize = 3;
 const PENDING_SHARD_DOWNLOAD_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Default, Debug, Clone)]
@@ -1326,8 +1375,12 @@ where
         let (completed_tx, completed_rx) = mpsc::channel(1000);
         let mut shard_download_queue_txs = Vec::with_capacity(total_shard_downloaders);
         let mut shard_download_queue_rxs = Vec::with_capacity(total_shard_downloaders);
+        const EXPECTED_NUM_SHARDS_PER_SLOT: usize = 10;
+        const SLOT_DEPTH: usize = 2;
+        let minimum_buffer_cap =
+            ((EXPECTED_NUM_SHARDS_PER_SLOT * SLOT_DEPTH).div_ceil(total_shard_downloaders)).max(2);
         for _ in 0..total_shard_downloaders {
-            let (tx, rx) = mpsc::channel(ORCHESTRATOR_DOWNLOADER_QUEUE_CAPACITY);
+            let (tx, rx) = mpsc::channel(minimum_buffer_cap);
             shard_download_queue_txs.push(tx);
             shard_download_queue_rxs.push(Some(rx));
         }
@@ -1399,17 +1452,26 @@ where
         }
     }
 
+    /// Attempts to re-route every currently buffered pending download exactly once.
+    ///
+    /// A lane that's still full is not allowed to block delivery to other, idle
+    /// lanes: still-full items are pushed to the back to retry on the next call
+    /// instead of aborting the scan, so one congested lane can't wedge intake
+    /// for every other lane.
     fn drain_pending_shard_downloads(&mut self) {
-        while let Some(pending) = self.pending_shard_downloads.pop_front() {
+        let initial_len = self.pending_shard_downloads.len();
+        for _ in 0..initial_len {
+            let Some(pending) = self.pending_shard_downloads.pop_front() else {
+                break;
+            };
             match self.shard_download_queue_txs[pending.downloader_idx].try_send(pending.queued) {
                 Ok(()) => {}
                 Err(TrySendError::Full(queued)) => {
                     self.pending_shard_downloads
-                        .push_front(PendingShardDownload {
+                        .push_back(PendingShardDownload {
                             downloader_idx: pending.downloader_idx,
                             queued,
                         });
-                    break;
                 }
                 Err(TrySendError::Closed(_)) => {
                     panic!("shard downloader queue unexpectedly closed");

@@ -51,7 +51,6 @@ async function main() {
   };
 
   const subscription = await client.subscribeWithConfig(subscriberName, request, {
-    concurrentDownloadLimitPerTcp: 1,
     commitIntervalMs: 5_000,
     maxFailedSlotDownloadAttempt: 3,
     slotMemoryRetention: 1_000,

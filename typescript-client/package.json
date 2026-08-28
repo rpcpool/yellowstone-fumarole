@@ -1,6 +1,6 @@
 {
   "name": "@triton-one/yellowstone-fumarole-client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Yellowstone Fumarole client — native Node.js bindings via Rust/NAPI",
   "license": "AGPL-3.0",
   "author": "Triton One",
@@ -30,7 +30,7 @@
     "url": "https://github.com/rpcpool/yellowstone-fumarole.git"
   },
   "dependencies": {
-    "@triton-one/yellowstone-fumarole-napi": "^0.2.0"
+    "@triton-one/yellowstone-fumarole-napi": "^0.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
