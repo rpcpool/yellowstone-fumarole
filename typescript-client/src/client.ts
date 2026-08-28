@@ -104,7 +104,6 @@ export class FumaroleClient {
     const encoded = Buffer.from(SubscribeRequest.encode(request).finish())
     const napiSub = await this.#inner.subscribeWithConfig(subscriberName, encoded, {
       numDataPlaneTcpConnections: config.numDataPlaneTcpConnections,
-      concurrentDownloadLimitPerTcp: config.concurrentDownloadLimitPerTcp,
       commitIntervalMs: config.commitIntervalMs,
       maxFailedSlotDownloadAttempt: config.maxFailedSlotDownloadAttempt,
       gcInterval: config.gcInterval,
