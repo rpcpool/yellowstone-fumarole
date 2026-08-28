@@ -56,7 +56,7 @@ pub struct FumaroleRuntimeCommitEvent {
 impl Drop for FumaroleRuntimeCommitEvent {
     fn drop(&mut self) {
         if self.sequence.is_some() {
-            tracing::error!(
+            tracing::info!(
                 "FumaroleRuntimeCommitEvent dropped without being processed, sequence: {:?}",
                 self.sequence
             );

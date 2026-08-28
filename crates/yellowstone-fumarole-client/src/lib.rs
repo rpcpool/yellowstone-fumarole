@@ -431,7 +431,8 @@ use {
 };
 
 const DEFAULT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
-const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
+const DEFAULT_KEEPALIVE: Duration = Duration::from_secs(20);
+const DEFAULT_TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 struct FumeInterceptor {
@@ -490,7 +491,7 @@ pub const DEFAULT_PARA_DATA_STREAMS: u8 = 4;
 ///
 /// Default maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
 ///
-pub const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP: usize = 2;
+pub const DEFAULT_CONCURRENT_DOWNLOAD_LIMIT_PER_TCP: usize = 1;
 
 ///
 /// Default refresh tip interval for the fumarole client.
@@ -575,6 +576,9 @@ pub struct FumaroleSubscribeConfig {
     ///
     /// Maximum number of concurrent download requests to the fumarole service inside a single data plane TCP connection.
     ///
+    #[deprecated(
+        note = "This field is deprecated and will be removed in a future version. The concurrent download limit per TCP connection is now hardcoded to 1 for best performance."
+    )]
     pub concurrent_download_limit_per_tcp: NonZeroUsize,
 
     ///
@@ -704,17 +708,6 @@ fn string_pairs_to_metadata_header(
 
 impl FumaroleClient {
     pub async fn connect(config: FumaroleConfig) -> Result<FumaroleClient, ConnectError> {
-        let connection_window_size: u32 = config
-            .initial_connection_window_size
-            .as_u64()
-            .try_into()
-            .expect("initial_connection_window_size must fit in u32");
-        let stream_window_size: u32 = config
-            .initial_stream_window_size
-            .as_u64()
-            .try_into()
-            .expect("initial_stream_window_size must fit in u32");
-
         let mut tonic_endpoints = Vec::with_capacity(1);
         #[allow(clippy::single_element_loop)]
         for endpoint_str in [config.endpoint.clone()] {
@@ -729,10 +722,11 @@ impl FumaroleClient {
                 })?
                 .tcp_nodelay(true)
                 .connect_timeout(DEFAULT_CONNECTION_TIMEOUT)
-                .tcp_keepalive(Some(DEFAULT_KEEPALIVE_INTERVAL))
-                .initial_connection_window_size(connection_window_size)
-                .initial_stream_window_size(stream_window_size)
-                .http2_adaptive_window(true);
+                .tcp_keepalive(Some(DEFAULT_KEEPALIVE))
+                .tcp_keepalive_interval(Some(DEFAULT_TCP_KEEPALIVE_INTERVAL))
+                .http2_adaptive_window(true)
+                .http2_keep_alive_interval(DEFAULT_KEEPALIVE)
+                .keep_alive_while_idle(true);
             tonic_endpoints.push(endpoints);
         }
 
@@ -915,8 +909,7 @@ impl FumaroleClient {
         let sm = FumaroleSM::new(*last_committed_offset, config.slot_memory_retention);
 
         let (dm_tx, dm_rx) = mpsc::channel(100);
-        let total_shard_downloaders = config.num_data_plane_tcp_connections.get() as usize
-            * config.concurrent_download_limit_per_tcp.get();
+        let total_shard_downloaders = config.num_data_plane_tcp_connections.get() as usize;
         let (download_task_runner_cnc_tx, download_task_runner_cnc_rx) = mpsc::channel(10);
         // Make sure the channel capacity is really low, since the grpc runner already implements its own concurrency control
         let (download_task_queue_tx, download_task_queue_rx) = mpsc::channel(100);

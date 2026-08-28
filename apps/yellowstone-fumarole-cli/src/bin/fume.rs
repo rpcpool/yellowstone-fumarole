@@ -264,7 +264,7 @@ impl FromStr for SubscribeInclude {
                 "slot" => Ok(vec![SubscribeDataType::Slot]),
                 "all" => Ok(vec![
                     SubscribeDataType::Account,
-                    SubscribeDataType::Transaction,
+                    SubscribeDataType::TransactionStatus,
                     SubscribeDataType::Slot,
                     SubscribeDataType::BlockMeta,
                     SubscribeDataType::Entry,
@@ -734,7 +734,6 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
         commit_interval: Duration::from_secs(1),
         num_data_plane_tcp_connections: args.para,
         no_commit: args.no_commit,
-        concurrent_download_limit_per_tcp: args.con,
         ..Default::default()
     };
     let fumarole_subscription = client

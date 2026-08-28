@@ -5,11 +5,11 @@ use {
         proto::{self, ControlCommand, JoinControlPlane},
     },
     futures::{Future, Stream, StreamExt},
-    std::pin::Pin,
+    std::{error::Error as _, pin::Pin},
     tokio::sync::mpsc,
     tokio_stream::wrappers::ReceiverStream,
     tokio_util::sync::PollSender,
-    tonic::{Code, Streaming},
+    tonic::{Code, Streaming, transport},
 };
 
 pub struct GrpcControlPlaneStream {
@@ -66,11 +66,24 @@ impl Stream for GrpcControlPlaneStream {
             std::task::Poll::Ready(Some(Ok(resp))) => std::task::Poll::Ready(Some(Ok(resp))),
             std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
             std::task::Poll::Ready(Some(Err(status))) => {
-                let err = match status.code() {
-                    Code::Unavailable | Code::DataLoss | Code::Internal => {
-                        ControlPlaneStreamError::Disconnected(Box::new(status))
-                    }
-                    _ => ControlPlaneStreamError::ApplicationError(Box::new(status)),
+                let is_recoverable_transport = status
+                    .source()
+                    .is_some_and(|source| source.downcast_ref::<transport::Error>().is_some())
+                    || matches!(
+                        status.code(),
+                        Code::Unavailable
+                            | Code::DataLoss
+                            | Code::Internal
+                            | Code::Unknown
+                            | Code::Aborted
+                            | Code::ResourceExhausted
+                            | Code::Cancelled
+                            | Code::DeadlineExceeded
+                    );
+                let err = if is_recoverable_transport {
+                    ControlPlaneStreamError::Disconnected(Box::new(status))
+                } else {
+                    ControlPlaneStreamError::ApplicationError(Box::new(status))
                 };
                 std::task::Poll::Ready(Some(Err(err)))
             }
