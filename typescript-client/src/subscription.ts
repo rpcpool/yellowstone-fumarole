@@ -51,6 +51,22 @@ export class FumaroleSubscription implements AsyncIterable<FumaroleEvent> {
     await this.#inner.send(Buffer.from(encoded))
   }
 
+  /**
+   * Tears the subscription down deterministically.
+   *
+   * Any in-flight or future call to {@link next} resolves to `null` immediately afterward,
+   * instead of hanging or erroring. Safe to call more than once — useful for reconnect logic
+   * that needs to give up on a stalled subscription without waiting on the server.
+   */
+  close(): void {
+    this.#inner.close()
+  }
+
+  /** Alias for {@link close}. */
+  cancel(): void {
+    this.#inner.cancel()
+  }
+
   async *[Symbol.asyncIterator](): AsyncGenerator<FumaroleEvent, void, unknown> {
     while (true) {
       const event = await this.next()

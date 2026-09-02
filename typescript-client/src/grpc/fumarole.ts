@@ -15,7 +15,7 @@ import {
   SubscribeRequestFilterEntry,
   SubscribeRequestFilterTransactions,
   SubscribeUpdate,
-} from "./geyser";
+} from "./geyser.js";
 
 export const protobufPackage = "fumarole";
 

@@ -25,11 +25,11 @@ export declare class FumaroleClient {
    */
   listConsumerGroups(request: Buffer): Promise<Buffer>
   /**
-   * Returns a protobuf-encoded `ConsumerGroupInfo`.
+   * Returns a protobuf-encoded `ConsumerGroupInfo`, or `None` if the group does not exist.
    *
    * `request` must be a protobuf-encoded `GetConsumerGroupInfoRequest`.
    */
-  getConsumerGroupInfo(request: Buffer): Promise<Buffer>
+  getConsumerGroupInfo(request: Buffer): Promise<Buffer | null>
   /**
    * Returns a protobuf-encoded `DeleteConsumerGroupResponse`.
    *
@@ -55,12 +55,20 @@ export declare class FumaroleClient {
 /**
  * An active Fumarole subscription.
  *
- * Call [`next`] in a loop to receive events, or use `for await` on the
- * async iterator. Send [`geyser.SubscribeRequest`] updates via [`send`] to
- * change filters while the stream is live.
+ * Call [`FumaroleSubscription::next`] in a loop to receive events, or use `for await` on the
+ * async iterator. Send [`geyser::SubscribeRequest`] updates via [`FumaroleSubscription::send`]
+ * to change filters while the stream is live. Call
+ * [`FumaroleSubscription::close`] (or its alias [`FumaroleSubscription::cancel`]) to tear the
+ * subscription down deterministically instead of relying on drop, e.g. as part of reconnect
+ * logic.
  */
 export declare class FumaroleSubscription {
-  /** Returns the next event from the subscription, or `null` when the stream ends. */
+  /**
+   * Returns the next event from the subscription, or `null` when the stream ends.
+   *
+   * Also resolves to `null` (rather than hanging) once [`close`](Self::close) has
+   * been called, even if a call to this method was already in flight at the time.
+   */
   next(): Promise<FumaroleEvent | null>
   /**
    * Update the active subscription filters.
@@ -68,6 +76,16 @@ export declare class FumaroleSubscription {
    * `request` must be a protobuf-encoded `geyser.SubscribeRequest`.
    */
   send(request: Buffer): Promise<void>
+  /**
+   * Tears the subscription down deterministically.
+   *
+   * Stops the background task relaying events from the underlying stream and closes the
+   * event channel, so any in-flight or future call to [`next`](Self::next) resolves to
+   * `null` immediately instead of hanging or erroring. Safe to call more than once.
+   */
+  close(): void
+  /** Alias for [`close`](Self::close). */
+  cancel(): void
 }
 
 /** Connection configuration for a Fumarole client. */
