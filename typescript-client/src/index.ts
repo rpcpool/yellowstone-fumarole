@@ -2,6 +2,8 @@ export { FumaroleClient } from './client.js'
 export { FumaroleSubscription } from './subscription.js'
 export type { FumaroleEvent } from './subscription.js'
 export type { FumaroleConfigOptions, FumaroleSubscribeConfigOptions } from './config.js'
+export { GrpcStatus, getGrpcStatusCode, isGrpcStatus, parseGrpcError } from './errors.js'
+export type { GrpcErrorInfo } from './errors.js'
 
 // Re-export the most commonly needed proto types so callers can use one import.
 export {

@@ -1,6 +1,6 @@
 [package]
 name = "yellowstone-fumarole-napi"
-version = "0.2.0"
+version = "0.3.0"
 edition = { workspace = true }
 authors = { workspace = true }
 homepage = { workspace = true }
@@ -17,6 +17,8 @@ yellowstone-fumarole-client = { path = "../yellowstone-fumarole-client" }
 yellowstone-grpc-proto = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
+tonic = { workspace = true }
 futures = { workspace = true }
 serde_yaml = { workspace = true }
 

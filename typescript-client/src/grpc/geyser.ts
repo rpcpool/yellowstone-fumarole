@@ -6,7 +6,7 @@
 
 /* eslint-disable */
 import { BinaryReader, BinaryWriter } from "@bufbuild/protobuf/wire";
-import { Timestamp } from "./google/protobuf/timestamp";
+import { Timestamp } from "./google/protobuf/timestamp.js";
 import {
   BlockHeight,
   Rewards,
@@ -14,7 +14,7 @@ import {
   TransactionError,
   TransactionStatusMeta,
   UnixTimestamp,
-} from "./solana-storage";
+} from "./solana-storage.js";
 
 export const protobufPackage = "geyser";
 

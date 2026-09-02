@@ -1,5 +1,6 @@
 import { FumaroleClient as NapiClient } from '@triton-one/yellowstone-fumarole-napi'
 import type { FumaroleConfigOptions, FumaroleSubscribeConfigOptions } from './config.js'
+import { GrpcStatus, isGrpcStatus } from './errors.js'
 import { FumaroleSubscription } from './subscription.js'
 import {
   ConsumerGroupInfo,
@@ -134,10 +135,11 @@ export class FumaroleClient {
       const buf = await this.#inner.getConsumerGroupInfo(
         Buffer.from(GetConsumerGroupInfoRequest.encode(req).finish()),
       )
-      return ConsumerGroupInfo.decode(buf)
+      return buf === null ? null : ConsumerGroupInfo.decode(buf)
     } catch (err: unknown) {
-      // Treat NOT_FOUND (code 5) or UNAVAILABLE (code 14) as null
-      if (isGrpcNotFound(err)) return null
+      // NOT_FOUND no longer throws — the call above already resolves to `null` for
+      // it. UNAVAILABLE is treated as null too, for backwards compatibility.
+      if (isGrpcStatus(err, GrpcStatus.UNAVAILABLE)) return null
       throw err
     }
   }
@@ -200,12 +202,4 @@ export class FumaroleClient {
     const buf = await this.#inner.getSlotRange()
     return GetSlotRangeResponse.decode(buf)
   }
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function isGrpcNotFound(err: unknown): boolean {
-  if (err == null || typeof err !== 'object') return false
-  const code = (err as Record<string, unknown>).code
-  return code === 5 || code === 14
 }

@@ -5,6 +5,7 @@ use {
     prost::Message as ProstMessage,
     std::{num::NonZeroU8, sync::Arc, time::Duration},
     tokio::sync::{Mutex, mpsc},
+    tokio_util::sync::CancellationToken,
     yellowstone_fumarole_client::{
         FumaroleClient as RustFumaroleClient, FumaroleEvent as RustFumaroleEvent, FumaroleSink,
         FumaroleSubscribeConfig as RustFumaroleSubscribeConfig,
@@ -71,6 +72,32 @@ fn napi_err(msg: impl std::fmt::Display) -> Error {
     Error::from_reason(msg.to_string())
 }
 
+/// Converts a [`tonic::Status`] into a [`napi::Error`], preserving the gRPC status code.
+///
+/// napi-rs has no way to attach a real gRPC status code to a thrown JS error: [`Error`] only
+/// carries [`napi::Status`]'s fixed set of N-API status kinds, so every RPC failure otherwise
+/// surfaces as a generic `Error { code: 'GenericFailure' }` with no machine-readable code at
+/// all. As a workaround, the numeric gRPC code is embedded in a documented, parseable prefix on
+/// the error message: `[grpc <code> <name>] <details>`, e.g. `[grpc 5 NotFound] consumer group
+/// not found`. The TypeScript wrapper's `getGrpcStatusCode` extracts it from there instead of
+/// string-matching the message body.
+///
+/// # Arguments
+///
+/// * `status` - The [`tonic::Status`] returned by the failed RPC call.
+///
+/// # Returns
+///
+/// A [`napi::Error`] whose message carries the gRPC code prefix described above.
+fn grpc_err(status: tonic::Status) -> Error {
+    napi_err(format!(
+        "[grpc {} {:?}] {}",
+        status.code() as i32,
+        status.code(),
+        status.message()
+    ))
+}
+
 fn to_rust_config(options: FumaroleConfigOptions) -> Result<RustFumaroleConfig> {
     use serde_yaml::Value;
     let mut map = serde_yaml::Mapping::new();
@@ -124,18 +151,25 @@ fn to_rust_subscribe_config(
 
 /// An active Fumarole subscription.
 ///
-/// Call [`next`] in a loop to receive events, or use `for await` on the
-/// async iterator. Send [`geyser.SubscribeRequest`] updates via [`send`] to
-/// change filters while the stream is live.
+/// Call [`FumaroleSubscription::next`] in a loop to receive events, or use `for await` on the
+/// async iterator. Send [`geyser::SubscribeRequest`] updates via [`FumaroleSubscription::send`]
+/// to change filters while the stream is live. Call
+/// [`FumaroleSubscription::close`] (or its alias [`FumaroleSubscription::cancel`]) to tear the
+/// subscription down deterministically instead of relying on drop, e.g. as part of reconnect
+/// logic.
 #[napi]
 pub struct FumaroleSubscription {
     event_rx: Arc<Mutex<mpsc::Receiver<std::result::Result<RawEvent, String>>>>,
     sink: Arc<Mutex<FumaroleSink>>,
+    cancel: CancellationToken,
 }
 
 #[napi]
 impl FumaroleSubscription {
     /// Returns the next event from the subscription, or `null` when the stream ends.
+    ///
+    /// Also resolves to `null` (rather than hanging) once [`close`](Self::close) has
+    /// been called, even if a call to this method was already in flight at the time.
     #[napi]
     pub async fn next(&self) -> Result<Option<FumaroleEvent>> {
         let mut rx = self.event_rx.lock().await;
@@ -161,7 +195,24 @@ impl FumaroleSubscription {
         let request = geyser::SubscribeRequest::decode(request.as_ref())
             .map_err(|e| napi_err(format!("failed to decode SubscribeRequest: {e}")))?;
         let mut guard = self.sink.lock().await;
-        guard.send(request).await.map_err(napi_err)
+        guard.send(request).await.map_err(grpc_err)
+    }
+
+    /// Tears the subscription down deterministically.
+    ///
+    /// Stops the background task relaying events from the underlying stream and closes the
+    /// event channel, so any in-flight or future call to [`next`](Self::next) resolves to
+    /// `null` immediately instead of hanging or erroring. Safe to call more than once.
+    #[napi]
+    pub fn close(&self) -> Result<()> {
+        self.cancel.cancel();
+        Ok(())
+    }
+
+    /// Alias for [`close`](Self::close).
+    #[napi]
+    pub fn cancel(&self) -> Result<()> {
+        self.close()
     }
 }
 
@@ -190,7 +241,7 @@ impl FumaroleClient {
     /// Returns the service version as a protobuf-encoded `VersionResponse`.
     #[napi]
     pub async fn version(&self) -> Result<Buffer> {
-        let response = self.inner.lock().await.version().await.map_err(napi_err)?;
+        let response = self.inner.lock().await.version().await.map_err(grpc_err)?;
         Ok(Buffer::from(response.encode_to_vec()))
     }
 
@@ -227,15 +278,25 @@ impl FumaroleClient {
             .await
             .subscribe_with_config(subscriber_name, subscribe_request, rust_config)
             .await
-            .map_err(napi_err)?;
+            .map_err(grpc_err)?;
 
         let (sink, stream) = subscription.split();
         let (event_tx, event_rx) = mpsc::channel::<std::result::Result<RawEvent, String>>(256);
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
 
         tokio::spawn(async move {
             use futures::StreamExt as _;
             let mut stream = std::pin::pin!(stream);
-            while let Some(result) = stream.next().await {
+            loop {
+                let result = tokio::select! {
+                    biased;
+                    () = task_cancel.cancelled() => break,
+                    result = stream.next() => match result {
+                        Some(result) => result,
+                        None => break,
+                    },
+                };
                 let raw = match result {
                     Ok(RustFumaroleEvent::Data { slot, update }) => Ok(RawEvent {
                         slot,
@@ -254,11 +315,14 @@ impl FumaroleClient {
                     break;
                 }
             }
+            // Dropping `event_tx` here closes the channel, so any in-flight or future
+            // `FumaroleSubscription::next` call resolves to `None` instead of hanging.
         });
 
         Ok(FumaroleSubscription {
             event_rx: Arc::new(Mutex::new(event_rx)),
             sink: Arc::new(Mutex::new(sink)),
+            cancel,
         })
     }
 
@@ -275,27 +339,23 @@ impl FumaroleClient {
             .await
             .list_consumer_groups(req)
             .await
-            .map_err(napi_err)?
+            .map_err(grpc_err)?
             .into_inner();
         Ok(Buffer::from(response.encode_to_vec()))
     }
 
-    /// Returns a protobuf-encoded `ConsumerGroupInfo`.
+    /// Returns a protobuf-encoded `ConsumerGroupInfo`, or `None` if the group does not exist.
     ///
     /// `request` must be a protobuf-encoded `GetConsumerGroupInfoRequest`.
     #[napi]
-    pub async fn get_consumer_group_info(&self, request: Buffer) -> Result<Buffer> {
+    pub async fn get_consumer_group_info(&self, request: Buffer) -> Result<Option<Buffer>> {
         let req = fumarole_proto::GetConsumerGroupInfoRequest::decode(request.as_ref())
             .map_err(|e| napi_err(format!("failed to decode request: {e}")))?;
-        let response = self
-            .inner
-            .lock()
-            .await
-            .get_consumer_group_info(req)
-            .await
-            .map_err(napi_err)?
-            .into_inner();
-        Ok(Buffer::from(response.encode_to_vec()))
+        match self.inner.lock().await.get_consumer_group_info(req).await {
+            Ok(response) => Ok(Some(Buffer::from(response.into_inner().encode_to_vec()))),
+            Err(status) if status.code() == tonic::Code::NotFound => Ok(None),
+            Err(status) => Err(grpc_err(status)),
+        }
     }
 
     /// Returns a protobuf-encoded `DeleteConsumerGroupResponse`.
@@ -311,7 +371,7 @@ impl FumaroleClient {
             .await
             .delete_consumer_group(req)
             .await
-            .map_err(napi_err)?
+            .map_err(grpc_err)?
             .into_inner();
         Ok(Buffer::from(response.encode_to_vec()))
     }
@@ -329,7 +389,7 @@ impl FumaroleClient {
             .await
             .create_consumer_group(req)
             .await
-            .map_err(napi_err)?
+            .map_err(grpc_err)?
             .into_inner();
         Ok(Buffer::from(response.encode_to_vec()))
     }
@@ -347,7 +407,7 @@ impl FumaroleClient {
             .await
             .get_chain_tip(req)
             .await
-            .map_err(napi_err)?
+            .map_err(grpc_err)?
             .into_inner();
         Ok(Buffer::from(response.encode_to_vec()))
     }
@@ -361,7 +421,7 @@ impl FumaroleClient {
             .await
             .get_slot_range()
             .await
-            .map_err(napi_err)?
+            .map_err(grpc_err)?
             .into_inner();
         Ok(Buffer::from(response.encode_to_vec()))
     }
