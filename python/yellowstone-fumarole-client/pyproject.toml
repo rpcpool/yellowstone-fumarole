@@ -23,7 +23,7 @@ pytest = "^8.3.4"
 
 [tool.poetry.group.dev.dependencies]
 grpcio-tools = "^1.68.1"
-black = "^24.10.0"
+black = ">=24.10,<27.0"
 pytest-asyncio = "^0.26.0"
 deptry = "^0.23.1"
 python-dotenv = "^1.2.3"
