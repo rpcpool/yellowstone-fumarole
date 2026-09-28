@@ -14,15 +14,29 @@ use {
     yellowstone_grpc_proto::geyser,
 };
 
+///
+/// Events are scoped to a bank, identified by `(slot, blockhash)`: several banks (forks) can exist for the same slot.
+///
+/// `blockhash` is `None` when the fumarole backend does not report it, in which case there is only a single bank
+/// for that slot.
+///
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum FumaroleEvent {
     Data {
         slot: u64,
+        blockhash: Option<Arc<str>>,
         update: geyser::SubscribeUpdate,
     },
-    SlotEnded(u64),
+    /// All data updates of the bank `(slot, blockhash)` have been emitted.
+    SlotEnded {
+        slot: u64,
+        blockhash: Option<Arc<str>>,
+    },
 }
+
+/// Identifies a bank inside stream adapters: `(slot, blockhash)`.
+type BankKey = (u64, Option<Arc<str>>);
 
 /// Sending half of a Fumarole subscription session.
 ///
@@ -224,117 +238,132 @@ struct BufferedSlotState {
 
 #[derive(Default)]
 struct SlotSequentialStreamState {
-    current_slot: Option<u64>,
-    buffered_slot: HashMap<u64, BufferedSlotState>,
-    buffered_slot_order: VecDeque<u64>,
+    current_bank: Option<BankKey>,
+    buffered_bank: HashMap<BankKey, BufferedSlotState>,
+    buffered_bank_order: VecDeque<BankKey>,
     poll_ready: RopeDeque<FumaroleEvent>,
 }
 
+fn slot_ended_event((slot, blockhash): BankKey) -> FumaroleEvent {
+    FumaroleEvent::SlotEnded { slot, blockhash }
+}
+
 impl SlotSequentialStreamState {
-    fn buffer_data(&mut self, slot: u64, update: geyser::SubscribeUpdate) {
-        let state = self.buffered_slot.entry(slot).or_default();
-        if state.updates.is_empty() && !self.buffered_slot_order.contains(&slot) {
-            self.buffered_slot_order.push_back(slot);
+    fn buffer_data(&mut self, bank: BankKey, update: geyser::SubscribeUpdate) {
+        let state = self.buffered_bank.entry(bank.clone()).or_default();
+        if state.updates.is_empty() && !self.buffered_bank_order.contains(&bank) {
+            self.buffered_bank_order.push_back(bank);
         }
         state.updates.push_back(update);
     }
 
-    fn mark_buffered_slot_ended(&mut self, slot: u64) {
-        let state = self.buffered_slot.entry(slot).or_default();
-        if state.updates.is_empty() && !self.buffered_slot_order.contains(&slot) {
-            self.buffered_slot_order.push_back(slot);
+    fn mark_buffered_bank_ended(&mut self, bank: BankKey) {
+        let state = self.buffered_bank.entry(bank.clone()).or_default();
+        if state.updates.is_empty() && !self.buffered_bank_order.contains(&bank) {
+            self.buffered_bank_order.push_back(bank);
         }
         state.ended = true;
     }
 
-    fn flush_next_buffered_slot(&mut self) {
-        while self.current_slot.is_none() {
-            let Some(slot) = self.buffered_slot_order.pop_front() else {
+    fn flush_next_buffered_bank(&mut self) {
+        while self.current_bank.is_none() {
+            let Some(bank) = self.buffered_bank_order.pop_front() else {
                 return;
             };
-            let Some(buffered) = self.buffered_slot.remove(&slot) else {
+            let Some(buffered) = self.buffered_bank.remove(&bank) else {
                 continue;
             };
 
             if buffered.updates.is_empty() {
                 if buffered.ended {
-                    self.poll_ready.push_back(FumaroleEvent::SlotEnded(slot));
+                    self.poll_ready.push_back(slot_ended_event(bank));
                 }
                 continue;
             }
 
+            let (slot, blockhash) = &bank;
             let mut emitted = VecDeque::new();
             for update in buffered.updates {
-                emitted.push_back(FumaroleEvent::Data { slot, update });
+                emitted.push_back(FumaroleEvent::Data {
+                    slot: *slot,
+                    blockhash: blockhash.clone(),
+                    update,
+                });
             }
 
             let ended = buffered.ended;
             self.poll_ready.extend_vecdeque(emitted);
             if ended {
-                self.poll_ready.push_back(FumaroleEvent::SlotEnded(slot));
+                self.poll_ready.push_back(slot_ended_event(bank));
             } else {
-                self.current_slot = Some(slot);
+                self.current_bank = Some(bank);
             }
         }
     }
 
-    fn handle_fumarole_ev_data(&mut self, slot: u64, update: geyser::SubscribeUpdate) {
-        // Slot status and block metadata updates are guaranteed to be emitted after all data updates from the slot,
-        // so we can let them pass through immediately regardless of the currently active slot.
+    fn handle_fumarole_ev_data(&mut self, bank: BankKey, update: geyser::SubscribeUpdate) {
+        let emit = |(slot, blockhash): BankKey, update| FumaroleEvent::Data {
+            slot,
+            blockhash,
+            update,
+        };
+        // Slot status and block metadata updates are guaranteed to be emitted after all data updates from the bank,
+        // so we can let them pass through immediately regardless of the currently active bank.
         if matches!(
             update.update_oneof.as_ref(),
             Some(geyser::subscribe_update::UpdateOneof::Slot(_))
                 | Some(geyser::subscribe_update::UpdateOneof::BlockMeta(_))
         ) {
-            self.poll_ready
-                .push_back(FumaroleEvent::Data { slot, update });
+            self.poll_ready.push_back(emit(bank, update));
             return;
         }
 
-        match self.current_slot {
-            Some(current) if current == slot => {
-                self.poll_ready
-                    .push_back(FumaroleEvent::Data { slot, update });
+        match &self.current_bank {
+            Some(current) if *current == bank => {
+                self.poll_ready.push_back(emit(bank, update));
             }
             Some(_) => {
-                self.buffer_data(slot, update);
+                self.buffer_data(bank, update);
             }
             None => {
-                self.current_slot = Some(slot);
-                self.poll_ready
-                    .push_back(FumaroleEvent::Data { slot, update });
+                self.current_bank = Some(bank.clone());
+                self.poll_ready.push_back(emit(bank, update));
             }
         }
     }
 
-    fn handle_fumarole_ev_slot_ended(&mut self, slot: u64) {
-        if self.current_slot == Some(slot) {
-            self.poll_ready.push_back(FumaroleEvent::SlotEnded(slot));
-            self.current_slot = None;
-            self.flush_next_buffered_slot();
+    fn handle_fumarole_ev_slot_ended(&mut self, bank: BankKey) {
+        if self.current_bank.as_ref() == Some(&bank) {
+            self.poll_ready.push_back(slot_ended_event(bank));
+            self.current_bank = None;
+            self.flush_next_buffered_bank();
             return;
         }
 
-        if self.current_slot.is_none() {
-            if self.buffered_slot.contains_key(&slot) {
-                self.mark_buffered_slot_ended(slot);
-                self.flush_next_buffered_slot();
+        if self.current_bank.is_none() {
+            if self.buffered_bank.contains_key(&bank) {
+                self.mark_buffered_bank_ended(bank);
+                self.flush_next_buffered_bank();
             } else {
-                self.poll_ready.push_back(FumaroleEvent::SlotEnded(slot));
+                self.poll_ready.push_back(slot_ended_event(bank));
             }
             return;
         }
 
-        self.mark_buffered_slot_ended(slot);
+        self.mark_buffered_bank_ended(bank);
     }
 
     fn handle_fumarole_ev(&mut self, event: FumaroleEvent) {
         match event {
-            FumaroleEvent::Data { slot, update } => {
-                self.handle_fumarole_ev_data(slot, update);
+            FumaroleEvent::Data {
+                slot,
+                blockhash,
+                update,
+            } => {
+                self.handle_fumarole_ev_data((slot, blockhash), update);
             }
-            FumaroleEvent::SlotEnded(slot) => {
-                self.handle_fumarole_ev_slot_ended(slot);
+            FumaroleEvent::SlotEnded { slot, blockhash } => {
+                self.handle_fumarole_ev_slot_ended((slot, blockhash));
             }
         }
     }
@@ -351,6 +380,9 @@ impl SlotSequentialStreamState {
 /// A streams that yeild [`FumaroleEvent`] in slot order, meaning that while a slot is active, only events from that
 /// slot will be yielded, and once the slot ends, events from the next slot will be yielded, and so on. So while a slot
 /// has not ended, event's from that slot won't be interleaved with events from other slots.
+///
+/// "Slot" here means a bank `(slot, blockhash)`: two forks of the same slot are treated as distinct and are never
+/// interleaved either.
 ///
 /// This is usefulfor consumers that want to process events in slot order and don't care about processing events from
 /// multiple slots concurrently.
@@ -436,10 +468,14 @@ impl TryFrom<FumaroleRuntimeEvent> for FumaroleEvent {
     fn try_from(ev: FumaroleRuntimeEvent) -> Result<Self, Self::Error> {
         match ev {
             FumaroleRuntimeEvent::Data(data) => Ok(FumaroleEvent::Data {
-                slot: data.slot,
+                slot: data.bank_id.slot,
+                blockhash: data.bank_id.blockhash,
                 update: data.update,
             }),
-            FumaroleRuntimeEvent::SlotEnded(slot) => Ok(FumaroleEvent::SlotEnded(slot)),
+            FumaroleRuntimeEvent::SlotEnded(bank_id) => Ok(FumaroleEvent::SlotEnded {
+                slot: bank_id.slot,
+                blockhash: bank_id.blockhash,
+            }),
             other => Err(other),
         }
     }
@@ -507,6 +543,8 @@ pub enum FumaroleBlockStreamEvent {
 #[derive(Debug)]
 pub struct FumaroleBlockEvent {
     pub slot: u64,
+    /// `None` when the backend does not report blockhash, see [`FumaroleEvent`].
+    pub blockhash: Option<Arc<str>>,
     updates: Vec<geyser::SubscribeUpdate>,
 }
 
@@ -624,54 +662,66 @@ impl SlotStatusUpdateLense {
 #[derive(Debug)]
 pub struct FumaroleSlotStatusEvent {
     pub slot: u64,
+    /// `None` when the backend does not report blockhash, or for dead slots.
+    pub blockhash: Option<Arc<str>>,
     pub lense: SlotStatusUpdateLense,
 }
 
 #[derive(Default)]
 struct BlockStreamState {
-    buffered_block_updates: HashMap<u64, VecDeque<geyser::SubscribeUpdate>>,
+    buffered_block_updates: HashMap<BankKey, VecDeque<geyser::SubscribeUpdate>>,
     poll_ready: VecDeque<FumaroleBlockStreamEvent>,
 }
 
 impl BlockStreamState {
-    fn handle_fumarole_ev_data(&mut self, slot: u64, update: geyser::SubscribeUpdate) {
+    fn handle_fumarole_ev_data(&mut self, bank: BankKey, update: geyser::SubscribeUpdate) {
         match update.update_oneof.as_ref() {
             Some(geyser::subscribe_update::UpdateOneof::Slot(_)) => {
+                let (slot, blockhash) = bank;
                 self.poll_ready
                     .push_back(FumaroleBlockStreamEvent::SlotStatus(
                         FumaroleSlotStatusEvent {
                             slot,
+                            blockhash,
                             lense: unsafe { SlotStatusUpdateLense::new_unchecked(update) },
                         },
                     ));
             }
             _ => {
                 self.buffered_block_updates
-                    .entry(slot)
+                    .entry(bank)
                     .or_default()
                     .push_back(update);
             }
         }
     }
 
-    fn handle_fumarole_ev_slot_ended(&mut self, slot: u64) {
+    fn handle_fumarole_ev_slot_ended(&mut self, bank: BankKey) {
         let updates = self
             .buffered_block_updates
-            .remove(&slot)
+            .remove(&bank)
             .unwrap_or_default()
             .into_iter()
             .collect();
+        let (slot, blockhash) = bank;
         self.poll_ready
             .push_back(FumaroleBlockStreamEvent::Block(FumaroleBlockEvent {
                 slot,
+                blockhash,
                 updates,
             }));
     }
 
     fn handle_fumarole_ev(&mut self, event: FumaroleEvent) {
         match event {
-            FumaroleEvent::Data { slot, update } => self.handle_fumarole_ev_data(slot, update),
-            FumaroleEvent::SlotEnded(slot) => self.handle_fumarole_ev_slot_ended(slot),
+            FumaroleEvent::Data {
+                slot,
+                blockhash,
+                update,
+            } => self.handle_fumarole_ev_data((slot, blockhash), update),
+            FumaroleEvent::SlotEnded { slot, blockhash } => {
+                self.handle_fumarole_ev_slot_ended((slot, blockhash))
+            }
         }
     }
 
@@ -696,9 +746,9 @@ impl BlockStream {
 
 /// Stream adapter that groups payload updates into slot-scoped blocks.
 ///
-/// The adapter buffers regular data updates by slot (concurrently across slots).
-/// When [`FumaroleEvent::SlotEnded(slot)`] arrives, the buffered payload updates
-/// for that slot are emitted as [`FumaroleBlockStreamEvent::Block`].
+/// The adapter buffers regular data updates by bank `(slot, blockhash)` (concurrently across banks).
+/// When [`FumaroleEvent::SlotEnded`] arrives, the buffered payload updates
+/// for that bank are emitted as [`FumaroleBlockStreamEvent::Block`].
 ///
 /// `Slot` status and `BlockMeta` updates are surfaced immediately as
 /// [`FumaroleBlockStreamEvent::SlotStatus`] and
@@ -796,10 +846,10 @@ impl Stream for DragonsmouthLike {
     ) -> std::task::Poll<Option<Self::Item>> {
         loop {
             match std::pin::Pin::new(&mut self.inner).poll_next(cx) {
-                std::task::Poll::Ready(Some(Ok(FumaroleEvent::Data { slot: _, update }))) => {
+                std::task::Poll::Ready(Some(Ok(FumaroleEvent::Data { update, .. }))) => {
                     return std::task::Poll::Ready(Some(Ok(update)));
                 }
-                std::task::Poll::Ready(Some(Ok(FumaroleEvent::SlotEnded(_)))) => {
+                std::task::Poll::Ready(Some(Ok(FumaroleEvent::SlotEnded { .. }))) => {
                     continue;
                 }
                 std::task::Poll::Ready(Some(Err(err))) => {
@@ -816,7 +866,7 @@ impl Stream for DragonsmouthLike {
 mod tests {
     use {
         super::*,
-        crate::core::runtime::FumaroleRuntimeDataEvent,
+        crate::core::{runtime::FumaroleRuntimeDataEvent, state_machine::FumeBankId},
         futures::{StreamExt, pin_mut},
         tokio::sync::mpsc,
         yellowstone_grpc_proto::geyser::{
@@ -857,35 +907,39 @@ mod tests {
     async fn slot_sequential_keeps_slot_events_grouped_until_slot_end() {
         let (tx, rx) = mpsc::channel(16);
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 2,
+            bank_id: FumeBankId::new(2, None),
             update: mk_entry_update(2, 1),
         })))
         .await
         .expect("send data slot 2");
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 1,
+            bank_id: FumeBankId::new(1, None),
             update: mk_entry_update(1, 1),
         })))
         .await
         .expect("send data slot 1");
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 2,
+            bank_id: FumeBankId::new(2, None),
             update: mk_entry_update(2, 2),
         })))
         .await
         .expect("send second data slot 2");
-        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(2)))
-            .await
-            .expect("send slot ended 2");
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(FumeBankId::new(
+            2, None,
+        ))))
+        .await
+        .expect("send slot ended 2");
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 1,
+            bank_id: FumeBankId::new(1, None),
             update: mk_entry_update(1, 2),
         })))
         .await
         .expect("send second data slot 1");
-        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(1)))
-            .await
-            .expect("send slot ended 1");
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(FumeBankId::new(
+            1, None,
+        ))))
+        .await
+        .expect("send slot ended 1");
         drop(tx);
 
         let stream = FumaroleStream::new(Default::default(), rx, true).slot_sequential();
@@ -895,7 +949,7 @@ mod tests {
         while let Some(item) = stream.next().await {
             match item.expect("stream should yield ok") {
                 FumaroleEvent::Data { slot, .. } => got.push(format!("d{slot}")),
-                FumaroleEvent::SlotEnded(slot) => got.push(format!("e{slot}")),
+                FumaroleEvent::SlotEnded { slot, .. } => got.push(format!("e{slot}")),
             }
         }
 
@@ -906,23 +960,27 @@ mod tests {
     async fn slot_sequential_buffers_other_slot_end_until_turn() {
         let (tx, rx) = mpsc::channel(16);
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 2,
+            bank_id: FumeBankId::new(2, None),
             update: mk_entry_update(2, 1),
         })))
         .await
         .expect("send data slot 2");
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 1,
+            bank_id: FumeBankId::new(1, None),
             update: mk_entry_update(1, 1),
         })))
         .await
         .expect("send data slot 1");
-        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(1)))
-            .await
-            .expect("send slot ended 1 while slot 2 active");
-        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(2)))
-            .await
-            .expect("send slot ended 2");
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(FumeBankId::new(
+            1, None,
+        ))))
+        .await
+        .expect("send slot ended 1 while slot 2 active");
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(FumeBankId::new(
+            2, None,
+        ))))
+        .await
+        .expect("send slot ended 2");
         drop(tx);
 
         let stream = FumaroleStream::new(Default::default(), rx, true).slot_sequential();
@@ -932,7 +990,7 @@ mod tests {
         while let Some(item) = stream.next().await {
             match item.expect("stream should yield ok") {
                 FumaroleEvent::Data { slot, .. } => got.push(format!("d{slot}")),
-                FumaroleEvent::SlotEnded(slot) => got.push(format!("e{slot}")),
+                FumaroleEvent::SlotEnded { slot, .. } => got.push(format!("e{slot}")),
             }
         }
 
@@ -943,25 +1001,25 @@ mod tests {
     async fn slot_sequential_passes_through_slot_and_block_meta_updates() {
         let (tx, rx) = mpsc::channel(16);
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 2,
+            bank_id: FumeBankId::new(2, None),
             update: mk_entry_update(2, 1),
         })))
         .await
         .expect("send data slot 2");
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 1,
+            bank_id: FumeBankId::new(1, None),
             update: mk_entry_update(1, 1),
         })))
         .await
         .expect("send data slot 1");
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 99,
+            bank_id: FumeBankId::new(99, None),
             update: mk_slot_update(99),
         })))
         .await
         .expect("send slot status update");
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 100,
+            bank_id: FumeBankId::new(100, None),
             update: SubscribeUpdate {
                 filters: vec![],
                 created_at: None,
@@ -970,12 +1028,16 @@ mod tests {
         })))
         .await
         .expect("send block meta update");
-        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(2)))
-            .await
-            .expect("send slot ended 2");
-        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(1)))
-            .await
-            .expect("send slot ended 1");
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(FumeBankId::new(
+            2, None,
+        ))))
+        .await
+        .expect("send slot ended 2");
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(FumeBankId::new(
+            1, None,
+        ))))
+        .await
+        .expect("send slot ended 1");
         drop(tx);
 
         let stream = FumaroleStream::new(Default::default(), rx, true).slot_sequential();
@@ -985,7 +1047,7 @@ mod tests {
         while let Some(item) = stream.next().await {
             match item.expect("stream should yield ok") {
                 FumaroleEvent::Data { slot, .. } => got.push(format!("d{slot}")),
-                FumaroleEvent::SlotEnded(slot) => got.push(format!("e{slot}")),
+                FumaroleEvent::SlotEnded { slot, .. } => got.push(format!("e{slot}")),
             }
         }
 
@@ -996,29 +1058,33 @@ mod tests {
     async fn block_stream_buffers_by_slot_and_emits_block_on_slot_end() {
         let (tx, rx) = mpsc::channel(16);
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 2,
+            bank_id: FumeBankId::new(2, None),
             update: mk_entry_update(2, 1),
         })))
         .await
         .expect("send entry slot 2");
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 1,
+            bank_id: FumeBankId::new(1, None),
             update: mk_entry_update(1, 1),
         })))
         .await
         .expect("send entry slot 1");
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 2,
+            bank_id: FumeBankId::new(2, None),
             update: mk_entry_update(2, 2),
         })))
         .await
         .expect("send second entry slot 2");
-        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(2)))
-            .await
-            .expect("send slot ended 2");
-        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(1)))
-            .await
-            .expect("send slot ended 1");
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(FumeBankId::new(
+            2, None,
+        ))))
+        .await
+        .expect("send slot ended 2");
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(FumeBankId::new(
+            1, None,
+        ))))
+        .await
+        .expect("send slot ended 1");
         drop(tx);
 
         let stream = FumaroleStream::new(Default::default(), rx, true).block_stream();
@@ -1027,7 +1093,7 @@ mod tests {
         let mut got = Vec::new();
         while let Some(item) = stream.next().await {
             match item.expect("block stream should yield ok") {
-                FumaroleBlockStreamEvent::Block(FumaroleBlockEvent { slot, updates }) => {
+                FumaroleBlockStreamEvent::Block(FumaroleBlockEvent { slot, updates, .. }) => {
                     got.push(format!("b{slot}:{}", updates.len()))
                 }
                 FumaroleBlockStreamEvent::SlotStatus(FumaroleSlotStatusEvent { slot, .. }) => {
@@ -1043,19 +1109,19 @@ mod tests {
     async fn block_stream_passes_through_slot_status_and_block_meta() {
         let (tx, rx) = mpsc::channel(16);
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 2,
+            bank_id: FumeBankId::new(2, None),
             update: mk_entry_update(2, 1),
         })))
         .await
         .expect("send entry slot 2");
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 99,
+            bank_id: FumeBankId::new(99, None),
             update: mk_slot_update(99),
         })))
         .await
         .expect("send slot status");
         tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 100,
+            bank_id: FumeBankId::new(100, None),
             update: SubscribeUpdate {
                 filters: vec![],
                 created_at: None,
@@ -1064,9 +1130,11 @@ mod tests {
         })))
         .await
         .expect("send block meta");
-        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(2)))
-            .await
-            .expect("send slot ended 2");
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(FumeBankId::new(
+            2, None,
+        ))))
+        .await
+        .expect("send slot ended 2");
         drop(tx);
 
         let stream = FumaroleStream::new(Default::default(), rx, true).block_stream();
@@ -1075,7 +1143,7 @@ mod tests {
         let mut got = Vec::new();
         while let Some(item) = stream.next().await {
             match item.expect("block stream should yield ok") {
-                FumaroleBlockStreamEvent::Block(FumaroleBlockEvent { slot, updates }) => {
+                FumaroleBlockStreamEvent::Block(FumaroleBlockEvent { slot, updates, .. }) => {
                     got.push(format!("b{slot}:{}", updates.len()))
                 }
                 FumaroleBlockStreamEvent::SlotStatus(FumaroleSlotStatusEvent { slot, .. }) => {
@@ -1085,5 +1153,82 @@ mod tests {
         }
 
         assert_eq!(got, vec!["s99", "b2:1"]);
+    }
+
+    fn fork_label(slot: u64, blockhash: &Option<Arc<str>>) -> String {
+        format!("{slot}{}", blockhash.as_deref().unwrap_or(""))
+    }
+
+    async fn send_fork_events(
+        tx: &mpsc::Sender<Result<FumaroleRuntimeEvent, FumaroleSubscribeError>>,
+    ) {
+        let fork_a = FumeBankId::new(5, Some("A"));
+        let fork_b = FumeBankId::new(5, Some("B"));
+        for (bank_id, index) in [(&fork_a, 1), (&fork_b, 1), (&fork_a, 2)] {
+            tx.send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
+                bank_id: bank_id.clone(),
+                update: mk_entry_update(5, index),
+            })))
+            .await
+            .expect("send fork data");
+        }
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(fork_b)))
+            .await
+            .expect("send fork b ended");
+        tx.send(Ok(FumaroleRuntimeEvent::SlotEnded(fork_a)))
+            .await
+            .expect("send fork a ended");
+    }
+
+    #[tokio::test]
+    async fn slot_sequential_does_not_interleave_forks_of_the_same_slot() {
+        let (tx, rx) = mpsc::channel(16);
+        send_fork_events(&tx).await;
+        drop(tx);
+
+        let stream = FumaroleStream::new(Default::default(), rx, true).slot_sequential();
+        pin_mut!(stream);
+
+        let mut got = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item.expect("stream should yield ok") {
+                FumaroleEvent::Data {
+                    slot, blockhash, ..
+                } => got.push(format!("d{}", fork_label(slot, &blockhash))),
+                FumaroleEvent::SlotEnded { slot, blockhash } => {
+                    got.push(format!("e{}", fork_label(slot, &blockhash)))
+                }
+            }
+        }
+
+        assert_eq!(got, vec!["d5A", "d5A", "e5A", "d5B", "e5B"]);
+    }
+
+    #[tokio::test]
+    async fn block_stream_emits_one_block_per_fork() {
+        let (tx, rx) = mpsc::channel(16);
+        send_fork_events(&tx).await;
+        drop(tx);
+
+        let stream = FumaroleStream::new(Default::default(), rx, true).block_stream();
+        pin_mut!(stream);
+
+        let mut got = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item.expect("block stream should yield ok") {
+                FumaroleBlockStreamEvent::Block(FumaroleBlockEvent {
+                    slot,
+                    blockhash,
+                    updates,
+                }) => got.push(format!(
+                    "b{}:{}",
+                    fork_label(slot, &blockhash),
+                    updates.len()
+                )),
+                FumaroleBlockStreamEvent::SlotStatus(_) => {}
+            }
+        }
+
+        assert_eq!(got, vec!["b5B:1", "b5A:2"]);
     }
 }

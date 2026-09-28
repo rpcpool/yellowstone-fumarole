@@ -99,6 +99,13 @@ export interface FumaroleConfigOptions {
 /** A single event yielded by a [`FumaroleSubscription`]. */
 export interface FumaroleEvent {
   slot: bigint
+  /**
+   * Blockhash of the bank this event belongs to. Several banks (forks) can exist for the
+   * same slot, so `(slot, blockhash)` identifies a block.
+   * Absent when the fumarole backend does not report it, in which case there is only a
+   * single bank for that slot.
+   */
+  blockhash?: string
   /** `true` when the slot has finished streaming (no more data for this slot). */
   isSlotEnded: boolean
   /**

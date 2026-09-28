@@ -4,7 +4,8 @@ use {
     solana_clock::Slot,
     std::{
         cmp::Reverse,
-        collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque, hash_map},
+        collections::{BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque, hash_map},
+        sync::Arc,
     },
     yellowstone_grpc_proto::geyser::{self, CommitmentLevel},
 };
@@ -23,9 +24,34 @@ pub(crate) type FumeSessionSequence = u64;
 
 pub(crate) const DEFAULT_SLOT_MEMORY_RETENTION: usize = 10000;
 
+///
+/// Identifies a bank (a block produced for a given slot).
+///
+/// Multiple banks can exist for the same slot (forks), so the state machine tracks
+/// downloads and commitment progression per bank rather than per slot.
+///
+/// When the backend does not provide a blockhash, we assume there is only a single
+/// bank for that slot, so the identity falls back to the slot alone.
+///
+/// Ordering is by slot first, which lets [`FumaroleSM::gc`] evict the oldest banks first.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct FumeBankId {
+    pub slot: Slot,
+    pub blockhash: Option<Arc<str>>,
+}
+
+impl FumeBankId {
+    pub fn new(slot: Slot, blockhash: Option<&str>) -> Self {
+        Self {
+            slot,
+            blockhash: blockhash.map(Arc::from),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FumeDownloadRequest {
-    pub slot: Slot,
+    pub bank_id: FumeBankId,
     pub blockchain_id: FumeBlockchainId,
     pub block_uid: FumeBlockUID,
     #[allow(dead_code)]
@@ -40,7 +66,7 @@ pub(crate) struct FumeSlotStatus {
     pub session_sequence: FumeSessionSequence,
     #[allow(dead_code)]
     pub offset: FumeOffset,
-    pub slot: Slot,
+    pub bank_id: FumeBankId,
     pub parent_slot: Option<Slot>,
     pub commitment_level: geyser::CommitmentLevel,
     pub dead_error: Option<String>,
@@ -108,8 +134,8 @@ impl SlotDownloadProgress {
 ///
 /// **Note:**  
 /// Once [`pop_slot_to_download`] returns a [`FumeDownloadRequest`], the state machine considers the download
-/// in progress. The runtime must report progress using [`FumaroleSM::make_slot_download_progress`] by
-/// specifying the slot number and shard number that has been downloaded.
+/// in progress. The runtime must report progress using [`FumaroleSM::make_bank_download_progress`] by
+/// specifying the bank and shard number that has been downloaded.
 ///
 /// As of now, the Fumarole backend does **not** support block-sharding.  
 /// Therefore, you can assume [`FumeDownloadRequest::num_shards`] will always be `1`.
@@ -117,7 +143,7 @@ impl SlotDownloadProgress {
 ///
 /// ## Type of Work: Slot Statuses
 ///
-/// Once a slot download is complete (via [`make_slot_download_progress`]), the state machine may release
+/// Once a bank download is complete (via [`make_bank_download_progress`]), the state machine may release
 /// corresponding slot statuses that were waiting on that download. These can be retrieved using
 /// [`FumaroleSM::pop_next_slot_status`].
 ///
@@ -139,25 +165,30 @@ impl SlotDownloadProgress {
 /// 2. Check for any slots to download.
 ///     - If so, call [`FumaroleSM::pop_slot_to_download`] and handle the download.
 /// 3. Check for completed downloads from the previous iteration.
-///     - If any, report progress with [`FumaroleSM::make_slot_download_progress`].
+///     - If any, report progress with [`FumaroleSM::make_bank_download_progress`].
 /// 4. Check for any available slot statuses to consume.
 ///     - Use [`FumaroleSM::pop_next_slot_status`] to retrieve them.
 ///
 /// [Safety]
 ///
-/// The state-machine manage deduping of slot-status, so is slot-download request.
-/// You will never get [`FumeDownloadRequest`] twice for the same slot, even if multiple slot status happens for that given slot.
+/// The state-machine manage deduping of slot-status, so is bank-download request.
+/// Downloads and commitment levels are tracked per bank ([`FumeBankId`]), not per slot:
+/// - You will never get [`FumeDownloadRequest`] twice for the same bank, even if multiple slot status happens for that given bank.
+/// - Two different banks for the same slot (forks) are each downloaded once, and each get their own slot statuses.
+/// - Dead slots are never downloaded, their slot status is released right away.
 ///
 pub(crate) struct FumaroleSM {
     /// The last committed offset
     pub last_committed_offset: FumeOffset,
-    slot_commitment_progression: BTreeMap<Slot, SlotCommitmentProgression>,
-    /// As we download and process slot status, we keep track of the progression of each slot here.
-    downloaded_slot: BTreeSet<Slot>,
-    /// Inlfight slot download
-    inflight_slot_shard_download: HashMap<Slot, SlotDownloadProgress>,
-    /// Slot blocked by a slot download (inflight or in queue)
-    blocked_slot_status_update: HashMap<Slot, VecDeque<FumeSlotStatus>>,
+    bank_commitment_progression: HashMap<FumeBankId, SlotCommitmentProgression>,
+    /// As we download and process slot status, we keep track of the progression of each bank here.
+    downloaded_banks: BTreeSet<FumeBankId>,
+    /// Banks we saw a dead slot status for. Those are never downloaded, but still tracked for commitment dedup.
+    dead_banks: BTreeSet<FumeBankId>,
+    /// Inflight bank download
+    inflight_bank_shard_download: HashMap<FumeBankId, SlotDownloadProgress>,
+    /// Slot status blocked by a bank download (inflight or in queue)
+    blocked_slot_status_update: HashMap<FumeBankId, VecDeque<FumeSlotStatus>>,
     /// Slot status queue whose slot have been completely downloaded in the current session.
     slot_status_update_queue: VecDeque<FumeSlotStatus>,
     /// Keeps track of each offset have been processed by the underlying runtime.
@@ -190,9 +221,10 @@ impl FumaroleSM {
     pub fn new(last_committed_offset: FumeOffset, slot_memory_retention: usize) -> Self {
         Self {
             last_committed_offset,
-            slot_commitment_progression: Default::default(),
-            downloaded_slot: Default::default(),
-            inflight_slot_shard_download: Default::default(),
+            bank_commitment_progression: Default::default(),
+            downloaded_banks: Default::default(),
+            dead_banks: Default::default(),
+            inflight_bank_shard_download: Default::default(),
             blocked_slot_status_update: Default::default(),
             slot_status_update_queue: Default::default(),
             processed_offset: Default::default(),
@@ -224,14 +256,22 @@ impl FumaroleSM {
     }
 
     pub fn gc(&mut self) {
-        while self.downloaded_slot.len() > self.slot_memory_retention {
-            let Some(slot) = self.downloaded_slot.pop_first() else {
+        while self.downloaded_banks.len() > self.slot_memory_retention {
+            let Some(bank_id) = self.downloaded_banks.pop_first() else {
                 break;
             };
 
-            self.slot_commitment_progression.remove(&slot);
-            self.inflight_slot_shard_download.remove(&slot);
-            self.blocked_slot_status_update.remove(&slot);
+            self.bank_commitment_progression.remove(&bank_id);
+            self.inflight_bank_shard_download.remove(&bank_id);
+            self.blocked_slot_status_update.remove(&bank_id);
+        }
+        while self.dead_banks.len() > self.slot_memory_retention {
+            let Some(bank_id) = self.dead_banks.pop_first() else {
+                break;
+            };
+            if !self.downloaded_banks.contains(&bank_id) {
+                self.bank_commitment_progression.remove(&bank_id);
+            }
         }
     }
 
@@ -251,24 +291,25 @@ impl FumaroleSM {
 
             self.sequence_to_offset.insert(sequence, event.offset);
 
-            if self.downloaded_slot.contains(&event.slot) {
+            let bank_id = FumeBankId::new(event.slot, event.blockhash.as_deref());
+            if self.downloaded_banks.contains(&bank_id) {
                 let fume_status = FumeSlotStatus {
                     session_sequence: sequence,
                     offset: event.offset,
-                    slot: event.slot,
+                    bank_id: bank_id.clone(),
                     parent_slot: event.parent_slot,
                     commitment_level: geyser::CommitmentLevel::try_from(event.commitment_level)
                         .expect("invalid commitment level"),
                     dead_error: event.dead_error,
                 };
-                if self.inflight_slot_shard_download.contains_key(&event.slot) {
-                    // This event is blocked by a slot download currently in progress
+                if self.inflight_bank_shard_download.contains_key(&bank_id) {
+                    // This event is blocked by a bank download currently in progress
                     self.blocked_slot_status_update
-                        .entry(event.slot)
+                        .entry(bank_id)
                         .or_default()
                         .push_back(fume_status);
                 } else {
-                    // Fast track this event, since the slot has been downloaded in the current session
+                    // Fast track this event, since the bank has been downloaded in the current session
                     // and we are not waiting for any shard to be downloaded.
                     self.slot_status_update_queue.push_back(fume_status);
                 }
@@ -280,17 +321,17 @@ impl FumaroleSM {
     }
 
     ///
-    /// Update download progression for a given `Slot` download
+    /// Update download progression for a given bank download
     ///
-    pub fn make_slot_download_progress(
+    pub fn make_bank_download_progress(
         &mut self,
-        slot: Slot,
+        bank_id: &FumeBankId,
         shard_idx: Option<FumeShardIdx>,
     ) -> SlotDownloadState {
         let download_progress = self
-            .inflight_slot_shard_download
-            .get_mut(&slot)
-            .expect("slot not in download");
+            .inflight_bank_shard_download
+            .get_mut(bank_id)
+            .expect("bank not in download");
 
         let download_state = if let Some(shard_idx) = shard_idx {
             download_progress.do_progress(shard_idx)
@@ -301,13 +342,15 @@ impl FumaroleSM {
 
         if matches!(download_state, SlotDownloadState::Done) {
             // all shards downloaded
-            self.inflight_slot_shard_download.remove(&slot);
-            self.downloaded_slot.insert(slot);
-            self.slot_commitment_progression.entry(slot).or_default();
+            self.inflight_bank_shard_download.remove(bank_id);
+            self.downloaded_banks.insert(bank_id.clone());
+            self.bank_commitment_progression
+                .entry(bank_id.clone())
+                .or_default();
 
             let blocked_slot_status = self
                 .blocked_slot_status_update
-                .remove(&slot)
+                .remove(bank_id)
                 .unwrap_or_default();
             self.slot_status_update_queue.extend(blocked_slot_status);
         } else {
@@ -319,7 +362,10 @@ impl FumaroleSM {
     pub fn pop_next_slot_status(&mut self) -> Option<FumeSlotStatus> {
         loop {
             let slot_status = self.slot_status_update_queue.pop_front()?;
-            match self.slot_commitment_progression.get_mut(&slot_status.slot) {
+            match self
+                .bank_commitment_progression
+                .get_mut(&slot_status.bank_id)
+            {
                 Some(commitment_history) => {
                     if commitment_history
                         .processed_commitment_levels
@@ -328,8 +374,9 @@ impl FumaroleSM {
                         return Some(slot_status);
                     } else {
                         tracing::debug!(
-                            "Deduped slot status for slot {}, commitment level {:?}, fuamrole offset {:?}",
-                            slot_status.slot,
+                            "Deduped slot status for slot {} (blockhash {:?}), commitment level {:?}, fuamrole offset {:?}",
+                            slot_status.bank_id.slot,
+                            slot_status.bank_id.blockhash,
                             slot_status.commitment_level,
                             slot_status.offset
                         );
@@ -339,22 +386,24 @@ impl FumaroleSM {
                     }
                 }
                 _ => {
-                    // This slot has not been downloaded yet, but still has a status to process
+                    // This bank has not been downloaded yet, but still has a status to process
                     unreachable!("slot status should not be available here");
                 }
             }
         }
     }
 
-    fn make_sure_slot_commitment_progression_exists(
+    fn make_sure_bank_commitment_progression_exists(
         &mut self,
-        slot: Slot,
+        bank_id: &FumeBankId,
     ) -> &mut SlotCommitmentProgression {
-        self.slot_commitment_progression.entry(slot).or_default()
+        self.bank_commitment_progression
+            .entry(bank_id.clone())
+            .or_default()
     }
 
     ///
-    /// Pop next slot status to process
+    /// Pop next bank to download
     ///
     pub fn pop_slot_to_download(
         &mut self,
@@ -374,30 +423,41 @@ impl FumaroleSM {
                 commitment_level,
                 blockchain_shard_id: _,
                 dead_error,
+                blockhash,
             } = blockchain_event;
 
             let event_cl = geyser::CommitmentLevel::try_from(commitment_level)
                 .expect("invalid commitment level");
+            let bank_id = FumeBankId::new(slot, blockhash.as_deref());
 
-            if event_cl < min_commitment {
-                self.slot_status_update_queue.push_back(FumeSlotStatus {
-                    session_sequence,
-                    offset,
-                    slot,
-                    parent_slot,
-                    commitment_level: event_cl,
-                    dead_error,
-                });
-                self.make_sure_slot_commitment_progression_exists(slot);
+            let is_dead = dead_error.is_some();
+            let fume_status = FumeSlotStatus {
+                session_sequence,
+                offset,
+                bank_id: bank_id.clone(),
+                parent_slot,
+                commitment_level: event_cl,
+                dead_error,
+            };
+
+            if is_dead {
+                // Dead slots have no block to download: release the status right away.
+                // If the bank is currently downloading, the status is still released right away.
+                self.make_sure_bank_commitment_progression_exists(&bank_id);
+                self.dead_banks.insert(bank_id);
+                self.slot_status_update_queue.push_back(fume_status);
                 continue;
             }
 
-            if self.downloaded_slot.contains(&slot) {
-                // This slot has been fully downloaded by the runtime
-                self.make_sure_slot_commitment_progression_exists(slot);
-                let Some(progression) = self.slot_commitment_progression.get_mut(&slot) else {
-                    unreachable!("slot status should not be available here");
-                };
+            if event_cl < min_commitment {
+                self.make_sure_bank_commitment_progression_exists(&bank_id);
+                self.slot_status_update_queue.push_back(fume_status);
+                continue;
+            }
+
+            if self.downloaded_banks.contains(&bank_id) {
+                // This bank has been fully downloaded by the runtime
+                let progression = self.make_sure_bank_commitment_progression_exists(&bank_id);
 
                 if progression.processed_commitment_levels.contains(&event_cl) {
                     // We already processed this commitment level
@@ -405,39 +465,27 @@ impl FumaroleSM {
                     continue;
                 }
 
-                // We have a new commitment level for this slot and slot has been downloaded in the current session.
-                self.slot_status_update_queue.push_back(FumeSlotStatus {
-                    session_sequence,
-                    offset,
-                    slot,
-                    parent_slot,
-                    commitment_level: event_cl,
-                    dead_error,
-                });
+                // We have a new commitment level for this bank and bank has been downloaded in the current session.
+                self.slot_status_update_queue.push_back(fume_status);
             } else {
-                // This slot has not been downloaded yet
+                // This bank has not been downloaded yet
                 let blockchain_id: [u8; 16] = blockchain_id
                     .try_into()
                     .expect("blockchain_id must be 16 bytes");
                 let block_uid: [u8; 16] = block_uid.try_into().expect("block_uid must be 16 bytes");
 
-                // We have a new commitment level for this slot and slot has not been downloaded in the current session.
+                // We have a new commitment level for this bank and bank has not been downloaded in the current session.
                 self.blocked_slot_status_update
-                    .entry(slot)
+                    .entry(bank_id.clone())
                     .or_default()
-                    .push_back(FumeSlotStatus {
-                        session_sequence,
-                        offset,
-                        slot,
-                        parent_slot,
-                        commitment_level: event_cl,
-                        dead_error,
-                    });
+                    .push_back(fume_status);
 
-                if let hash_map::Entry::Vacant(e) = self.inflight_slot_shard_download.entry(slot) {
-                    // This slot has not been schedule for download yet
+                if let hash_map::Entry::Vacant(e) =
+                    self.inflight_bank_shard_download.entry(bank_id.clone())
+                {
+                    // This bank has not been schedule for download yet
                     let download_request = FumeDownloadRequest {
-                        slot,
+                        bank_id,
                         blockchain_id,
                         block_uid,
                         num_shards,
@@ -522,6 +570,24 @@ mod tests {
             commitment_level: commitment_level.into(),
             blockchain_shard_id: 0,
             dead_error: None,
+            blockhash: None,
+        }
+    }
+
+    fn bank_event(
+        offset: FumeOffset,
+        slot: Slot,
+        blockhash: &str,
+        commitment_level: CommitmentLevel,
+    ) -> BlockchainEvent {
+        let mut event = random_blockchain_event(offset, slot, commitment_level);
+        event.blockhash = Some(blockhash.to_string());
+        event
+    }
+
+    impl FumaroleSM {
+        fn make_slot_download_progress_for_slot(&mut self, slot: Slot) -> SlotDownloadState {
+            self.make_bank_download_progress(&FumeBankId::new(slot, None), Some(0))
         }
     }
 
@@ -535,17 +601,17 @@ mod tests {
         // Slot status should not be available, since we didn't download it yet.
         let download_req = sm.pop_slot_to_download(None).unwrap();
 
-        assert_eq!(download_req.slot, 1);
+        assert_eq!(download_req.bank_id.slot, 1);
 
         assert!(sm.pop_slot_to_download(None).is_none());
         assert!(sm.pop_next_slot_status().is_none());
 
-        let download_state = sm.make_slot_download_progress(1, Some(0));
+        let download_state = sm.make_slot_download_progress_for_slot(1);
         assert_eq!(download_state, SlotDownloadState::Done);
 
         let status = sm.pop_next_slot_status().unwrap();
 
-        assert_eq!(status.slot, 1);
+        assert_eq!(status.bank_id.slot, 1);
         assert_eq!(status.commitment_level, CommitmentLevel::Processed);
         sm.mark_event_as_processed(status.session_sequence);
 
@@ -559,7 +625,7 @@ mod tests {
         assert!(sm.pop_slot_to_download(None).is_none());
 
         let status = sm.pop_next_slot_status().unwrap();
-        assert_eq!(status.slot, 1);
+        assert_eq!(status.bank_id.slot, 1);
         assert_eq!(status.commitment_level, CommitmentLevel::Confirmed);
         sm.mark_event_as_processed(status.session_sequence);
 
@@ -578,15 +644,15 @@ mod tests {
 
         let download_req = sm.pop_slot_to_download(None).unwrap();
 
-        assert_eq!(download_req.slot, 1);
+        assert_eq!(download_req.bank_id.slot, 1);
 
         assert!(sm.pop_slot_to_download(None).is_none());
 
-        sm.make_slot_download_progress(1, Some(0));
+        sm.make_slot_download_progress_for_slot(1);
 
         let status = sm.pop_next_slot_status().unwrap();
 
-        assert_eq!(status.slot, 1);
+        assert_eq!(status.bank_id.slot, 1);
         assert_eq!(status.commitment_level, CommitmentLevel::Processed);
 
         // Putting the same event back should be ignored
@@ -615,7 +681,313 @@ mod tests {
         // It should not cause the slot status to be available here even if we have a finalized commitment level filtered out before
         let status = sm.pop_next_slot_status().unwrap();
 
-        assert_eq!(status.slot, 1);
+        assert_eq!(status.bank_id.slot, 1);
         assert_eq!(status.commitment_level, CommitmentLevel::Processed);
+    }
+
+    #[test]
+    fn it_should_download_each_fork_of_the_same_slot() {
+        let mut sm = FumaroleSM::new(0, DEFAULT_SLOT_MEMORY_RETENTION);
+
+        sm.queue_blockchain_event(vec![
+            bank_event(1, 10, "hashA", CommitmentLevel::Processed),
+            bank_event(2, 10, "hashB", CommitmentLevel::Processed),
+        ]);
+
+        let req_a = sm.pop_slot_to_download(None).unwrap();
+        let req_b = sm.pop_slot_to_download(None).unwrap();
+        assert!(sm.pop_slot_to_download(None).is_none());
+        assert_eq!(req_a.bank_id, FumeBankId::new(10, Some("hashA")));
+        assert_eq!(req_b.bank_id, FumeBankId::new(10, Some("hashB")));
+
+        assert_eq!(
+            sm.make_bank_download_progress(&req_b.bank_id, Some(0)),
+            SlotDownloadState::Done
+        );
+        let status = sm.pop_next_slot_status().unwrap();
+        assert_eq!(status.bank_id, req_b.bank_id);
+        assert_eq!(status.commitment_level, CommitmentLevel::Processed);
+        // Fork A is still downloading, its status must not leak out.
+        assert!(sm.pop_next_slot_status().is_none());
+
+        sm.make_bank_download_progress(&req_a.bank_id, Some(0));
+        let status = sm.pop_next_slot_status().unwrap();
+        assert_eq!(status.bank_id, req_a.bank_id);
+        // Same commitment level, different bank: must not be deduped.
+        assert_eq!(status.commitment_level, CommitmentLevel::Processed);
+    }
+
+    #[test]
+    fn it_should_not_download_the_same_bank_twice() {
+        let mut sm = FumaroleSM::new(0, DEFAULT_SLOT_MEMORY_RETENTION);
+
+        // Same bank reported twice with a different block uid.
+        sm.queue_blockchain_event(vec![
+            bank_event(1, 10, "hashA", CommitmentLevel::Processed),
+            bank_event(2, 10, "hashA", CommitmentLevel::Confirmed),
+        ]);
+
+        let req = sm.pop_slot_to_download(None).unwrap();
+        assert!(sm.pop_slot_to_download(None).is_none());
+
+        sm.make_bank_download_progress(&req.bank_id, Some(0));
+        let s1 = sm.pop_next_slot_status().unwrap();
+        let s2 = sm.pop_next_slot_status().unwrap();
+        assert_eq!(s1.commitment_level, CommitmentLevel::Processed);
+        assert_eq!(s2.commitment_level, CommitmentLevel::Confirmed);
+        assert!(sm.pop_next_slot_status().is_none());
+
+        // A later commitment level for the same bank is fast tracked without download.
+        sm.queue_blockchain_event(vec![bank_event(3, 10, "hashA", CommitmentLevel::Finalized)]);
+        assert!(sm.pop_slot_to_download(None).is_none());
+        let s3 = sm.pop_next_slot_status().unwrap();
+        assert_eq!(s3.commitment_level, CommitmentLevel::Finalized);
+    }
+
+    #[test]
+    fn it_should_not_download_dead_slot() {
+        let mut sm = FumaroleSM::new(0, DEFAULT_SLOT_MEMORY_RETENTION);
+
+        let mut event = random_blockchain_event(1, 10, CommitmentLevel::Processed);
+        event.dead_error = Some("dead".to_string());
+        sm.queue_blockchain_event(vec![event]);
+
+        assert!(sm.pop_slot_to_download(None).is_none());
+        let status = sm.pop_next_slot_status().unwrap();
+        assert_eq!(status.bank_id.slot, 10);
+        assert_eq!(status.dead_error.as_deref(), Some("dead"));
+        sm.mark_event_as_processed(status.session_sequence);
+        assert_eq!(sm.committable_offset, 1);
+    }
+
+    #[test]
+    fn it_should_fallback_to_slot_when_blockhash_is_missing() {
+        let mut sm = FumaroleSM::new(0, DEFAULT_SLOT_MEMORY_RETENTION);
+
+        // No blockhash: assume a single bank per slot, even with different block uids.
+        sm.queue_blockchain_event(vec![
+            random_blockchain_event(1, 10, CommitmentLevel::Processed),
+            random_blockchain_event(2, 10, CommitmentLevel::Processed),
+        ]);
+
+        let req = sm.pop_slot_to_download(None).unwrap();
+        assert_eq!(req.bank_id, FumeBankId::new(10, None));
+        assert!(sm.pop_slot_to_download(None).is_none());
+
+        sm.make_bank_download_progress(&req.bank_id, Some(0));
+        let status = sm.pop_next_slot_status().unwrap();
+        sm.mark_event_as_processed(status.session_sequence);
+        // Second processed status for the same bank is deduped.
+        assert!(sm.pop_next_slot_status().is_none());
+        assert_eq!(sm.committable_offset, 2);
+    }
+
+    fn drain_statuses(sm: &mut FumaroleSM) -> Vec<FumeSlotStatus> {
+        let mut out = Vec::new();
+        while let Some(status) = sm.pop_next_slot_status() {
+            sm.mark_event_as_processed(status.session_sequence);
+            out.push(status);
+        }
+        out
+    }
+
+    #[test]
+    fn many_forks_of_the_same_slot_are_each_downloaded_once() {
+        const NUM_FORKS: usize = 5;
+        const SLOT: Slot = 100;
+        let mut sm = FumaroleSM::new(0, DEFAULT_SLOT_MEMORY_RETENTION);
+        let forks = (0..NUM_FORKS)
+            .map(|i| format!("fork{i}"))
+            .collect::<Vec<_>>();
+
+        // Interleave events across forks: Processed, a duplicate Processed, then Confirmed.
+        let mut offset = 0;
+        let mut events = Vec::new();
+        for commitment in [
+            CommitmentLevel::Processed,
+            CommitmentLevel::Processed,
+            CommitmentLevel::Confirmed,
+        ] {
+            for fork in &forks {
+                offset += 1;
+                events.push(bank_event(offset, SLOT, fork, commitment));
+            }
+        }
+        let last_offset = offset;
+        sm.queue_blockchain_event(events);
+
+        let mut requests = Vec::new();
+        while let Some(req) = sm.pop_slot_to_download(None) {
+            requests.push(req);
+        }
+        assert_eq!(requests.len(), NUM_FORKS, "one download per fork");
+        let requested = requests
+            .iter()
+            .map(|req| req.bank_id.clone())
+            .collect::<HashSet<_>>();
+        let expected = forks
+            .iter()
+            .map(|fork| FumeBankId::new(SLOT, Some(fork)))
+            .collect::<HashSet<_>>();
+        assert_eq!(requested, expected);
+
+        // Nothing is released until the matching fork is downloaded.
+        assert!(sm.pop_next_slot_status().is_none());
+
+        // Complete forks in reverse order: each completion only releases its own statuses.
+        for req in requests.iter().rev() {
+            assert_eq!(
+                sm.make_bank_download_progress(&req.bank_id, Some(0)),
+                SlotDownloadState::Done
+            );
+            let statuses = drain_statuses(&mut sm);
+            assert!(statuses.iter().all(|s| s.bank_id == req.bank_id));
+            let levels = statuses
+                .iter()
+                .map(|s| s.commitment_level)
+                .collect::<Vec<_>>();
+            // The duplicate Processed is deduped per fork, not across forks.
+            assert_eq!(
+                levels,
+                vec![CommitmentLevel::Processed, CommitmentLevel::Confirmed]
+            );
+        }
+        assert_eq!(sm.committable_offset, last_offset);
+
+        // Later commitment levels are fast tracked per fork, no new download.
+        let finalized = forks
+            .iter()
+            .enumerate()
+            .map(|(i, fork)| {
+                bank_event(
+                    last_offset + 1 + i as FumeOffset,
+                    SLOT,
+                    fork,
+                    CommitmentLevel::Finalized,
+                )
+            })
+            .collect::<Vec<_>>();
+        sm.queue_blockchain_event(finalized);
+        assert!(sm.pop_slot_to_download(None).is_none());
+        let statuses = drain_statuses(&mut sm);
+        assert_eq!(statuses.len(), NUM_FORKS);
+        assert!(
+            statuses
+                .iter()
+                .all(|s| s.commitment_level == CommitmentLevel::Finalized)
+        );
+        assert_eq!(
+            statuses
+                .iter()
+                .map(|s| s.bank_id.clone())
+                .collect::<HashSet<_>>(),
+            expected
+        );
+        assert_eq!(sm.committable_offset, last_offset + NUM_FORKS as FumeOffset);
+    }
+
+    #[test]
+    fn forks_with_multiple_shards_progress_independently() {
+        let mut sm = FumaroleSM::new(0, DEFAULT_SLOT_MEMORY_RETENTION);
+        let mut fork_a = bank_event(1, 10, "A", CommitmentLevel::Processed);
+        let mut fork_b = bank_event(2, 10, "B", CommitmentLevel::Processed);
+        fork_a.num_shards = 3;
+        fork_b.num_shards = 2;
+        sm.queue_blockchain_event(vec![fork_a, fork_b]);
+
+        let req_a = sm.pop_slot_to_download(None).unwrap();
+        let req_b = sm.pop_slot_to_download(None).unwrap();
+        assert_eq!(req_a.num_shards, 3);
+        assert_eq!(req_b.num_shards, 2);
+
+        // Same shard indices on both forks must not complete the other fork.
+        assert_eq!(
+            sm.make_bank_download_progress(&req_a.bank_id, Some(0)),
+            SlotDownloadState::Downloading
+        );
+        assert_eq!(
+            sm.make_bank_download_progress(&req_b.bank_id, Some(0)),
+            SlotDownloadState::Downloading
+        );
+        assert_eq!(
+            sm.make_bank_download_progress(&req_a.bank_id, Some(1)),
+            SlotDownloadState::Downloading
+        );
+        assert!(sm.pop_next_slot_status().is_none());
+
+        assert_eq!(
+            sm.make_bank_download_progress(&req_b.bank_id, Some(1)),
+            SlotDownloadState::Done
+        );
+        let statuses = drain_statuses(&mut sm);
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].bank_id, req_b.bank_id);
+
+        assert_eq!(
+            sm.make_bank_download_progress(&req_a.bank_id, Some(2)),
+            SlotDownloadState::Done
+        );
+        let statuses = drain_statuses(&mut sm);
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].bank_id, req_a.bank_id);
+        assert_eq!(sm.committable_offset, 2);
+    }
+
+    #[test]
+    fn dead_fork_does_not_block_live_forks_of_the_same_slot() {
+        let mut sm = FumaroleSM::new(0, DEFAULT_SLOT_MEMORY_RETENTION);
+        let mut dead = random_blockchain_event(3, 7, CommitmentLevel::Processed);
+        dead.dead_error = Some("replay failed".to_string());
+        sm.queue_blockchain_event(vec![
+            bank_event(1, 7, "A", CommitmentLevel::Processed),
+            bank_event(2, 7, "B", CommitmentLevel::Processed),
+            dead,
+        ]);
+
+        let req_a = sm.pop_slot_to_download(None).unwrap();
+        let req_b = sm.pop_slot_to_download(None).unwrap();
+        // The dead event never produces a download request.
+        assert!(sm.pop_slot_to_download(None).is_none());
+        assert_eq!(req_a.bank_id, FumeBankId::new(7, Some("A")));
+        assert_eq!(req_b.bank_id, FumeBankId::new(7, Some("B")));
+
+        // The dead status is released while live forks are still downloading.
+        let statuses = drain_statuses(&mut sm);
+        assert_eq!(statuses.len(), 1);
+        assert!(statuses[0].dead_error.is_some());
+        // Offsets 1 and 2 are still pending, so nothing is committable yet.
+        assert_eq!(sm.committable_offset, 0);
+
+        sm.make_bank_download_progress(&req_a.bank_id, Some(0));
+        sm.make_bank_download_progress(&req_b.bank_id, Some(0));
+        let statuses = drain_statuses(&mut sm);
+        assert_eq!(statuses.len(), 2);
+        assert_eq!(sm.committable_offset, 3);
+    }
+
+    #[test]
+    fn gc_evicts_forks_by_slot_then_blockhash() {
+        let mut sm = FumaroleSM::new(0, 2);
+        sm.queue_blockchain_event(vec![
+            bank_event(1, 5, "A", CommitmentLevel::Processed),
+            bank_event(2, 5, "B", CommitmentLevel::Processed),
+            bank_event(3, 5, "C", CommitmentLevel::Processed),
+        ]);
+        while let Some(req) = sm.pop_slot_to_download(None) {
+            sm.make_bank_download_progress(&req.bank_id, Some(0));
+        }
+        assert_eq!(drain_statuses(&mut sm).len(), 3);
+
+        sm.gc();
+        assert_eq!(sm.downloaded_banks.len(), 2);
+        assert!(!sm.downloaded_banks.contains(&FumeBankId::new(5, Some("A"))));
+
+        // Retained forks are still fast tracked without a new download.
+        sm.queue_blockchain_event(vec![
+            bank_event(4, 5, "B", CommitmentLevel::Confirmed),
+            bank_event(5, 5, "C", CommitmentLevel::Confirmed),
+        ]);
+        assert!(sm.pop_slot_to_download(None).is_none());
+        assert_eq!(drain_statuses(&mut sm).len(), 2);
     }
 }

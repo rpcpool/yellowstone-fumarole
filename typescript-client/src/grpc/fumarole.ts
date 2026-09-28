@@ -209,6 +209,7 @@ export interface BlockchainEvent {
   commitmentLevel: CommitmentLevel;
   blockchainShardId: number;
   deadError?: string | undefined;
+  blockhash?: string | undefined;
 }
 
 export interface BlockchainHistory {
@@ -2880,6 +2881,7 @@ function createBaseBlockchainEvent(): BlockchainEvent {
     commitmentLevel: 0,
     blockchainShardId: 0,
     deadError: undefined,
+    blockhash: undefined,
   };
 }
 
@@ -2920,6 +2922,9 @@ export const BlockchainEvent: MessageFns<BlockchainEvent> = {
     }
     if (message.deadError !== undefined) {
       writer.uint32(74).string(message.deadError);
+    }
+    if (message.blockhash !== undefined) {
+      writer.uint32(82).string(message.blockhash);
     }
     return writer;
   },
@@ -3003,6 +3008,14 @@ export const BlockchainEvent: MessageFns<BlockchainEvent> = {
           message.deadError = reader.string();
           continue;
         }
+        case 10: {
+          if (tag !== 82) {
+            break;
+          }
+
+          message.blockhash = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -3051,6 +3064,7 @@ export const BlockchainEvent: MessageFns<BlockchainEvent> = {
         : isSet(object.dead_error)
         ? globalThis.String(object.dead_error)
         : undefined,
+      blockhash: isSet(object.blockhash) ? globalThis.String(object.blockhash) : undefined,
     };
   },
 
@@ -3083,6 +3097,9 @@ export const BlockchainEvent: MessageFns<BlockchainEvent> = {
     if (message.deadError !== undefined) {
       obj.deadError = message.deadError;
     }
+    if (message.blockhash !== undefined) {
+      obj.blockhash = message.blockhash;
+    }
     return obj;
   },
 
@@ -3100,6 +3117,7 @@ export const BlockchainEvent: MessageFns<BlockchainEvent> = {
     message.commitmentLevel = object.commitmentLevel ?? 0;
     message.blockchainShardId = object.blockchainShardId ?? 0;
     message.deadError = object.deadError ?? undefined;
+    message.blockhash = object.blockhash ?? undefined;
     return message;
   },
 };

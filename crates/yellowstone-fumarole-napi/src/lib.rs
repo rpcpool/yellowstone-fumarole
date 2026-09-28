@@ -51,6 +51,11 @@ pub struct FumaroleSubscribeConfigOptions {
 #[napi(object)]
 pub struct FumaroleEvent {
     pub slot: BigInt,
+    /// Blockhash of the bank this event belongs to. Several banks (forks) can exist for the
+    /// same slot, so `(slot, blockhash)` identifies a block.
+    /// Absent when the fumarole backend does not report it, in which case there is only a
+    /// single bank for that slot.
+    pub blockhash: Option<String>,
     /// `true` when the slot has finished streaming (no more data for this slot).
     pub is_slot_ended: bool,
     /// Protobuf-encoded `geyser.SubscribeUpdate` bytes.
@@ -62,6 +67,7 @@ pub struct FumaroleEvent {
 
 struct RawEvent {
     slot: u64,
+    blockhash: Option<String>,
     is_slot_ended: bool,
     update_bytes: Option<Vec<u8>>,
 }
@@ -180,6 +186,7 @@ impl FumaroleSubscription {
                     sign_bit: false,
                     words: vec![raw.slot],
                 },
+                blockhash: raw.blockhash,
                 is_slot_ended: raw.is_slot_ended,
                 update: raw.update_bytes.map(Buffer::from),
             })),
@@ -298,13 +305,19 @@ impl FumaroleClient {
                     },
                 };
                 let raw = match result {
-                    Ok(RustFumaroleEvent::Data { slot, update }) => Ok(RawEvent {
+                    Ok(RustFumaroleEvent::Data {
                         slot,
+                        blockhash,
+                        update,
+                    }) => Ok(RawEvent {
+                        slot,
+                        blockhash: blockhash.as_deref().map(str::to_owned),
                         is_slot_ended: false,
                         update_bytes: Some(update.encode_to_vec()),
                     }),
-                    Ok(RustFumaroleEvent::SlotEnded(slot)) => Ok(RawEvent {
+                    Ok(RustFumaroleEvent::SlotEnded { slot, blockhash }) => Ok(RawEvent {
                         slot,
+                        blockhash: blockhash.as_deref().map(str::to_owned),
                         is_slot_ended: true,
                         update_bytes: None,
                     }),
