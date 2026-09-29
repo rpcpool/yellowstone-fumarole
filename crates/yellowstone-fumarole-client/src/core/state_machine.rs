@@ -990,4 +990,33 @@ mod tests {
         assert!(sm.pop_slot_to_download(None).is_none());
         assert_eq!(drain_statuses(&mut sm).len(), 2);
     }
+
+    #[test]
+    fn bank_id_ord_slot_takes_precedence_over_blockhash() {
+        // A lower slot must sort first regardless of its blockhash.
+        assert!(FumeBankId::new(1, Some("Z")) < FumeBankId::new(2, Some("A")));
+        assert!(FumeBankId::new(1, Some("Z")) < FumeBankId::new(2, None));
+        assert!(FumeBankId::new(1, None) < FumeBankId::new(2, Some("A")));
+
+        // Blockhash only breaks ties within the same slot.
+        assert!(FumeBankId::new(5, None) < FumeBankId::new(5, Some("A")));
+        assert!(FumeBankId::new(5, Some("A")) < FumeBankId::new(5, Some("B")));
+
+        let mut ids = vec![
+            FumeBankId::new(3, Some("A")),
+            FumeBankId::new(1, Some("Z")),
+            FumeBankId::new(2, None),
+            FumeBankId::new(1, Some("B")),
+        ];
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec![
+                FumeBankId::new(1, Some("B")),
+                FumeBankId::new(1, Some("Z")),
+                FumeBankId::new(2, None),
+                FumeBankId::new(3, Some("A")),
+            ]
+        );
+    }
 }
