@@ -361,6 +361,8 @@ where
                             parent: slot_status.parent_slot,
                             status: slot_status.commitment_level.into(),
                             dead_error: slot_status.dead_error,
+                            // The fumarole backend does not report the geyser bank id.
+                            bank_id: None,
                         },
                     )),
                 };
@@ -864,6 +866,8 @@ impl DedupState {
             UpdateOneof::TransactionStatus(msg) => Some(DedupKey::Transaction { index: msg.index }),
             UpdateOneof::BlockMeta(_)
             | UpdateOneof::Block(_)
+            | UpdateOneof::BlockFooter(_)
+            | UpdateOneof::EntryUpdateParent(_)
             | UpdateOneof::Ping(_)
             | UpdateOneof::Pong(_) => None,
             UpdateOneof::Entry(msg) => Some(DedupKey::Entry { index: msg.index }),
@@ -1046,6 +1050,8 @@ where
                                 Some(UpdateOneof::Block(msg)) => msg.slot,
                                 Some(UpdateOneof::BlockMeta(msg)) => msg.slot,
                                 Some(UpdateOneof::Entry(msg)) => msg.slot,
+                                Some(UpdateOneof::BlockFooter(msg)) => msg.slot,
+                                Some(UpdateOneof::EntryUpdateParent(msg)) => msg.slot,
                                 Some(UpdateOneof::Ping(_)) | Some(UpdateOneof::Pong(_)) | None => {
                                     continue;
                                 }
@@ -2433,6 +2439,7 @@ mod tests {
             hash: Vec::new(),
             executed_transaction_count: 0,
             starting_transaction_index: 0,
+            bank_id: 0,
         });
 
         let block_uid = [42u8; 16];
@@ -2459,6 +2466,7 @@ mod tests {
             parent: Some(41),
             status: 1,
             dead_error: Some(String::new()),
+            bank_id: None,
         });
 
         assert!(dedup_state.dedup([42u8; 16], 0, &update));
@@ -2562,6 +2570,7 @@ mod tests {
             hash: Vec::new(),
             executed_transaction_count: 0,
             starting_transaction_index: 0,
+            bank_id: 0,
         })
     }
 

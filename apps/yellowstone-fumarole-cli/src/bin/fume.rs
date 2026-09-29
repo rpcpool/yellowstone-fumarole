@@ -775,7 +775,8 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
                                 slot,
                                 parent,
                                 status,
-                                dead_error: _
+                                dead_error: _,
+                                bank_id: _,
                             } = slot;
                             let cl = CommitmentLevel::try_from(status).unwrap();
                             Some(format!("slot={slot}, parent={parent:?}, status={cl:?}"))

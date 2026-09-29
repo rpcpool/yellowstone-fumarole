@@ -886,6 +886,7 @@ mod tests {
                 hash: vec![],
                 executed_transaction_count: 0,
                 starting_transaction_index: 0,
+                bank_id: 0,
             })),
         }
     }
@@ -899,6 +900,7 @@ mod tests {
                 parent: None,
                 status: 0,
                 dead_error: None,
+                bank_id: None,
             })),
         }
     }
