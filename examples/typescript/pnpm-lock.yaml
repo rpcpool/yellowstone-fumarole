@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@triton-one/yellowstone-fumarole':
-        specifier: file:../../typescript-sdk/triton-one-yellowstone-fumarole-0.3.0.tgz
-        version: file:../../typescript-sdk/triton-one-yellowstone-fumarole-0.3.0.tgz
+        specifier: ^0.2.0
+        version: 0.2.4
       bs58:
         specifier: ^6.0.0
         version: 6.0.0
@@ -262,9 +262,9 @@ packages:
   '@so-ric/colorspace@1.1.6':
     resolution: {integrity: sha512-/KiKkpHNOBgkFJwu9sh48LkHSMYGyuTcSFK/qMBdnOAlrRJzRSXAOFB5qwzaVQuDl8wAvHVMkaASQDReTahxuw==}
 
-  '@triton-one/yellowstone-fumarole@file:../../typescript-sdk/triton-one-yellowstone-fumarole-0.3.0.tgz':
-    resolution: {integrity: sha512-LOtzWp2jCzlPbz+iLg1innhDzzFRZWZVKXFAYxcxiAFS2+xJhTQfeBFbNI1f6bVpH/eEU8WDQDkVP/0/rRfMpg==, tarball: file:../../typescript-sdk/triton-one-yellowstone-fumarole-0.3.0.tgz}
-    version: 0.3.0
+  '@triton-one/yellowstone-fumarole@0.2.4':
+    resolution: {integrity: sha512-iiMkImbjuDA24GkK2jt13MkjCHyQh7lON7zgYROZlSJDZypyyWLExo/ZHVneRq8iuyL7pBubXqVB4/gBBC/lvQ==}
+    deprecated: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
 
   '@types/js-yaml@4.0.9':
     resolution: {integrity: sha512-k4MGaQl5TGo/iipqb2UDG2UwjXziSWkh0uysQelTlJpX1qGlpUZYm8PnO4DxG1qBomtJUdYJ6qR6xdIah10JLg==}
@@ -639,7 +639,7 @@ snapshots:
       color: 5.0.2
       text-hex: 1.0.0
 
-  '@triton-one/yellowstone-fumarole@file:../../typescript-sdk/triton-one-yellowstone-fumarole-0.3.0.tgz':
+  '@triton-one/yellowstone-fumarole@0.2.4':
     dependencies:
       '@bufbuild/protobuf': 2.6.3
       '@datastructures-js/deque': 1.0.5
