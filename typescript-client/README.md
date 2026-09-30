@@ -12,7 +12,7 @@ Requires Node.js >= 22. The native binary is installed automatically via an opti
 
 ### Supported platforms
 
-Prebuilt native binaries are currently published for `linux-x64-gnu`, `darwin-arm64`, and `win32-x64-msvc` only. `linux-x64-musl` (e.g. `node:*-alpine` images) and `linux-arm64` are not published yet — use a glibc-based base image (e.g. `node:22-slim`, `node:22-bookworm`) or an x64 host in the meantime.
+Prebuilt native binaries are currently published for `linux-x64-gnu`, `linux-x64-musl` (e.g. `node:*-alpine` images), `darwin-arm64`, and `win32-x64-msvc` only. `linux-arm64` is not published yet — use an x64 host in the meantime.
 
 ### TLS / CA certificates
 
