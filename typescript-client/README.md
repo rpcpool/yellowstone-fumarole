@@ -98,16 +98,21 @@ const subscription = await client.subscribeWithConfig('my-subscriber', request, 
 
 ### Consuming events
 
+Events are scoped to a block, identified by `(slot, blockhash)`: several blocks (forks) can exist
+for the same slot, and each one gets its own data and `slotEnded` events. `blockhash` is
+`undefined` when the Fumarole backend does not report it, in which case there is only a single
+block for that slot.
+
 ```ts
 for await (const event of subscription) {
   if (event.type === 'slotEnded') {
-    // All updates for this slot have been delivered
-    console.log('slot done:', event.slot)
+    // All updates for this block (slot + blockhash) have been delivered
+    console.log('slot done:', event.slot, event.blockhash)
     continue
   }
 
   // event.type === 'data'
-  const { slot, update } = event
+  const { slot, blockhash, update } = event
 
   if (update.account)     console.log('account update', update.account)
   if (update.transaction) console.log('transaction',    update.transaction)

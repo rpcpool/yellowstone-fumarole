@@ -252,7 +252,7 @@
 //!             FumaroleEvent::Data { slot, .. } => {
 //!                 println!("data for slot {slot}");
 //!             }
-//!             FumaroleEvent::SlotEnded(slot) => {
+//!             FumaroleEvent::SlotEnded { slot, .. } => {
 //!                 println!("slot ended: {slot}");
 //!             }
 //!         }
@@ -315,7 +315,7 @@
 //!     while let Some(item) = slot_stream.next().await {
 //!         match item.expect("stream error") {
 //!             FumaroleEvent::Data { .. } => {}
-//!             FumaroleEvent::SlotEnded(slot) => {
+//!             FumaroleEvent::SlotEnded { slot, .. } => {
 //!                 // Commit after your slot processing succeeds.
 //!                 slot_stream.commit();
 //!                 println!("committed progress at end of slot {slot}");

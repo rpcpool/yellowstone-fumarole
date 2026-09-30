@@ -11,7 +11,9 @@ use crate::{
 use {
     super::{
         ports::{ControlPlaneConnector, ControlPlaneStreamError, FumaroleDataplaneConnector},
-        state_machine::{FumaroleSM, FumeDownloadRequest, FumeOffset, FumeShardIdx},
+        state_machine::{
+            FumaroleSM, FumeBankId, FumeBlockUID, FumeDownloadRequest, FumeOffset, FumeShardIdx,
+        },
     },
     crate::{
         error::FumaroleSubscribeError,
@@ -43,8 +45,8 @@ use {
 
 pub const DEFAULT_GC_INTERVAL: usize = 100;
 
-pub struct FumaroleRuntimeDataEvent {
-    pub slot: Slot,
+pub(crate) struct FumaroleRuntimeDataEvent {
+    pub bank_id: FumeBankId,
     pub update: SubscribeUpdate,
 }
 
@@ -65,10 +67,11 @@ impl Drop for FumaroleRuntimeCommitEvent {
 }
 
 #[allow(clippy::large_enum_variant)]
-pub enum FumaroleRuntimeEvent {
+pub(crate) enum FumaroleRuntimeEvent {
     Data(FumaroleRuntimeDataEvent),
     Committable(FumaroleRuntimeCommitEvent),
-    SlotEnded(u64),
+    /// Emitted once every shard of a bank has been downloaded.
+    SlotEnded(FumeBankId),
 }
 
 pub enum BackgroundJobResult {
@@ -256,7 +259,11 @@ where
             else {
                 break;
             };
-            tracing::debug!(slot = download_request.slot, "scheduling download task");
+            tracing::debug!(
+                slot = download_request.bank_id.slot,
+                blockhash = ?download_request.bank_id.blockhash,
+                "scheduling download task"
+            );
             let download_task_args = DownloadTaskArgs { download_request };
             permit.send(download_task_args);
         }
@@ -264,13 +271,13 @@ where
 
     async fn handle_download_result(&mut self, completed: CompletedDownloadBlockTask) {
         let CompletedDownloadBlockTask {
-            slot,
+            bank_id,
             block_uid: _,
-
             shard_idx_vec,
         } = completed;
         for shard_idx in shard_idx_vec {
-            self.sm.make_slot_download_progress(slot, Some(shard_idx));
+            self.sm
+                .make_bank_download_progress(&bank_id, Some(shard_idx));
         }
     }
 
@@ -350,17 +357,19 @@ where
                     created_at: None,
                     update_oneof: Some(geyser::subscribe_update::UpdateOneof::Slot(
                         SubscribeUpdateSlot {
-                            slot: slot_status.slot,
+                            slot: slot_status.bank_id.slot,
                             parent: slot_status.parent_slot,
                             status: slot_status.commitment_level.into(),
                             dead_error: slot_status.dead_error,
+                            // The fumarole backend does not report the geyser bank id.
+                            bank_id: None,
                         },
                     )),
                 };
                 if self
                     .outlet
                     .send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-                        slot: slot_status.slot,
+                        bank_id: slot_status.bank_id.clone(),
                         update,
                     })))
                     .await
@@ -749,7 +758,15 @@ struct ScheduleShardDownload {
     shard_idx: FumeShardIdx,
     block_uid: Vec<u8>,
     attempt: usize,
-    slot: Slot,
+    bank_id: FumeBankId,
+}
+
+/// Context shared with the pipelined downloader so it can tag and dedup incoming updates.
+#[derive(Clone, Debug)]
+struct ScheduledShardCtx {
+    bank_id: FumeBankId,
+    block_uid: FumeBlockUID,
+    shard_idx: FumeShardIdx,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -770,17 +787,24 @@ const DEDUP_WINDOW_SIZE: usize = 100_000;
 const ORCHESTRATOR_DOWNLOADER_QUEUE_CAPACITY: usize = 3;
 const PENDING_SHARD_DOWNLOAD_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Dedup is keyed by block uid rather than slot: two forks of the same slot can be
+/// downloaded concurrently and must not dedup each other's shards.
 #[derive(Default, Debug, Clone)]
 struct DedupState {
-    seen: HashMap<(u64, FumeShardIdx), FxHashSet<DedupKey>>,
-    completed_shards: FxHashSet<(u64, FumeShardIdx)>,
-    completed_order: VecDeque<(u64, FumeShardIdx)>,
+    seen: HashMap<(FumeBlockUID, FumeShardIdx), FxHashSet<DedupKey>>,
+    completed_shards: FxHashSet<(FumeBlockUID, FumeShardIdx)>,
+    completed_order: VecDeque<(FumeBlockUID, FumeShardIdx)>,
 }
 
 impl DedupState {
     /// Returns true when the event should be skipped as duplicate.
-    fn dedup(&mut self, slot: u64, shard_idx: FumeShardIdx, ev: &UpdateOneof) -> bool {
-        if self.is_shard_done(slot, shard_idx) {
+    fn dedup(
+        &mut self,
+        block_uid: FumeBlockUID,
+        shard_idx: FumeShardIdx,
+        ev: &UpdateOneof,
+    ) -> bool {
+        if self.is_shard_done(block_uid, shard_idx) {
             return true;
         }
 
@@ -788,13 +812,13 @@ impl DedupState {
             // Non-deduped event kinds are skipped by default.
             return true;
         };
-        let shard_key = (slot, shard_idx);
+        let shard_key = (block_uid, shard_idx);
         let shard_seen = self.seen.entry(shard_key).or_default();
         !shard_seen.insert(key)
     }
 
-    fn mark_shard_done(&mut self, slot: u64, shard_idx: FumeShardIdx) {
-        let shard_key = (slot, shard_idx);
+    fn mark_shard_done(&mut self, block_uid: FumeBlockUID, shard_idx: FumeShardIdx) {
+        let shard_key = (block_uid, shard_idx);
         if !self.completed_shards.insert(shard_key) {
             return;
         }
@@ -809,12 +833,12 @@ impl DedupState {
         }
     }
 
-    fn is_shard_done(&self, slot: u64, shard_idx: FumeShardIdx) -> bool {
-        self.completed_shards.contains(&(slot, shard_idx))
+    fn is_shard_done(&self, block_uid: FumeBlockUID, shard_idx: FumeShardIdx) -> bool {
+        self.completed_shards.contains(&(block_uid, shard_idx))
     }
 
     fn shrink_seen_if_needed(&mut self) {
-        // `seen` is keyed by shard (slot, shard_idx) and is aggressively removed
+        // `seen` is keyed by shard (block_uid, shard_idx) and is aggressively removed
         // in `mark_shard_done`, so no additional key-level compaction is required.
         while self.completed_order.len() > DEDUP_WINDOW_SIZE {
             if let Some(oldest) = self.completed_order.pop_front() {
@@ -842,6 +866,8 @@ impl DedupState {
             UpdateOneof::TransactionStatus(msg) => Some(DedupKey::Transaction { index: msg.index }),
             UpdateOneof::BlockMeta(_)
             | UpdateOneof::Block(_)
+            | UpdateOneof::BlockFooter(_)
+            | UpdateOneof::EntryUpdateParent(_)
             | UpdateOneof::Ping(_)
             | UpdateOneof::Pong(_) => None,
             UpdateOneof::Entry(msg) => Some(DedupKey::Entry { index: msg.index }),
@@ -906,7 +932,7 @@ pub(crate) enum DownloadBlockError {
 }
 
 pub struct CompletedDownloadBlockTask {
-    slot: u64,
+    bank_id: FumeBankId,
     #[allow(dead_code)]
     block_uid: [u8; 16],
     shard_idx_vec: Vec<FumeShardIdx>,
@@ -959,7 +985,7 @@ where
         mut outlet: Outlet,
         completed_slot_tx: mpsc::Sender<CompletedDownloadBlockShardTask>,
         mut dedup_state: DedupState,
-        mut scheduled_shard_rx: mpsc::UnboundedReceiver<(u64, FumeShardIdx)>,
+        mut scheduled_shard_rx: mpsc::UnboundedReceiver<ScheduledShardCtx>,
     ) -> PipelinedDownloaderOutcome
     where
         Source: Stream<Item = Result<DataResponse, DataplaneStreamError>> + Unpin,
@@ -996,14 +1022,15 @@ where
                     if matches!(update.update_oneof, Some(UpdateOneof::BlockMeta(_))) {
                         block_meta = Some(update);
                     } else {
-                        let event_slot = if let Some((expected_slot, expected_shard_idx)) =
-                            scheduled_shards
-                                .front()
-                                .map(|(slot, shard_idx)| (*slot, *shard_idx))
-                        {
+                        let event_bank_id = if let Some(expected) = scheduled_shards.front() {
+                            let ScheduledShardCtx {
+                                bank_id,
+                                block_uid,
+                                shard_idx,
+                            } = expected;
                             if dedup_state.dedup(
-                                expected_slot,
-                                expected_shard_idx,
+                                *block_uid,
+                                *shard_idx,
                                 update
                                     .update_oneof
                                     .as_ref()
@@ -1011,11 +1038,11 @@ where
                             ) {
                                 continue;
                             }
-                            expected_slot
+                            bank_id.clone()
                         } else {
                             // In tests and during startup races we might receive updates before
                             // scheduled shard context is visible here. Skip dedup in that case.
-                            match update.update_oneof.as_ref() {
+                            let slot = match update.update_oneof.as_ref() {
                                 Some(UpdateOneof::Account(msg)) => msg.slot,
                                 Some(UpdateOneof::Slot(msg)) => msg.slot,
                                 Some(UpdateOneof::Transaction(msg)) => msg.slot,
@@ -1023,10 +1050,13 @@ where
                                 Some(UpdateOneof::Block(msg)) => msg.slot,
                                 Some(UpdateOneof::BlockMeta(msg)) => msg.slot,
                                 Some(UpdateOneof::Entry(msg)) => msg.slot,
+                                Some(UpdateOneof::BlockFooter(msg)) => msg.slot,
+                                Some(UpdateOneof::EntryUpdateParent(msg)) => msg.slot,
                                 Some(UpdateOneof::Ping(_)) | Some(UpdateOneof::Pong(_)) | None => {
                                     continue;
                                 }
-                            }
+                            };
+                            FumeBankId::new(slot, None)
                         };
 
                         if futures::future::poll_fn(|cx| outlet.poll_ready_unpin(cx))
@@ -1038,7 +1068,7 @@ where
                         if outlet
                             .start_send_unpin(Ok(FumaroleRuntimeEvent::Data(
                                 FumaroleRuntimeDataEvent {
-                                    slot: event_slot,
+                                    bank_id: event_bank_id,
                                     update,
                                 },
                             )))
@@ -1049,22 +1079,25 @@ where
                     }
                 }
                 data_response::Response::BlockShardDownloadFinish(footer) => {
-                    dedup_state.mark_shard_done(footer.slot, footer.shard_indices[0]);
+                    let footer_block_uid: FumeBlockUID = footer
+                        .block_uid
+                        .as_slice()
+                        .try_into()
+                        .expect("block uid size mismatch");
+                    dedup_state.mark_shard_done(footer_block_uid, footer.shard_indices[0]);
                     dedup_state.shrink_seen_if_needed();
                     tracing::trace!(
                         "shard {} for slot {} download finished, dedup state updated",
                         footer.shard_indices[0],
                         footer.slot
                     );
-                    if let Some((scheduled_slot, scheduled_shard_idx)) =
-                        scheduled_shards.pop_front()
-                    {
+                    if let Some(scheduled) = scheduled_shards.pop_front() {
                         debug_assert_eq!(
-                            scheduled_slot, footer.slot,
-                            "slot mismatch for scheduled shard completion"
+                            scheduled.block_uid, footer_block_uid,
+                            "block uid mismatch for scheduled shard completion"
                         );
                         debug_assert_eq!(
-                            scheduled_shard_idx, footer.shard_indices[0],
+                            scheduled.shard_idx, footer.shard_indices[0],
                             "shard idx mismatch for scheduled shard completion"
                         );
                     }
@@ -1086,11 +1119,9 @@ where
                     total_event_downloaded = 0;
                     let completed = CompletedDownloadBlockShardTask {
                         shard_idx: footer.shard_indices[0],
-                        block_meta: block_meta.clone(),
-                        block_uid: footer
-                            .block_uid
-                            .try_into()
-                            .expect("block uid size mismatch"),
+                        // Reset: the next shard on this connection may belong to another block (e.g. a fork).
+                        block_meta: block_meta.take(),
+                        block_uid: footer_block_uid,
                         slot: footer.slot,
                     };
                     if let Err(e) = completed_slot_tx.send(completed).await {
@@ -1219,11 +1250,20 @@ where
                         blockchain_id: queued_shard_download.request.blockchain_id.clone(),
                         shard_idx: queued_shard_download.request.shard_idx as u32,
                         block_uid: queued_shard_download.request.block_uid.clone(),
-                        slot: queued_shard_download.slot,
+                        bank_id: queued_shard_download.bank_id.clone(),
                         attempt: queued_shard_download.attempt,
                     };
                     self.shard_scheduled_for_download.push_back(scheduled_shard_download);
-                    let _ = scheduled_shard_tx.send((queued_shard_download.slot, queued_shard_download.request.shard_idx as u32));
+                    let _ = scheduled_shard_tx.send(ScheduledShardCtx {
+                        bank_id: queued_shard_download.bank_id,
+                        block_uid: queued_shard_download
+                            .request
+                            .block_uid
+                            .as_slice()
+                            .try_into()
+                            .expect("block uid size mismatch"),
+                        shard_idx: queued_shard_download.request.shard_idx as u32,
+                    });
                     let cmd = crate::proto::data_command::Command::DownloadBlockShard(queued_shard_download.request);
                     let result = dataplane_sink.send(DataCommand {
                         command: Some(cmd)
@@ -1296,13 +1336,14 @@ where
 }
 
 struct ShardedSlotDownloadProgress {
+    bank_id: FumeBankId,
     started_at: Instant,
     block_meta: Option<SubscribeUpdate>,
     remaining_shard_idx: Vec<FumeShardIdx>,
 }
 
 struct QueuedShardDownload {
-    slot: Slot,
+    bank_id: FumeBankId,
     request: DownloadBlockShard,
     attempt: usize,
 }
@@ -1331,7 +1372,8 @@ struct PendingShardDownload {
 pub(crate) struct ShardedDownloadOrchestrator<C> {
     shard_download_queue_txs: Vec<mpsc::Sender<QueuedShardDownload>>,
     shard_download_queue_rxs: Vec<Option<mpsc::Receiver<QueuedShardDownload>>>,
-    slot_download_progression_map: HashMap<Slot, ShardedSlotDownloadProgress>,
+    /// Keyed by block uid: the actual unit of download, forks of the same slot have distinct uids.
+    block_download_progression_map: HashMap<FumeBlockUID, ShardedSlotDownloadProgress>,
     completed_tx: mpsc::Sender<CompletedDownloadBlockShardTask>,
     completed_rx: mpsc::Receiver<CompletedDownloadBlockShardTask>,
     connector: C,
@@ -1395,7 +1437,7 @@ where
             subscribe_request,
             shard_download_queue_txs,
             shard_download_queue_rxs,
-            slot_download_progression_map: HashMap::new(),
+            block_download_progression_map: HashMap::new(),
             dragonsmouth_outlet,
             total_shard_downloaders,
             completed_tx,
@@ -1497,14 +1539,14 @@ where
                 "scheduled shard affinity mismatch during recycle"
             );
             let queued = QueuedShardDownload {
-                slot: scheduled_shard_download.slot,
                 request: DownloadBlockShard {
                     blockchain_id: scheduled_shard_download.blockchain_id,
                     block_uid: scheduled_shard_download.block_uid,
                     shard_idx: scheduled_shard_download.shard_idx as i32,
                     block_filters: None,
-                    slot: Some(scheduled_shard_download.slot),
+                    slot: Some(scheduled_shard_download.bank_id.slot),
                 },
+                bank_id: scheduled_shard_download.bank_id,
                 attempt: scheduled_shard_download.attempt,
             };
             self.route_queued_download_to_downloader(downloader_idx, queued);
@@ -1589,12 +1631,12 @@ where
             completed.shard_idx
         );
 
-        let slot = completed.slot;
-        let is_slot_complete = {
+        let block_uid = completed.block_uid;
+        let (bank_id, is_slot_complete) = {
             let slot_progression = self
-                .slot_download_progression_map
-                .get_mut(&slot)
-                .expect("should track slot progression");
+                .block_download_progression_map
+                .get_mut(&block_uid)
+                .expect("should track block progression");
             slot_progression
                 .remaining_shard_idx
                 .retain(|x| x != &completed.shard_idx);
@@ -1602,8 +1644,12 @@ where
                 slot_progression.block_meta = Some(block_meta);
             }
 
-            slot_progression.remaining_shard_idx.is_empty()
+            (
+                slot_progression.bank_id.clone(),
+                slot_progression.remaining_shard_idx.is_empty(),
+            )
         };
+        let slot = bank_id.slot;
 
         // Handle any completed shards
         {
@@ -1617,13 +1663,16 @@ where
             let _ = self
                 .outlet
                 .send(CompletedDownloadBlockTask {
-                    slot,
-                    block_uid: completed.block_uid,
+                    bank_id: bank_id.clone(),
+                    block_uid,
                     shard_idx_vec: vec![completed.shard_idx],
                 })
                 .await;
             if is_slot_complete {
-                let completed = self.slot_download_progression_map.remove(&slot).unwrap();
+                let completed = self
+                    .block_download_progression_map
+                    .remove(&block_uid)
+                    .unwrap();
                 let elapsed = completed.started_at.elapsed();
                 tracing::trace!("slot {} download completed in {:?}", slot, elapsed);
                 #[cfg(feature = "prometheus")]
@@ -1636,7 +1685,7 @@ where
                     let _ = self
                         .dragonsmouth_outlet
                         .send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-                            slot,
+                            bank_id: bank_id.clone(),
                             update: block_meta,
                         })))
                         .await;
@@ -1648,7 +1697,7 @@ where
                 }
                 let _ = self
                     .dragonsmouth_outlet
-                    .send(Ok(FumaroleRuntimeEvent::SlotEnded(slot)))
+                    .send(Ok(FumaroleRuntimeEvent::SlotEnded(bank_id)))
                     .await;
 
                 #[cfg(feature = "prometheus")]
@@ -1662,18 +1711,18 @@ where
     /// Splits one slot into per-shard downloads and enqueues each shard using
     /// the affinity rule `shard_idx % N`.
     async fn schedule_slot_download_task(&mut self, task_spec: DownloadTaskArgs) {
-        if self
-            .slot_download_progression_map
-            .contains_key(&task_spec.download_request.slot)
-        {
+        let block_uid = task_spec.download_request.block_uid;
+        let bank_id = task_spec.download_request.bank_id.clone();
+        if self.block_download_progression_map.contains_key(&block_uid) {
             // Already scheduled
             tracing::warn!(
-                "slot {} already scheduled for download",
-                task_spec.download_request.slot
+                slot = bank_id.slot,
+                blockhash = ?bank_id.blockhash,
+                "block already scheduled for download",
             );
             return;
         }
-        let slot = task_spec.download_request.slot;
+        let slot = bank_id.slot;
         let num_shards = task_spec.download_request.num_shards;
         let shard_idx_vec = (0..num_shards).collect::<Vec<_>>();
         for shard_idx in &shard_idx_vec {
@@ -1685,19 +1734,20 @@ where
                 slot: Some(slot),
             };
             let queued_download = QueuedShardDownload {
-                slot,
+                bank_id: bank_id.clone(),
                 request: download_shard_task,
                 attempt: 1,
             };
             self.route_queued_download(queued_download);
         }
         let slot_progress = ShardedSlotDownloadProgress {
+            bank_id,
             started_at: Instant::now(),
             remaining_shard_idx: shard_idx_vec,
             block_meta: None,
         };
-        self.slot_download_progression_map
-            .insert(slot, slot_progress);
+        self.block_download_progression_map
+            .insert(block_uid, slot_progress);
     }
 
     /// Handles one downloader completion/failure and keeps shard-lane affinity.
@@ -1761,14 +1811,14 @@ where
                                 && attempt < self.max_download_attempt_per_slot
                             {
                                 let queued = QueuedShardDownload {
-                                    slot: schedule_shard_download.slot,
                                     request: DownloadBlockShard {
                                         blockchain_id: schedule_shard_download.blockchain_id,
                                         block_uid: schedule_shard_download.block_uid,
                                         shard_idx: schedule_shard_download.shard_idx as i32,
                                         block_filters: None,
-                                        slot: Some(schedule_shard_download.slot),
+                                        slot: Some(schedule_shard_download.bank_id.slot),
                                     },
+                                    bank_id: schedule_shard_download.bank_id,
                                     attempt: attempt + 1,
                                 };
                                 self.route_queued_download_to_downloader(downloader_idx, queued);
@@ -1935,7 +1985,7 @@ mod tests {
         let orchestrator = ShardedDownloadOrchestrator {
             shard_download_queue_txs: vec![shard_download_queue_tx],
             shard_download_queue_rxs: vec![Some(shard_download_queue_rx)],
-            slot_download_progression_map: HashMap::new(),
+            block_download_progression_map: HashMap::new(),
             completed_tx,
             completed_rx,
             connector: TestConnector,
@@ -1981,7 +2031,7 @@ mod tests {
         let orchestrator = ShardedDownloadOrchestrator {
             shard_download_queue_txs,
             shard_download_queue_rxs,
-            slot_download_progression_map: HashMap::new(),
+            block_download_progression_map: HashMap::new(),
             completed_tx,
             completed_rx,
             connector: TestConnector,
@@ -2013,7 +2063,7 @@ mod tests {
         }
     }
 
-    fn empty_scheduled_shard_rx() -> mpsc::UnboundedReceiver<(u64, FumeShardIdx)> {
+    fn empty_scheduled_shard_rx() -> mpsc::UnboundedReceiver<ScheduledShardCtx> {
         let (_tx, rx) = mpsc::unbounded_channel();
         rx
     }
@@ -2023,7 +2073,7 @@ mod tests {
         let (mut orchestrator, _outlet_rx, _dragonsmouth_outlet_rx) = make_test_orchestrator();
 
         let request = FumeDownloadRequest {
-            slot: 77,
+            bank_id: FumeBankId::new(77, Some("hash77")),
             blockchain_id: [11u8; 16],
             block_uid: [22u8; 16],
             num_shards: 3,
@@ -2061,10 +2111,14 @@ mod tests {
         let (drained, queue_rx) = drain_jh.await.expect("drain task should complete");
         orchestrator.shard_download_queue_rxs[0] = Some(queue_rx);
 
-        assert!(orchestrator.slot_download_progression_map.contains_key(&77));
+        assert!(
+            orchestrator
+                .block_download_progression_map
+                .contains_key(&request.block_uid)
+        );
         {
             for (shard_idx, queued) in drained.into_iter().enumerate() {
-                assert_eq!(queued.slot, 77);
+                assert_eq!(queued.bank_id, request.bank_id);
                 assert_eq!(queued.attempt, 1);
                 assert_eq!(queued.request.shard_idx, shard_idx as i32);
                 assert_eq!(queued.request.slot, Some(77));
@@ -2073,7 +2127,7 @@ mod tests {
             }
         }
 
-        // Scheduling the same slot again should be ignored.
+        // Scheduling the same block again should be ignored.
         orchestrator
             .schedule_slot_download_task(DownloadTaskArgs {
                 download_request: request,
@@ -2092,9 +2146,10 @@ mod tests {
         let (mut orchestrator, mut outlet_rx, mut dragonsmouth_outlet_rx) =
             make_test_orchestrator();
 
-        orchestrator.slot_download_progression_map.insert(
-            42,
+        orchestrator.block_download_progression_map.insert(
+            [7u8; 16],
             ShardedSlotDownloadProgress {
+                bank_id: FumeBankId::new(42, None),
                 started_at: Instant::now(),
                 block_meta: None,
                 remaining_shard_idx: vec![0],
@@ -2122,7 +2177,7 @@ mod tests {
             .recv()
             .await
             .expect("expected completed task result");
-        assert_eq!(task.slot, 42);
+        assert_eq!(task.bank_id, FumeBankId::new(42, None));
         assert_eq!(task.block_uid, [7u8; 16]);
         assert_eq!(task.shard_idx_vec, vec![0]);
 
@@ -2131,7 +2186,7 @@ mod tests {
             .await
             .expect("expected dragonsmouth block meta");
         let Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 42,
+            bank_id: FumeBankId { slot: 42, .. },
             update: dm_update,
         })) = dm_msg
         else {
@@ -2147,9 +2202,13 @@ mod tests {
             .expect("expected slot ended event");
         assert!(matches!(
             slot_ended,
-            Ok(FumaroleRuntimeEvent::SlotEnded(42))
+            Ok(FumaroleRuntimeEvent::SlotEnded(FumeBankId { slot: 42, .. }))
         ));
-        assert!(!orchestrator.slot_download_progression_map.contains_key(&42));
+        assert!(
+            !orchestrator
+                .block_download_progression_map
+                .contains_key(&[7u8; 16])
+        );
     }
 
     #[tokio::test]
@@ -2157,9 +2216,10 @@ mod tests {
         let (mut orchestrator, mut outlet_rx, mut dragonsmouth_outlet_rx) =
             make_test_orchestrator();
 
-        orchestrator.slot_download_progression_map.insert(
-            43,
+        orchestrator.block_download_progression_map.insert(
+            [8u8; 16],
             ShardedSlotDownloadProgress {
+                bank_id: FumeBankId::new(43, None),
                 started_at: Instant::now(),
                 block_meta: None,
                 remaining_shard_idx: vec![0],
@@ -2181,7 +2241,7 @@ mod tests {
             .recv()
             .await
             .expect("expected completed task result");
-        assert_eq!(task.slot, 43);
+        assert_eq!(task.bank_id, FumeBankId::new(43, None));
         assert_eq!(task.block_uid, [8u8; 16]);
         assert_eq!(task.shard_idx_vec, vec![0]);
 
@@ -2191,10 +2251,14 @@ mod tests {
             .expect("expected slot ended event");
         assert!(matches!(
             slot_ended,
-            Ok(FumaroleRuntimeEvent::SlotEnded(43))
+            Ok(FumaroleRuntimeEvent::SlotEnded(FumeBankId { slot: 43, .. }))
         ));
         assert!(dragonsmouth_outlet_rx.try_recv().is_err());
-        assert!(!orchestrator.slot_download_progression_map.contains_key(&43));
+        assert!(
+            !orchestrator
+                .block_download_progression_map
+                .contains_key(&[8u8; 16])
+        );
     }
 
     #[tokio::test]
@@ -2225,13 +2289,13 @@ mod tests {
             shard_idx: 3,
             block_uid: vec![2; 16],
             attempt: 1,
-            slot: 55,
+            bank_id: FumeBankId::new(55, None),
         });
 
         let (recycled_tx, recycled_rx) = mpsc::channel(2);
         recycled_tx
             .send(QueuedShardDownload {
-                slot: 56,
+                bank_id: FumeBankId::new(56, None),
                 request: DownloadBlockShard {
                     blockchain_id: vec![3; 16],
                     block_uid: vec![4; 16],
@@ -2315,7 +2379,7 @@ mod tests {
 
         let forwarded = outlet_rx.next().await.expect("expected forwarded update");
         let Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
-            slot: 42,
+            bank_id: FumeBankId { slot: 42, .. },
             update: forwarded,
         })) = forwarded
         else {
@@ -2375,16 +2439,23 @@ mod tests {
             hash: Vec::new(),
             executed_transaction_count: 0,
             starting_transaction_index: 0,
+            bank_id: 0,
         });
 
-        assert!(!dedup_state.dedup(42, 0, &update));
-        assert!(dedup_state.dedup(42, 0, &update));
+        let block_uid = [42u8; 16];
+        assert!(!dedup_state.dedup(block_uid, 0, &update));
+        assert!(dedup_state.dedup(block_uid, 0, &update));
 
-        dedup_state.mark_shard_done(42, 0);
-        assert!(dedup_state.is_shard_done(42, 0));
+        dedup_state.mark_shard_done(block_uid, 0);
+        assert!(dedup_state.is_shard_done(block_uid, 0));
 
         // Once shard is marked done, associated keys are released.
-        assert!(!dedup_state.dedup(42, 1, &update));
+        assert!(!dedup_state.dedup(block_uid, 1, &update));
+
+        // Another fork of the same slot uses a different block uid and must not be deduped.
+        let fork_block_uid = [43u8; 16];
+        assert!(!dedup_state.is_shard_done(fork_block_uid, 0));
+        assert!(!dedup_state.dedup(fork_block_uid, 0, &update));
     }
 
     #[tokio::test]
@@ -2395,9 +2466,10 @@ mod tests {
             parent: Some(41),
             status: 1,
             dead_error: Some(String::new()),
+            bank_id: None,
         });
 
-        assert!(dedup_state.dedup(42, 0, &update));
+        assert!(dedup_state.dedup([42u8; 16], 0, &update));
     }
 
     #[tokio::test]
@@ -2488,5 +2560,187 @@ mod tests {
             }
             _ => panic!("expected dataplane invalid-filter error"),
         }
+    }
+
+    fn mk_entry(slot: Slot, index: u64) -> UpdateOneof {
+        UpdateOneof::Entry(yellowstone_grpc_proto::geyser::SubscribeUpdateEntry {
+            slot,
+            index,
+            num_hashes: 0,
+            hash: Vec::new(),
+            executed_transaction_count: 0,
+            starting_transaction_index: 0,
+            bank_id: 0,
+        })
+    }
+
+    fn mk_footer(block_uid: FumeBlockUID, slot: Slot, shard_idx: FumeShardIdx) -> DataResponse {
+        DataResponse {
+            response: Some(data_response::Response::BlockShardDownloadFinish(
+                proto::BlockShardDownloadFinish {
+                    block_uid: block_uid.to_vec(),
+                    slot,
+                    shard_indices: vec![shard_idx],
+                },
+            )),
+        }
+    }
+
+    #[tokio::test]
+    async fn sharded_orchestrator_tracks_many_forks_of_the_same_slot() {
+        const SLOT: Slot = 77;
+        let (mut orchestrator, mut outlet_rx, mut dragonsmouth_outlet_rx) =
+            make_test_orchestrator();
+
+        let forks = ["A", "B", "C"]
+            .iter()
+            .enumerate()
+            .map(|(i, hash)| FumeDownloadRequest {
+                bank_id: FumeBankId::new(SLOT, Some(hash)),
+                blockchain_id: [1u8; 16],
+                block_uid: [i as u8 + 10; 16],
+                num_shards: 1,
+                commitment_level: CommitmentLevel::Processed,
+            })
+            .collect::<Vec<_>>();
+
+        for request in &forks {
+            orchestrator
+                .schedule_slot_download_task(DownloadTaskArgs {
+                    download_request: request.clone(),
+                })
+                .await;
+        }
+
+        // Forks of the same slot are not mistaken for an already scheduled download.
+        assert_eq!(
+            orchestrator.block_download_progression_map.len(),
+            forks.len()
+        );
+        let queue_rx = orchestrator.shard_download_queue_rxs[0]
+            .as_mut()
+            .expect("missing test queue receiver");
+        for request in &forks {
+            let queued = queue_rx
+                .try_recv()
+                .expect("expected one queued shard per fork");
+            assert_eq!(queued.bank_id, request.bank_id);
+            assert_eq!(queued.request.block_uid, request.block_uid.to_vec());
+            assert_eq!(queued.request.slot, Some(SLOT));
+        }
+        assert!(queue_rx.try_recv().is_err());
+
+        // Complete forks in reverse order: each completion is reported against its own bank.
+        for request in forks.iter().rev() {
+            orchestrator
+                .handle_shard_download_completed(CompletedDownloadBlockShardTask {
+                    shard_idx: 0,
+                    block_uid: request.block_uid,
+                    block_meta: None,
+                    slot: SLOT,
+                })
+                .await;
+
+            let task = outlet_rx.recv().await.expect("expected completed task");
+            assert_eq!(task.bank_id, request.bank_id);
+            assert_eq!(task.block_uid, request.block_uid);
+
+            let Ok(FumaroleRuntimeEvent::SlotEnded(ended)) = dragonsmouth_outlet_rx
+                .recv()
+                .await
+                .expect("expected slot ended event")
+            else {
+                panic!("expected slot ended event")
+            };
+            assert_eq!(ended, request.bank_id);
+            assert!(
+                !orchestrator
+                    .block_download_progression_map
+                    .contains_key(&request.block_uid)
+            );
+        }
+        assert!(orchestrator.block_download_progression_map.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pipelined_downloader_does_not_dedup_across_forks_of_the_same_slot() {
+        const SLOT: Slot = 9;
+        let (outlet_tx, mut outlet_rx) =
+            futures_mpsc::unbounded::<Result<FumaroleRuntimeEvent, FumaroleSubscribeError>>();
+        let (completed_tx, mut completed_rx) = mpsc::channel(4);
+
+        let fork_a = FumeBankId::new(SLOT, Some("A"));
+        let fork_b = FumeBankId::new(SLOT, Some("B"));
+        let uid_a = [1u8; 16];
+        let uid_b = [2u8; 16];
+
+        let (scheduled_tx, scheduled_rx) = mpsc::unbounded_channel();
+        for (bank_id, block_uid) in [(&fork_a, uid_a), (&fork_b, uid_b)] {
+            scheduled_tx
+                .send(ScheduledShardCtx {
+                    bank_id: bank_id.clone(),
+                    block_uid,
+                    shard_idx: 0,
+                })
+                .expect("send scheduled shard ctx");
+        }
+        drop(scheduled_tx);
+
+        let stream = tokio_stream::iter(vec![
+            // Fork A, shard 0: entry 1 is sent twice, only the first one is forwarded.
+            Ok(mk_update(mk_entry(SLOT, 1))),
+            Ok(mk_update(mk_entry(SLOT, 1))),
+            Ok(mk_update(UpdateOneof::BlockMeta(
+                yellowstone_grpc_proto::geyser::SubscribeUpdateBlockMeta::default(),
+            ))),
+            Ok(mk_footer(uid_a, SLOT, 0)),
+            // Fork B, shard 0: same slot, same shard idx and same entry index as fork A.
+            Ok(mk_update(mk_entry(SLOT, 1))),
+            Ok(mk_update(mk_entry(SLOT, 2))),
+            Ok(mk_footer(uid_b, SLOT, 0)),
+        ]);
+
+        let result = PipelinedShardDownloader::pipelined_downloader(
+            stream,
+            outlet_tx,
+            completed_tx,
+            DedupState::default(),
+            scheduled_rx,
+        )
+        .await;
+        let Ok((None, dedup_state)) = result else {
+            panic!("expected downloader to exit cleanly")
+        };
+        assert!(dedup_state.is_shard_done(uid_a, 0));
+        assert!(dedup_state.is_shard_done(uid_b, 0));
+
+        let mut forwarded = Vec::new();
+        while let Some(event) = outlet_rx.next().await {
+            let Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent { bank_id, update })) =
+                event
+            else {
+                panic!("expected data event")
+            };
+            let Some(UpdateOneof::Entry(entry)) = update.update_oneof else {
+                panic!("expected entry update")
+            };
+            forwarded.push((bank_id, entry.index));
+        }
+        assert_eq!(
+            forwarded,
+            vec![
+                (fork_a.clone(), 1),
+                (fork_b.clone(), 1),
+                (fork_b.clone(), 2)
+            ]
+        );
+
+        let completed_a = completed_rx.recv().await.expect("fork A completion");
+        assert_eq!(completed_a.block_uid, uid_a);
+        assert!(completed_a.block_meta.is_some());
+        let completed_b = completed_rx.recv().await.expect("fork B completion");
+        assert_eq!(completed_b.block_uid, uid_b);
+        // Fork A block meta must not leak into fork B completion.
+        assert!(completed_b.block_meta.is_none());
     }
 }

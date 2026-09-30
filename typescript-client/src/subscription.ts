@@ -1,10 +1,16 @@
 import type { FumaroleSubscription as NapiSubscription } from '@triton-one/yellowstone-fumarole-napi'
 import { SubscribeRequest, SubscribeUpdate } from './grpc/geyser.js'
 
-/** A decoded event from a live Fumarole subscription. */
+/**
+ * A decoded event from a live Fumarole subscription.
+ *
+ * Events are scoped to a bank, identified by `(slot, blockhash)`: several banks (forks) can
+ * exist for the same slot. `blockhash` is `undefined` when the fumarole backend does not
+ * report it, in which case there is only a single bank for that slot.
+ */
 export type FumaroleEvent =
-  | { type: 'data'; slot: bigint; update: SubscribeUpdate }
-  | { type: 'slotEnded'; slot: bigint }
+  | { type: 'data'; slot: bigint; blockhash?: string; update: SubscribeUpdate }
+  | { type: 'slotEnded'; slot: bigint; blockhash?: string }
 
 /**
  * An active Fumarole subscription backed by the native Rust client.
@@ -34,11 +40,11 @@ export class FumaroleSubscription implements AsyncIterable<FumaroleEvent> {
     if (raw === null) return null
 
     if (raw.isSlotEnded) {
-      return { type: 'slotEnded', slot: raw.slot }
+      return { type: 'slotEnded', slot: raw.slot, blockhash: raw.blockhash }
     }
 
     const update = SubscribeUpdate.decode(raw.update!)
-    return { type: 'data', slot: raw.slot, update }
+    return { type: 'data', slot: raw.slot, blockhash: raw.blockhash, update }
   }
 
   /**
