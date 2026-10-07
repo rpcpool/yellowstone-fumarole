@@ -196,6 +196,35 @@ export function tokenAccountExpansionControlFlagToJSON(object: TokenAccountExpan
   }
 }
 
+/** Encoding of BlockFooterVotesAggregate.signature. Readers reject kinds they do not know. */
+export enum BlockFooterSignatureKind {
+  /** COMPRESSED_BLS12_381_G2 - 96 bytes. */
+  COMPRESSED_BLS12_381_G2 = 0,
+  UNRECOGNIZED = -1,
+}
+
+export function blockFooterSignatureKindFromJSON(object: any): BlockFooterSignatureKind {
+  switch (object) {
+    case 0:
+    case "COMPRESSED_BLS12_381_G2":
+      return BlockFooterSignatureKind.COMPRESSED_BLS12_381_G2;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return BlockFooterSignatureKind.UNRECOGNIZED;
+  }
+}
+
+export function blockFooterSignatureKindToJSON(object: BlockFooterSignatureKind): string {
+  switch (object) {
+    case BlockFooterSignatureKind.COMPRESSED_BLS12_381_G2:
+      return "COMPRESSED_BLS12_381_G2";
+    case BlockFooterSignatureKind.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export interface SubscribeRequest {
   accounts: { [key: string]: SubscribeRequestFilterAccounts };
   slots: { [key: string]: SubscribeRequestFilterSlots };
@@ -208,6 +237,7 @@ export interface SubscribeRequest {
   accountsDataSlice: SubscribeRequestAccountsDataSlice[];
   ping?: SubscribeRequestPing | undefined;
   fromSlot?: bigint | undefined;
+  blockFooter: { [key: string]: SubscribeRequestFilterBlockFooter };
 }
 
 export interface SubscribeRequest_AccountsEntry {
@@ -243,6 +273,11 @@ export interface SubscribeRequest_BlocksMetaEntry {
 export interface SubscribeRequest_EntryEntry {
   key: string;
   value: SubscribeRequestFilterEntry | undefined;
+}
+
+export interface SubscribeRequest_BlockFooterEntry {
+  key: string;
+  value: SubscribeRequestFilterBlockFooter | undefined;
 }
 
 export interface CuckooFilter {
@@ -323,6 +358,13 @@ export interface SubscribeRequestFilterBlocksMeta {
 }
 
 export interface SubscribeRequestFilterEntry {
+  /** Include SubscribeUpdateEntryUpdateParent updates. Omitted or false sends entries only. */
+  includeUpdateParent?: boolean | undefined;
+}
+
+export interface SubscribeRequestFilterBlockFooter {
+  /** Include available certificates. Omitted or false sends footer metadata only. */
+  includeCertificates?: boolean | undefined;
 }
 
 /**
@@ -337,6 +379,8 @@ export interface SubscribeRequestFilterDeshredTransactions {
   accountInclude: string[];
   accountExclude: string[];
   accountRequired: string[];
+  /** Include SubscribeUpdateDeshredUpdateParent updates. Omitted or false sends transactions only. */
+  includeUpdateParent?: boolean | undefined;
 }
 
 export interface SubscribeRequestAccountsDataSlice {
@@ -383,6 +427,8 @@ export interface SubscribeUpdate {
   pong?: SubscribeUpdatePong | undefined;
   blockMeta?: SubscribeUpdateBlockMeta | undefined;
   entry?: SubscribeUpdateEntry | undefined;
+  blockFooter?: SubscribeUpdateBlockFooter | undefined;
+  entryUpdateParent?: SubscribeUpdateEntryUpdateParent | undefined;
   createdAt: Date | undefined;
 }
 
@@ -436,6 +482,7 @@ export interface SubscribeUpdateTransactionStatus {
   isVote: boolean;
   index: bigint;
   err: TransactionError | undefined;
+  bankId: bigint;
 }
 
 export interface SubscribeUpdateBlock {
@@ -452,6 +499,7 @@ export interface SubscribeUpdateBlock {
   accounts: SubscribeUpdateAccountInfo[];
   entriesCount: bigint;
   entries: SubscribeUpdateEntry[];
+  bankId: bigint;
 }
 
 export interface SubscribeUpdateBlockMeta {
@@ -467,6 +515,58 @@ export interface SubscribeUpdateBlockMeta {
   bankId: bigint;
 }
 
+/**
+ * The Alpenglow block footer, sent as its own update as soon as the validator
+ * reports it. It does not wait for the block it belongs to. Consumers that need
+ * it alongside other per-block updates join on (slot, bank_id).
+ */
+export interface SubscribeUpdateBlockFooter {
+  slot: bigint;
+  bankId: bigint;
+  bankHash: Uint8Array;
+  blockProducerTimeNanos: bigint;
+  blockUserAgent: Uint8Array;
+  /** The Alpenglow certificates. Sent only when the filter sets include_certificates. */
+  blockFinalCert: BlockFooterFinalCert | undefined;
+  skipRewardCert: BlockFooterSkipRewardCert | undefined;
+  notarRewardCert: BlockFooterNotarRewardCert | undefined;
+}
+
+/** An aggregate signature over one vote, and the validators that signed it. */
+export interface BlockFooterVotesAggregate {
+  signatureKind: BlockFooterSignatureKind;
+  signature: Uint8Array;
+  /** Merkle root of the block's last data shred, not the PoH blockhash. Empty for votes on a slot. */
+  blockId: Uint8Array;
+  /**
+   * solana-signer-store bitmap, verbatim: version byte, u16 LE bit count, payload. Bit i is the
+   * validator at rank i in the cert slot's epoch, ordered by stake descending then BLS pubkey.
+   */
+  signerBitmap: Uint8Array;
+}
+
+/**
+ * Proves that the block is finalized. Slow finalization: final_aggregate signs a finalize vote on
+ * the slot and notar_aggregate a notarize vote on the block. Fast: final_aggregate alone, on the block.
+ */
+export interface BlockFooterFinalCert {
+  slot: bigint;
+  finalAggregate: BlockFooterVotesAggregate | undefined;
+  notarAggregate: BlockFooterVotesAggregate | undefined;
+}
+
+/** Records the validators that voted skip on the slot. */
+export interface BlockFooterSkipRewardCert {
+  slot: bigint;
+  aggregate: BlockFooterVotesAggregate | undefined;
+}
+
+/** Records the validators that voted notarize on the slot's block. */
+export interface BlockFooterNotarRewardCert {
+  slot: bigint;
+  aggregate: BlockFooterVotesAggregate | undefined;
+}
+
 export interface SubscribeUpdateEntry {
   slot: bigint;
   index: bigint;
@@ -476,6 +576,25 @@ export interface SubscribeUpdateEntry {
   /** added in v1.18, for solana 1.17 value is always 0 */
   startingTransactionIndex: bigint;
   bankId: bigint;
+}
+
+/**
+ * Invalidates entries for cleared_bank_id, including entries that arrive after this update.
+ * The replacement bank ID is reported by the CreatedBank slot update.
+ */
+export interface SubscribeUpdateEntryUpdateParent {
+  slot: bigint;
+  clearedBankId: bigint;
+  parentSlot: bigint;
+  parentBlockId: Uint8Array;
+}
+
+/** Precedes transactions from the data set at this UpdateParent FEC-set boundary. */
+export interface SubscribeUpdateDeshredUpdateParent {
+  slot: bigint;
+  updateParentFecSetIndex: number;
+  parentSlot: bigint;
+  parentBlockId: Uint8Array;
 }
 
 export interface SubscribeUpdateDeshredTransaction {
@@ -509,7 +628,60 @@ export interface SubscribeUpdateDeshred {
     | undefined;
   /** field 5 is reserved for created_at (below the oneof) */
   slot?: SubscribeUpdateSlot | undefined;
+  deshredUpdateParent?: SubscribeUpdateDeshredUpdateParent | undefined;
   createdAt: Date | undefined;
+}
+
+export interface SubscribeGossipRequest {
+}
+
+export interface SubscribeUpdateGossip {
+  node?: SubscribeUpdateContactInfoNode | undefined;
+  removed?:
+    | SubscribeUpdateContactInfoRemoved
+    | undefined;
+  /** Server keepalive; the stream can be silent for minutes on a stable cluster. */
+  ping?: SubscribeUpdatePing | undefined;
+  snapshot?: GossipTopology | undefined;
+  createdAt:
+    | Date
+    | undefined;
+  /** Table revision: for `snapshot` the revision copied, for `node`/`removed` the revision applied. Increases by one per change. Unset (0) for `ping`. */
+  seq: bigint;
+}
+
+/** Full copy of the server-side gossip contact info table, sent when a client subscribes. Later `node`/`removed` updates carry `seq > snapshot.seq`. */
+export interface GossipTopology {
+  nodes: SubscribeUpdateContactInfoNode[];
+}
+
+export interface SubscribeUpdateContactInfoNode {
+  pubkey: Uint8Array;
+  wallclock: bigint;
+  outset: bigint;
+  shredVersion: number;
+  versionMajor: number;
+  versionMinor: number;
+  versionPatch: number;
+  versionCommit: number;
+  versionFeatureSet: number;
+  versionClientId: number;
+  gossip?: string | undefined;
+  tpuQuic?: string | undefined;
+  tpuForwardsQuic?: string | undefined;
+  tpuVoteUdp?: string | undefined;
+  tpuVoteQuic?: string | undefined;
+  tvuUdp?: string | undefined;
+  tvuQuic?: string | undefined;
+  serveRepairUdp?: string | undefined;
+  serveRepairQuic?: string | undefined;
+  rpc?: string | undefined;
+  rpcPubsub?: string | undefined;
+  alpenglow?: string | undefined;
+}
+
+export interface SubscribeUpdateContactInfoRemoved {
+  pubkey: Uint8Array;
 }
 
 export interface SubscribeReplayInfoRequest {
@@ -583,6 +755,7 @@ function createBaseSubscribeRequest(): SubscribeRequest {
     accountsDataSlice: [],
     ping: undefined,
     fromSlot: undefined,
+    blockFooter: {},
   };
 }
 
@@ -630,6 +803,11 @@ export const SubscribeRequest: MessageFns<SubscribeRequest> = {
       }
       writer.uint32(88).uint64(message.fromSlot);
     }
+    globalThis.Object.entries(message.blockFooter).forEach(
+      ([key, value]: [string, SubscribeRequestFilterBlockFooter]) => {
+        SubscribeRequest_BlockFooterEntry.encode({ key: key as any, value }, writer.uint32(98).fork()).join();
+      },
+    );
     return writer;
   },
 
@@ -749,6 +927,17 @@ export const SubscribeRequest: MessageFns<SubscribeRequest> = {
           message.fromSlot = reader.uint64() as bigint;
           continue;
         }
+        case 12: {
+          if (tag !== 98) {
+            break;
+          }
+
+          const entry12 = SubscribeRequest_BlockFooterEntry.decode(reader, reader.uint32());
+          if (entry12.value !== undefined) {
+            message.blockFooter[entry12.key] = entry12.value;
+          }
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -851,6 +1040,23 @@ export const SubscribeRequest: MessageFns<SubscribeRequest> = {
         : isSet(object.from_slot)
         ? BigInt(object.from_slot)
         : undefined,
+      blockFooter: isObject(object.blockFooter)
+        ? (globalThis.Object.entries(object.blockFooter) as [string, any][]).reduce(
+          (acc: { [key: string]: SubscribeRequestFilterBlockFooter }, [key, value]: [string, any]) => {
+            acc[key] = SubscribeRequestFilterBlockFooter.fromJSON(value);
+            return acc;
+          },
+          {},
+        )
+        : isObject(object.block_footer)
+        ? (globalThis.Object.entries(object.block_footer) as [string, any][]).reduce(
+          (acc: { [key: string]: SubscribeRequestFilterBlockFooter }, [key, value]: [string, any]) => {
+            acc[key] = SubscribeRequestFilterBlockFooter.fromJSON(value);
+            return acc;
+          },
+          {},
+        )
+        : {},
     };
   },
 
@@ -933,6 +1139,15 @@ export const SubscribeRequest: MessageFns<SubscribeRequest> = {
     }
     if (message.fromSlot !== undefined) {
       obj.fromSlot = message.fromSlot.toString();
+    }
+    if (message.blockFooter) {
+      const entries = globalThis.Object.entries(message.blockFooter) as [string, SubscribeRequestFilterBlockFooter][];
+      if (entries.length > 0) {
+        obj.blockFooter = {};
+        entries.forEach(([k, v]) => {
+          obj.blockFooter[k] = SubscribeRequestFilterBlockFooter.toJSON(v);
+        });
+      }
     }
     return obj;
   },
@@ -1033,6 +1248,19 @@ export const SubscribeRequest: MessageFns<SubscribeRequest> = {
       ? SubscribeRequestPing.fromPartial(object.ping)
       : undefined;
     message.fromSlot = object.fromSlot ?? undefined;
+    message.blockFooter =
+      (globalThis.Object.entries(object.blockFooter ?? {}) as [string, SubscribeRequestFilterBlockFooter][]).reduce(
+        (
+          acc: { [key: string]: SubscribeRequestFilterBlockFooter },
+          [key, value]: [string, SubscribeRequestFilterBlockFooter],
+        ) => {
+          if (value !== undefined) {
+            acc[key] = SubscribeRequestFilterBlockFooter.fromPartial(value);
+          }
+          return acc;
+        },
+        {},
+      );
     return message;
   },
 };
@@ -1592,6 +1820,88 @@ export const SubscribeRequest_EntryEntry: MessageFns<SubscribeRequest_EntryEntry
     message.key = object.key ?? "";
     message.value = (object.value !== undefined && object.value !== null)
       ? SubscribeRequestFilterEntry.fromPartial(object.value)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseSubscribeRequest_BlockFooterEntry(): SubscribeRequest_BlockFooterEntry {
+  return { key: "", value: undefined };
+}
+
+export const SubscribeRequest_BlockFooterEntry: MessageFns<SubscribeRequest_BlockFooterEntry> = {
+  encode(message: SubscribeRequest_BlockFooterEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.key !== "") {
+      writer.uint32(10).string(message.key);
+    }
+    if (message.value !== undefined) {
+      SubscribeRequestFilterBlockFooter.encode(message.value, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SubscribeRequest_BlockFooterEntry {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSubscribeRequest_BlockFooterEntry();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.key = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.value = SubscribeRequestFilterBlockFooter.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SubscribeRequest_BlockFooterEntry {
+    return {
+      key: isSet(object.key) ? globalThis.String(object.key) : "",
+      value: isSet(object.value) ? SubscribeRequestFilterBlockFooter.fromJSON(object.value) : undefined,
+    };
+  },
+
+  toJSON(message: SubscribeRequest_BlockFooterEntry): unknown {
+    const obj: any = {};
+    if (message.key !== "") {
+      obj.key = message.key;
+    }
+    if (message.value !== undefined) {
+      obj.value = SubscribeRequestFilterBlockFooter.toJSON(message.value);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SubscribeRequest_BlockFooterEntry>, I>>(
+    base?: I,
+  ): SubscribeRequest_BlockFooterEntry {
+    return SubscribeRequest_BlockFooterEntry.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SubscribeRequest_BlockFooterEntry>, I>>(
+    object: I,
+  ): SubscribeRequest_BlockFooterEntry {
+    const message = createBaseSubscribeRequest_BlockFooterEntry();
+    message.key = object.key ?? "";
+    message.value = (object.value !== undefined && object.value !== null)
+      ? SubscribeRequestFilterBlockFooter.fromPartial(object.value)
       : undefined;
     return message;
   },
@@ -2763,11 +3073,14 @@ export const SubscribeRequestFilterBlocksMeta: MessageFns<SubscribeRequestFilter
 };
 
 function createBaseSubscribeRequestFilterEntry(): SubscribeRequestFilterEntry {
-  return {};
+  return { includeUpdateParent: undefined };
 }
 
 export const SubscribeRequestFilterEntry: MessageFns<SubscribeRequestFilterEntry> = {
-  encode(_: SubscribeRequestFilterEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+  encode(message: SubscribeRequestFilterEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.includeUpdateParent !== undefined) {
+      writer.uint32(8).bool(message.includeUpdateParent);
+    }
     return writer;
   },
 
@@ -2778,6 +3091,14 @@ export const SubscribeRequestFilterEntry: MessageFns<SubscribeRequestFilterEntry
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.includeUpdateParent = reader.bool();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2787,26 +3108,110 @@ export const SubscribeRequestFilterEntry: MessageFns<SubscribeRequestFilterEntry
     return message;
   },
 
-  fromJSON(_: any): SubscribeRequestFilterEntry {
-    return {};
+  fromJSON(object: any): SubscribeRequestFilterEntry {
+    return {
+      includeUpdateParent: isSet(object.includeUpdateParent)
+        ? globalThis.Boolean(object.includeUpdateParent)
+        : isSet(object.include_update_parent)
+        ? globalThis.Boolean(object.include_update_parent)
+        : undefined,
+    };
   },
 
-  toJSON(_: SubscribeRequestFilterEntry): unknown {
+  toJSON(message: SubscribeRequestFilterEntry): unknown {
     const obj: any = {};
+    if (message.includeUpdateParent !== undefined) {
+      obj.includeUpdateParent = message.includeUpdateParent;
+    }
     return obj;
   },
 
   create<I extends Exact<DeepPartial<SubscribeRequestFilterEntry>, I>>(base?: I): SubscribeRequestFilterEntry {
     return SubscribeRequestFilterEntry.fromPartial(base ?? ({} as any));
   },
-  fromPartial<I extends Exact<DeepPartial<SubscribeRequestFilterEntry>, I>>(_: I): SubscribeRequestFilterEntry {
+  fromPartial<I extends Exact<DeepPartial<SubscribeRequestFilterEntry>, I>>(object: I): SubscribeRequestFilterEntry {
     const message = createBaseSubscribeRequestFilterEntry();
+    message.includeUpdateParent = object.includeUpdateParent ?? undefined;
+    return message;
+  },
+};
+
+function createBaseSubscribeRequestFilterBlockFooter(): SubscribeRequestFilterBlockFooter {
+  return { includeCertificates: undefined };
+}
+
+export const SubscribeRequestFilterBlockFooter: MessageFns<SubscribeRequestFilterBlockFooter> = {
+  encode(message: SubscribeRequestFilterBlockFooter, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.includeCertificates !== undefined) {
+      writer.uint32(8).bool(message.includeCertificates);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SubscribeRequestFilterBlockFooter {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSubscribeRequestFilterBlockFooter();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.includeCertificates = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SubscribeRequestFilterBlockFooter {
+    return {
+      includeCertificates: isSet(object.includeCertificates)
+        ? globalThis.Boolean(object.includeCertificates)
+        : isSet(object.include_certificates)
+        ? globalThis.Boolean(object.include_certificates)
+        : undefined,
+    };
+  },
+
+  toJSON(message: SubscribeRequestFilterBlockFooter): unknown {
+    const obj: any = {};
+    if (message.includeCertificates !== undefined) {
+      obj.includeCertificates = message.includeCertificates;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SubscribeRequestFilterBlockFooter>, I>>(
+    base?: I,
+  ): SubscribeRequestFilterBlockFooter {
+    return SubscribeRequestFilterBlockFooter.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SubscribeRequestFilterBlockFooter>, I>>(
+    object: I,
+  ): SubscribeRequestFilterBlockFooter {
+    const message = createBaseSubscribeRequestFilterBlockFooter();
+    message.includeCertificates = object.includeCertificates ?? undefined;
     return message;
   },
 };
 
 function createBaseSubscribeRequestFilterDeshredTransactions(): SubscribeRequestFilterDeshredTransactions {
-  return { vote: undefined, accountInclude: [], accountExclude: [], accountRequired: [] };
+  return {
+    vote: undefined,
+    accountInclude: [],
+    accountExclude: [],
+    accountRequired: [],
+    includeUpdateParent: undefined,
+  };
 }
 
 export const SubscribeRequestFilterDeshredTransactions: MessageFns<SubscribeRequestFilterDeshredTransactions> = {
@@ -2822,6 +3227,9 @@ export const SubscribeRequestFilterDeshredTransactions: MessageFns<SubscribeRequ
     }
     for (const v of message.accountRequired) {
       writer.uint32(34).string(v!);
+    }
+    if (message.includeUpdateParent !== undefined) {
+      writer.uint32(40).bool(message.includeUpdateParent);
     }
     return writer;
   },
@@ -2865,6 +3273,14 @@ export const SubscribeRequestFilterDeshredTransactions: MessageFns<SubscribeRequ
           message.accountRequired.push(reader.string());
           continue;
         }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.includeUpdateParent = reader.bool();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2892,6 +3308,11 @@ export const SubscribeRequestFilterDeshredTransactions: MessageFns<SubscribeRequ
         : globalThis.Array.isArray(object?.account_required)
         ? object.account_required.map((e: any) => globalThis.String(e))
         : [],
+      includeUpdateParent: isSet(object.includeUpdateParent)
+        ? globalThis.Boolean(object.includeUpdateParent)
+        : isSet(object.include_update_parent)
+        ? globalThis.Boolean(object.include_update_parent)
+        : undefined,
     };
   },
 
@@ -2909,6 +3330,9 @@ export const SubscribeRequestFilterDeshredTransactions: MessageFns<SubscribeRequ
     if (message.accountRequired?.length) {
       obj.accountRequired = message.accountRequired;
     }
+    if (message.includeUpdateParent !== undefined) {
+      obj.includeUpdateParent = message.includeUpdateParent;
+    }
     return obj;
   },
 
@@ -2925,6 +3349,7 @@ export const SubscribeRequestFilterDeshredTransactions: MessageFns<SubscribeRequ
     message.accountInclude = object.accountInclude?.map((e) => e) || [];
     message.accountExclude = object.accountExclude?.map((e) => e) || [];
     message.accountRequired = object.accountRequired?.map((e) => e) || [];
+    message.includeUpdateParent = object.includeUpdateParent ?? undefined;
     return message;
   },
 };
@@ -3419,6 +3844,8 @@ function createBaseSubscribeUpdate(): SubscribeUpdate {
     pong: undefined,
     blockMeta: undefined,
     entry: undefined,
+    blockFooter: undefined,
+    entryUpdateParent: undefined,
     createdAt: undefined,
   };
 }
@@ -3454,6 +3881,12 @@ export const SubscribeUpdate: MessageFns<SubscribeUpdate> = {
     }
     if (message.entry !== undefined) {
       SubscribeUpdateEntry.encode(message.entry, writer.uint32(66).fork()).join();
+    }
+    if (message.blockFooter !== undefined) {
+      SubscribeUpdateBlockFooter.encode(message.blockFooter, writer.uint32(98).fork()).join();
+    }
+    if (message.entryUpdateParent !== undefined) {
+      SubscribeUpdateEntryUpdateParent.encode(message.entryUpdateParent, writer.uint32(106).fork()).join();
     }
     if (message.createdAt !== undefined) {
       Timestamp.encode(toTimestamp(message.createdAt), writer.uint32(90).fork()).join();
@@ -3548,6 +3981,22 @@ export const SubscribeUpdate: MessageFns<SubscribeUpdate> = {
           message.entry = SubscribeUpdateEntry.decode(reader, reader.uint32());
           continue;
         }
+        case 12: {
+          if (tag !== 98) {
+            break;
+          }
+
+          message.blockFooter = SubscribeUpdateBlockFooter.decode(reader, reader.uint32());
+          continue;
+        }
+        case 13: {
+          if (tag !== 106) {
+            break;
+          }
+
+          message.entryUpdateParent = SubscribeUpdateEntryUpdateParent.decode(reader, reader.uint32());
+          continue;
+        }
         case 11: {
           if (tag !== 90) {
             break;
@@ -3585,6 +4034,16 @@ export const SubscribeUpdate: MessageFns<SubscribeUpdate> = {
         ? SubscribeUpdateBlockMeta.fromJSON(object.block_meta)
         : undefined,
       entry: isSet(object.entry) ? SubscribeUpdateEntry.fromJSON(object.entry) : undefined,
+      blockFooter: isSet(object.blockFooter)
+        ? SubscribeUpdateBlockFooter.fromJSON(object.blockFooter)
+        : isSet(object.block_footer)
+        ? SubscribeUpdateBlockFooter.fromJSON(object.block_footer)
+        : undefined,
+      entryUpdateParent: isSet(object.entryUpdateParent)
+        ? SubscribeUpdateEntryUpdateParent.fromJSON(object.entryUpdateParent)
+        : isSet(object.entry_update_parent)
+        ? SubscribeUpdateEntryUpdateParent.fromJSON(object.entry_update_parent)
+        : undefined,
       createdAt: isSet(object.createdAt)
         ? fromJsonTimestamp(object.createdAt)
         : isSet(object.created_at)
@@ -3625,6 +4084,12 @@ export const SubscribeUpdate: MessageFns<SubscribeUpdate> = {
     if (message.entry !== undefined) {
       obj.entry = SubscribeUpdateEntry.toJSON(message.entry);
     }
+    if (message.blockFooter !== undefined) {
+      obj.blockFooter = SubscribeUpdateBlockFooter.toJSON(message.blockFooter);
+    }
+    if (message.entryUpdateParent !== undefined) {
+      obj.entryUpdateParent = SubscribeUpdateEntryUpdateParent.toJSON(message.entryUpdateParent);
+    }
     if (message.createdAt !== undefined) {
       obj.createdAt = message.createdAt.toISOString();
     }
@@ -3663,6 +4128,12 @@ export const SubscribeUpdate: MessageFns<SubscribeUpdate> = {
       : undefined;
     message.entry = (object.entry !== undefined && object.entry !== null)
       ? SubscribeUpdateEntry.fromPartial(object.entry)
+      : undefined;
+    message.blockFooter = (object.blockFooter !== undefined && object.blockFooter !== null)
+      ? SubscribeUpdateBlockFooter.fromPartial(object.blockFooter)
+      : undefined;
+    message.entryUpdateParent = (object.entryUpdateParent !== undefined && object.entryUpdateParent !== null)
+      ? SubscribeUpdateEntryUpdateParent.fromPartial(object.entryUpdateParent)
       : undefined;
     message.createdAt = object.createdAt ?? undefined;
     return message;
@@ -4366,7 +4837,7 @@ export const SubscribeUpdateTransactionInfo: MessageFns<SubscribeUpdateTransacti
 };
 
 function createBaseSubscribeUpdateTransactionStatus(): SubscribeUpdateTransactionStatus {
-  return { slot: 0n, signature: new Uint8Array(0), isVote: false, index: 0n, err: undefined };
+  return { slot: 0n, signature: new Uint8Array(0), isVote: false, index: 0n, err: undefined, bankId: 0n };
 }
 
 export const SubscribeUpdateTransactionStatus: MessageFns<SubscribeUpdateTransactionStatus> = {
@@ -4391,6 +4862,12 @@ export const SubscribeUpdateTransactionStatus: MessageFns<SubscribeUpdateTransac
     }
     if (message.err !== undefined) {
       TransactionError.encode(message.err, writer.uint32(42).fork()).join();
+    }
+    if (message.bankId !== 0n) {
+      if (BigInt.asUintN(64, message.bankId) !== message.bankId) {
+        throw new globalThis.Error("value provided for field message.bankId of type uint64 too large");
+      }
+      writer.uint32(48).uint64(message.bankId);
     }
     return writer;
   },
@@ -4442,6 +4919,14 @@ export const SubscribeUpdateTransactionStatus: MessageFns<SubscribeUpdateTransac
           message.err = TransactionError.decode(reader, reader.uint32());
           continue;
         }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.bankId = reader.uint64() as bigint;
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -4462,6 +4947,7 @@ export const SubscribeUpdateTransactionStatus: MessageFns<SubscribeUpdateTransac
         : false,
       index: isSet(object.index) ? BigInt(object.index) : 0n,
       err: isSet(object.err) ? TransactionError.fromJSON(object.err) : undefined,
+      bankId: isSet(object.bankId) ? BigInt(object.bankId) : isSet(object.bank_id) ? BigInt(object.bank_id) : 0n,
     };
   },
 
@@ -4482,6 +4968,9 @@ export const SubscribeUpdateTransactionStatus: MessageFns<SubscribeUpdateTransac
     if (message.err !== undefined) {
       obj.err = TransactionError.toJSON(message.err);
     }
+    if (message.bankId !== 0n) {
+      obj.bankId = message.bankId.toString();
+    }
     return obj;
   },
 
@@ -4501,6 +4990,7 @@ export const SubscribeUpdateTransactionStatus: MessageFns<SubscribeUpdateTransac
     message.err = (object.err !== undefined && object.err !== null)
       ? TransactionError.fromPartial(object.err)
       : undefined;
+    message.bankId = object.bankId ?? 0n;
     return message;
   },
 };
@@ -4520,6 +5010,7 @@ function createBaseSubscribeUpdateBlock(): SubscribeUpdateBlock {
     accounts: [],
     entriesCount: 0n,
     entries: [],
+    bankId: 0n,
   };
 }
 
@@ -4580,6 +5071,12 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
     }
     for (const v of message.entries) {
       SubscribeUpdateEntry.encode(v!, writer.uint32(106).fork()).join();
+    }
+    if (message.bankId !== 0n) {
+      if (BigInt.asUintN(64, message.bankId) !== message.bankId) {
+        throw new globalThis.Error("value provided for field message.bankId of type uint64 too large");
+      }
+      writer.uint32(112).uint64(message.bankId);
     }
     return writer;
   },
@@ -4695,6 +5192,14 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
           message.entries.push(SubscribeUpdateEntry.decode(reader, reader.uint32()));
           continue;
         }
+        case 14: {
+          if (tag !== 112) {
+            break;
+          }
+
+          message.bankId = reader.uint64() as bigint;
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -4753,6 +5258,7 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
       entries: globalThis.Array.isArray(object?.entries)
         ? object.entries.map((e: any) => SubscribeUpdateEntry.fromJSON(e))
         : [],
+      bankId: isSet(object.bankId) ? BigInt(object.bankId) : isSet(object.bank_id) ? BigInt(object.bank_id) : 0n,
     };
   },
 
@@ -4797,6 +5303,9 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
     if (message.entries?.length) {
       obj.entries = message.entries.map((e) => SubscribeUpdateEntry.toJSON(e));
     }
+    if (message.bankId !== 0n) {
+      obj.bankId = message.bankId.toString();
+    }
     return obj;
   },
 
@@ -4824,6 +5333,7 @@ export const SubscribeUpdateBlock: MessageFns<SubscribeUpdateBlock> = {
     message.accounts = object.accounts?.map((e) => SubscribeUpdateAccountInfo.fromPartial(e)) || [];
     message.entriesCount = object.entriesCount ?? 0n;
     message.entries = object.entries?.map((e) => SubscribeUpdateEntry.fromPartial(e)) || [];
+    message.bankId = object.bankId ?? 0n;
     return message;
   },
 };
@@ -5090,6 +5600,620 @@ export const SubscribeUpdateBlockMeta: MessageFns<SubscribeUpdateBlockMeta> = {
   },
 };
 
+function createBaseSubscribeUpdateBlockFooter(): SubscribeUpdateBlockFooter {
+  return {
+    slot: 0n,
+    bankId: 0n,
+    bankHash: new Uint8Array(0),
+    blockProducerTimeNanos: 0n,
+    blockUserAgent: new Uint8Array(0),
+    blockFinalCert: undefined,
+    skipRewardCert: undefined,
+    notarRewardCert: undefined,
+  };
+}
+
+export const SubscribeUpdateBlockFooter: MessageFns<SubscribeUpdateBlockFooter> = {
+  encode(message: SubscribeUpdateBlockFooter, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
+      writer.uint32(8).uint64(message.slot);
+    }
+    if (message.bankId !== 0n) {
+      if (BigInt.asUintN(64, message.bankId) !== message.bankId) {
+        throw new globalThis.Error("value provided for field message.bankId of type uint64 too large");
+      }
+      writer.uint32(16).uint64(message.bankId);
+    }
+    if (message.bankHash.length !== 0) {
+      writer.uint32(26).bytes(message.bankHash);
+    }
+    if (message.blockProducerTimeNanos !== 0n) {
+      if (BigInt.asUintN(64, message.blockProducerTimeNanos) !== message.blockProducerTimeNanos) {
+        throw new globalThis.Error("value provided for field message.blockProducerTimeNanos of type uint64 too large");
+      }
+      writer.uint32(32).uint64(message.blockProducerTimeNanos);
+    }
+    if (message.blockUserAgent.length !== 0) {
+      writer.uint32(42).bytes(message.blockUserAgent);
+    }
+    if (message.blockFinalCert !== undefined) {
+      BlockFooterFinalCert.encode(message.blockFinalCert, writer.uint32(74).fork()).join();
+    }
+    if (message.skipRewardCert !== undefined) {
+      BlockFooterSkipRewardCert.encode(message.skipRewardCert, writer.uint32(82).fork()).join();
+    }
+    if (message.notarRewardCert !== undefined) {
+      BlockFooterNotarRewardCert.encode(message.notarRewardCert, writer.uint32(90).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SubscribeUpdateBlockFooter {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSubscribeUpdateBlockFooter();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.slot = reader.uint64() as bigint;
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.bankId = reader.uint64() as bigint;
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.bankHash = reader.bytes();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.blockProducerTimeNanos = reader.uint64() as bigint;
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.blockUserAgent = reader.bytes();
+          continue;
+        }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.blockFinalCert = BlockFooterFinalCert.decode(reader, reader.uint32());
+          continue;
+        }
+        case 10: {
+          if (tag !== 82) {
+            break;
+          }
+
+          message.skipRewardCert = BlockFooterSkipRewardCert.decode(reader, reader.uint32());
+          continue;
+        }
+        case 11: {
+          if (tag !== 90) {
+            break;
+          }
+
+          message.notarRewardCert = BlockFooterNotarRewardCert.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SubscribeUpdateBlockFooter {
+    return {
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
+      bankId: isSet(object.bankId) ? BigInt(object.bankId) : isSet(object.bank_id) ? BigInt(object.bank_id) : 0n,
+      bankHash: isSet(object.bankHash)
+        ? bytesFromBase64(object.bankHash)
+        : isSet(object.bank_hash)
+        ? bytesFromBase64(object.bank_hash)
+        : new Uint8Array(0),
+      blockProducerTimeNanos: isSet(object.blockProducerTimeNanos)
+        ? BigInt(object.blockProducerTimeNanos)
+        : isSet(object.block_producer_time_nanos)
+        ? BigInt(object.block_producer_time_nanos)
+        : 0n,
+      blockUserAgent: isSet(object.blockUserAgent)
+        ? bytesFromBase64(object.blockUserAgent)
+        : isSet(object.block_user_agent)
+        ? bytesFromBase64(object.block_user_agent)
+        : new Uint8Array(0),
+      blockFinalCert: isSet(object.blockFinalCert)
+        ? BlockFooterFinalCert.fromJSON(object.blockFinalCert)
+        : isSet(object.block_final_cert)
+        ? BlockFooterFinalCert.fromJSON(object.block_final_cert)
+        : undefined,
+      skipRewardCert: isSet(object.skipRewardCert)
+        ? BlockFooterSkipRewardCert.fromJSON(object.skipRewardCert)
+        : isSet(object.skip_reward_cert)
+        ? BlockFooterSkipRewardCert.fromJSON(object.skip_reward_cert)
+        : undefined,
+      notarRewardCert: isSet(object.notarRewardCert)
+        ? BlockFooterNotarRewardCert.fromJSON(object.notarRewardCert)
+        : isSet(object.notar_reward_cert)
+        ? BlockFooterNotarRewardCert.fromJSON(object.notar_reward_cert)
+        : undefined,
+    };
+  },
+
+  toJSON(message: SubscribeUpdateBlockFooter): unknown {
+    const obj: any = {};
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
+    }
+    if (message.bankId !== 0n) {
+      obj.bankId = message.bankId.toString();
+    }
+    if (message.bankHash.length !== 0) {
+      obj.bankHash = base64FromBytes(message.bankHash);
+    }
+    if (message.blockProducerTimeNanos !== 0n) {
+      obj.blockProducerTimeNanos = message.blockProducerTimeNanos.toString();
+    }
+    if (message.blockUserAgent.length !== 0) {
+      obj.blockUserAgent = base64FromBytes(message.blockUserAgent);
+    }
+    if (message.blockFinalCert !== undefined) {
+      obj.blockFinalCert = BlockFooterFinalCert.toJSON(message.blockFinalCert);
+    }
+    if (message.skipRewardCert !== undefined) {
+      obj.skipRewardCert = BlockFooterSkipRewardCert.toJSON(message.skipRewardCert);
+    }
+    if (message.notarRewardCert !== undefined) {
+      obj.notarRewardCert = BlockFooterNotarRewardCert.toJSON(message.notarRewardCert);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SubscribeUpdateBlockFooter>, I>>(base?: I): SubscribeUpdateBlockFooter {
+    return SubscribeUpdateBlockFooter.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SubscribeUpdateBlockFooter>, I>>(object: I): SubscribeUpdateBlockFooter {
+    const message = createBaseSubscribeUpdateBlockFooter();
+    message.slot = object.slot ?? 0n;
+    message.bankId = object.bankId ?? 0n;
+    message.bankHash = object.bankHash ?? new Uint8Array(0);
+    message.blockProducerTimeNanos = object.blockProducerTimeNanos ?? 0n;
+    message.blockUserAgent = object.blockUserAgent ?? new Uint8Array(0);
+    message.blockFinalCert = (object.blockFinalCert !== undefined && object.blockFinalCert !== null)
+      ? BlockFooterFinalCert.fromPartial(object.blockFinalCert)
+      : undefined;
+    message.skipRewardCert = (object.skipRewardCert !== undefined && object.skipRewardCert !== null)
+      ? BlockFooterSkipRewardCert.fromPartial(object.skipRewardCert)
+      : undefined;
+    message.notarRewardCert = (object.notarRewardCert !== undefined && object.notarRewardCert !== null)
+      ? BlockFooterNotarRewardCert.fromPartial(object.notarRewardCert)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseBlockFooterVotesAggregate(): BlockFooterVotesAggregate {
+  return {
+    signatureKind: 0,
+    signature: new Uint8Array(0),
+    blockId: new Uint8Array(0),
+    signerBitmap: new Uint8Array(0),
+  };
+}
+
+export const BlockFooterVotesAggregate: MessageFns<BlockFooterVotesAggregate> = {
+  encode(message: BlockFooterVotesAggregate, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.signatureKind !== 0) {
+      writer.uint32(8).int32(message.signatureKind);
+    }
+    if (message.signature.length !== 0) {
+      writer.uint32(18).bytes(message.signature);
+    }
+    if (message.blockId.length !== 0) {
+      writer.uint32(26).bytes(message.blockId);
+    }
+    if (message.signerBitmap.length !== 0) {
+      writer.uint32(34).bytes(message.signerBitmap);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): BlockFooterVotesAggregate {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseBlockFooterVotesAggregate();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.signatureKind = reader.int32() as any;
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.signature = reader.bytes();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.blockId = reader.bytes();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.signerBitmap = reader.bytes();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): BlockFooterVotesAggregate {
+    return {
+      signatureKind: isSet(object.signatureKind)
+        ? blockFooterSignatureKindFromJSON(object.signatureKind)
+        : isSet(object.signature_kind)
+        ? blockFooterSignatureKindFromJSON(object.signature_kind)
+        : 0,
+      signature: isSet(object.signature) ? bytesFromBase64(object.signature) : new Uint8Array(0),
+      blockId: isSet(object.blockId)
+        ? bytesFromBase64(object.blockId)
+        : isSet(object.block_id)
+        ? bytesFromBase64(object.block_id)
+        : new Uint8Array(0),
+      signerBitmap: isSet(object.signerBitmap)
+        ? bytesFromBase64(object.signerBitmap)
+        : isSet(object.signer_bitmap)
+        ? bytesFromBase64(object.signer_bitmap)
+        : new Uint8Array(0),
+    };
+  },
+
+  toJSON(message: BlockFooterVotesAggregate): unknown {
+    const obj: any = {};
+    if (message.signatureKind !== 0) {
+      obj.signatureKind = blockFooterSignatureKindToJSON(message.signatureKind);
+    }
+    if (message.signature.length !== 0) {
+      obj.signature = base64FromBytes(message.signature);
+    }
+    if (message.blockId.length !== 0) {
+      obj.blockId = base64FromBytes(message.blockId);
+    }
+    if (message.signerBitmap.length !== 0) {
+      obj.signerBitmap = base64FromBytes(message.signerBitmap);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<BlockFooterVotesAggregate>, I>>(base?: I): BlockFooterVotesAggregate {
+    return BlockFooterVotesAggregate.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<BlockFooterVotesAggregate>, I>>(object: I): BlockFooterVotesAggregate {
+    const message = createBaseBlockFooterVotesAggregate();
+    message.signatureKind = object.signatureKind ?? 0;
+    message.signature = object.signature ?? new Uint8Array(0);
+    message.blockId = object.blockId ?? new Uint8Array(0);
+    message.signerBitmap = object.signerBitmap ?? new Uint8Array(0);
+    return message;
+  },
+};
+
+function createBaseBlockFooterFinalCert(): BlockFooterFinalCert {
+  return { slot: 0n, finalAggregate: undefined, notarAggregate: undefined };
+}
+
+export const BlockFooterFinalCert: MessageFns<BlockFooterFinalCert> = {
+  encode(message: BlockFooterFinalCert, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
+      writer.uint32(8).uint64(message.slot);
+    }
+    if (message.finalAggregate !== undefined) {
+      BlockFooterVotesAggregate.encode(message.finalAggregate, writer.uint32(18).fork()).join();
+    }
+    if (message.notarAggregate !== undefined) {
+      BlockFooterVotesAggregate.encode(message.notarAggregate, writer.uint32(26).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): BlockFooterFinalCert {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseBlockFooterFinalCert();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.slot = reader.uint64() as bigint;
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.finalAggregate = BlockFooterVotesAggregate.decode(reader, reader.uint32());
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.notarAggregate = BlockFooterVotesAggregate.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): BlockFooterFinalCert {
+    return {
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
+      finalAggregate: isSet(object.finalAggregate)
+        ? BlockFooterVotesAggregate.fromJSON(object.finalAggregate)
+        : isSet(object.final_aggregate)
+        ? BlockFooterVotesAggregate.fromJSON(object.final_aggregate)
+        : undefined,
+      notarAggregate: isSet(object.notarAggregate)
+        ? BlockFooterVotesAggregate.fromJSON(object.notarAggregate)
+        : isSet(object.notar_aggregate)
+        ? BlockFooterVotesAggregate.fromJSON(object.notar_aggregate)
+        : undefined,
+    };
+  },
+
+  toJSON(message: BlockFooterFinalCert): unknown {
+    const obj: any = {};
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
+    }
+    if (message.finalAggregate !== undefined) {
+      obj.finalAggregate = BlockFooterVotesAggregate.toJSON(message.finalAggregate);
+    }
+    if (message.notarAggregate !== undefined) {
+      obj.notarAggregate = BlockFooterVotesAggregate.toJSON(message.notarAggregate);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<BlockFooterFinalCert>, I>>(base?: I): BlockFooterFinalCert {
+    return BlockFooterFinalCert.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<BlockFooterFinalCert>, I>>(object: I): BlockFooterFinalCert {
+    const message = createBaseBlockFooterFinalCert();
+    message.slot = object.slot ?? 0n;
+    message.finalAggregate = (object.finalAggregate !== undefined && object.finalAggregate !== null)
+      ? BlockFooterVotesAggregate.fromPartial(object.finalAggregate)
+      : undefined;
+    message.notarAggregate = (object.notarAggregate !== undefined && object.notarAggregate !== null)
+      ? BlockFooterVotesAggregate.fromPartial(object.notarAggregate)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseBlockFooterSkipRewardCert(): BlockFooterSkipRewardCert {
+  return { slot: 0n, aggregate: undefined };
+}
+
+export const BlockFooterSkipRewardCert: MessageFns<BlockFooterSkipRewardCert> = {
+  encode(message: BlockFooterSkipRewardCert, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
+      writer.uint32(8).uint64(message.slot);
+    }
+    if (message.aggregate !== undefined) {
+      BlockFooterVotesAggregate.encode(message.aggregate, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): BlockFooterSkipRewardCert {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseBlockFooterSkipRewardCert();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.slot = reader.uint64() as bigint;
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.aggregate = BlockFooterVotesAggregate.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): BlockFooterSkipRewardCert {
+    return {
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
+      aggregate: isSet(object.aggregate) ? BlockFooterVotesAggregate.fromJSON(object.aggregate) : undefined,
+    };
+  },
+
+  toJSON(message: BlockFooterSkipRewardCert): unknown {
+    const obj: any = {};
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
+    }
+    if (message.aggregate !== undefined) {
+      obj.aggregate = BlockFooterVotesAggregate.toJSON(message.aggregate);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<BlockFooterSkipRewardCert>, I>>(base?: I): BlockFooterSkipRewardCert {
+    return BlockFooterSkipRewardCert.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<BlockFooterSkipRewardCert>, I>>(object: I): BlockFooterSkipRewardCert {
+    const message = createBaseBlockFooterSkipRewardCert();
+    message.slot = object.slot ?? 0n;
+    message.aggregate = (object.aggregate !== undefined && object.aggregate !== null)
+      ? BlockFooterVotesAggregate.fromPartial(object.aggregate)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseBlockFooterNotarRewardCert(): BlockFooterNotarRewardCert {
+  return { slot: 0n, aggregate: undefined };
+}
+
+export const BlockFooterNotarRewardCert: MessageFns<BlockFooterNotarRewardCert> = {
+  encode(message: BlockFooterNotarRewardCert, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
+      writer.uint32(8).uint64(message.slot);
+    }
+    if (message.aggregate !== undefined) {
+      BlockFooterVotesAggregate.encode(message.aggregate, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): BlockFooterNotarRewardCert {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseBlockFooterNotarRewardCert();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.slot = reader.uint64() as bigint;
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.aggregate = BlockFooterVotesAggregate.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): BlockFooterNotarRewardCert {
+    return {
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
+      aggregate: isSet(object.aggregate) ? BlockFooterVotesAggregate.fromJSON(object.aggregate) : undefined,
+    };
+  },
+
+  toJSON(message: BlockFooterNotarRewardCert): unknown {
+    const obj: any = {};
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
+    }
+    if (message.aggregate !== undefined) {
+      obj.aggregate = BlockFooterVotesAggregate.toJSON(message.aggregate);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<BlockFooterNotarRewardCert>, I>>(base?: I): BlockFooterNotarRewardCert {
+    return BlockFooterNotarRewardCert.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<BlockFooterNotarRewardCert>, I>>(object: I): BlockFooterNotarRewardCert {
+    const message = createBaseBlockFooterNotarRewardCert();
+    message.slot = object.slot ?? 0n;
+    message.aggregate = (object.aggregate !== undefined && object.aggregate !== null)
+      ? BlockFooterVotesAggregate.fromPartial(object.aggregate)
+      : undefined;
+    return message;
+  },
+};
+
 function createBaseSubscribeUpdateEntry(): SubscribeUpdateEntry {
   return {
     slot: 0n,
@@ -5284,6 +6408,269 @@ export const SubscribeUpdateEntry: MessageFns<SubscribeUpdateEntry> = {
     message.executedTransactionCount = object.executedTransactionCount ?? 0n;
     message.startingTransactionIndex = object.startingTransactionIndex ?? 0n;
     message.bankId = object.bankId ?? 0n;
+    return message;
+  },
+};
+
+function createBaseSubscribeUpdateEntryUpdateParent(): SubscribeUpdateEntryUpdateParent {
+  return { slot: 0n, clearedBankId: 0n, parentSlot: 0n, parentBlockId: new Uint8Array(0) };
+}
+
+export const SubscribeUpdateEntryUpdateParent: MessageFns<SubscribeUpdateEntryUpdateParent> = {
+  encode(message: SubscribeUpdateEntryUpdateParent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
+      writer.uint32(8).uint64(message.slot);
+    }
+    if (message.clearedBankId !== 0n) {
+      if (BigInt.asUintN(64, message.clearedBankId) !== message.clearedBankId) {
+        throw new globalThis.Error("value provided for field message.clearedBankId of type uint64 too large");
+      }
+      writer.uint32(16).uint64(message.clearedBankId);
+    }
+    if (message.parentSlot !== 0n) {
+      if (BigInt.asUintN(64, message.parentSlot) !== message.parentSlot) {
+        throw new globalThis.Error("value provided for field message.parentSlot of type uint64 too large");
+      }
+      writer.uint32(24).uint64(message.parentSlot);
+    }
+    if (message.parentBlockId.length !== 0) {
+      writer.uint32(34).bytes(message.parentBlockId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SubscribeUpdateEntryUpdateParent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSubscribeUpdateEntryUpdateParent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.slot = reader.uint64() as bigint;
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.clearedBankId = reader.uint64() as bigint;
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.parentSlot = reader.uint64() as bigint;
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.parentBlockId = reader.bytes();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SubscribeUpdateEntryUpdateParent {
+    return {
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
+      clearedBankId: isSet(object.clearedBankId)
+        ? BigInt(object.clearedBankId)
+        : isSet(object.cleared_bank_id)
+        ? BigInt(object.cleared_bank_id)
+        : 0n,
+      parentSlot: isSet(object.parentSlot)
+        ? BigInt(object.parentSlot)
+        : isSet(object.parent_slot)
+        ? BigInt(object.parent_slot)
+        : 0n,
+      parentBlockId: isSet(object.parentBlockId)
+        ? bytesFromBase64(object.parentBlockId)
+        : isSet(object.parent_block_id)
+        ? bytesFromBase64(object.parent_block_id)
+        : new Uint8Array(0),
+    };
+  },
+
+  toJSON(message: SubscribeUpdateEntryUpdateParent): unknown {
+    const obj: any = {};
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
+    }
+    if (message.clearedBankId !== 0n) {
+      obj.clearedBankId = message.clearedBankId.toString();
+    }
+    if (message.parentSlot !== 0n) {
+      obj.parentSlot = message.parentSlot.toString();
+    }
+    if (message.parentBlockId.length !== 0) {
+      obj.parentBlockId = base64FromBytes(message.parentBlockId);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SubscribeUpdateEntryUpdateParent>, I>>(
+    base?: I,
+  ): SubscribeUpdateEntryUpdateParent {
+    return SubscribeUpdateEntryUpdateParent.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SubscribeUpdateEntryUpdateParent>, I>>(
+    object: I,
+  ): SubscribeUpdateEntryUpdateParent {
+    const message = createBaseSubscribeUpdateEntryUpdateParent();
+    message.slot = object.slot ?? 0n;
+    message.clearedBankId = object.clearedBankId ?? 0n;
+    message.parentSlot = object.parentSlot ?? 0n;
+    message.parentBlockId = object.parentBlockId ?? new Uint8Array(0);
+    return message;
+  },
+};
+
+function createBaseSubscribeUpdateDeshredUpdateParent(): SubscribeUpdateDeshredUpdateParent {
+  return { slot: 0n, updateParentFecSetIndex: 0, parentSlot: 0n, parentBlockId: new Uint8Array(0) };
+}
+
+export const SubscribeUpdateDeshredUpdateParent: MessageFns<SubscribeUpdateDeshredUpdateParent> = {
+  encode(message: SubscribeUpdateDeshredUpdateParent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.slot !== 0n) {
+      if (BigInt.asUintN(64, message.slot) !== message.slot) {
+        throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
+      }
+      writer.uint32(8).uint64(message.slot);
+    }
+    if (message.updateParentFecSetIndex !== 0) {
+      writer.uint32(16).uint32(message.updateParentFecSetIndex);
+    }
+    if (message.parentSlot !== 0n) {
+      if (BigInt.asUintN(64, message.parentSlot) !== message.parentSlot) {
+        throw new globalThis.Error("value provided for field message.parentSlot of type uint64 too large");
+      }
+      writer.uint32(24).uint64(message.parentSlot);
+    }
+    if (message.parentBlockId.length !== 0) {
+      writer.uint32(34).bytes(message.parentBlockId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SubscribeUpdateDeshredUpdateParent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSubscribeUpdateDeshredUpdateParent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.slot = reader.uint64() as bigint;
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.updateParentFecSetIndex = reader.uint32();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.parentSlot = reader.uint64() as bigint;
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.parentBlockId = reader.bytes();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SubscribeUpdateDeshredUpdateParent {
+    return {
+      slot: isSet(object.slot) ? BigInt(object.slot) : 0n,
+      updateParentFecSetIndex: isSet(object.updateParentFecSetIndex)
+        ? globalThis.Number(object.updateParentFecSetIndex)
+        : isSet(object.update_parent_fec_set_index)
+        ? globalThis.Number(object.update_parent_fec_set_index)
+        : 0,
+      parentSlot: isSet(object.parentSlot)
+        ? BigInt(object.parentSlot)
+        : isSet(object.parent_slot)
+        ? BigInt(object.parent_slot)
+        : 0n,
+      parentBlockId: isSet(object.parentBlockId)
+        ? bytesFromBase64(object.parentBlockId)
+        : isSet(object.parent_block_id)
+        ? bytesFromBase64(object.parent_block_id)
+        : new Uint8Array(0),
+    };
+  },
+
+  toJSON(message: SubscribeUpdateDeshredUpdateParent): unknown {
+    const obj: any = {};
+    if (message.slot !== 0n) {
+      obj.slot = message.slot.toString();
+    }
+    if (message.updateParentFecSetIndex !== 0) {
+      obj.updateParentFecSetIndex = Math.round(message.updateParentFecSetIndex);
+    }
+    if (message.parentSlot !== 0n) {
+      obj.parentSlot = message.parentSlot.toString();
+    }
+    if (message.parentBlockId.length !== 0) {
+      obj.parentBlockId = base64FromBytes(message.parentBlockId);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SubscribeUpdateDeshredUpdateParent>, I>>(
+    base?: I,
+  ): SubscribeUpdateDeshredUpdateParent {
+    return SubscribeUpdateDeshredUpdateParent.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SubscribeUpdateDeshredUpdateParent>, I>>(
+    object: I,
+  ): SubscribeUpdateDeshredUpdateParent {
+    const message = createBaseSubscribeUpdateDeshredUpdateParent();
+    message.slot = object.slot ?? 0n;
+    message.updateParentFecSetIndex = object.updateParentFecSetIndex ?? 0;
+    message.parentSlot = object.parentSlot ?? 0n;
+    message.parentBlockId = object.parentBlockId ?? new Uint8Array(0);
     return message;
   },
 };
@@ -5673,6 +7060,7 @@ function createBaseSubscribeUpdateDeshred(): SubscribeUpdateDeshred {
     ping: undefined,
     pong: undefined,
     slot: undefined,
+    deshredUpdateParent: undefined,
     createdAt: undefined,
   };
 }
@@ -5693,6 +7081,9 @@ export const SubscribeUpdateDeshred: MessageFns<SubscribeUpdateDeshred> = {
     }
     if (message.slot !== undefined) {
       SubscribeUpdateSlot.encode(message.slot, writer.uint32(50).fork()).join();
+    }
+    if (message.deshredUpdateParent !== undefined) {
+      SubscribeUpdateDeshredUpdateParent.encode(message.deshredUpdateParent, writer.uint32(58).fork()).join();
     }
     if (message.createdAt !== undefined) {
       Timestamp.encode(toTimestamp(message.createdAt), writer.uint32(42).fork()).join();
@@ -5747,6 +7138,14 @@ export const SubscribeUpdateDeshred: MessageFns<SubscribeUpdateDeshred> = {
           message.slot = SubscribeUpdateSlot.decode(reader, reader.uint32());
           continue;
         }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.deshredUpdateParent = SubscribeUpdateDeshredUpdateParent.decode(reader, reader.uint32());
+          continue;
+        }
         case 5: {
           if (tag !== 42) {
             break;
@@ -5775,6 +7174,11 @@ export const SubscribeUpdateDeshred: MessageFns<SubscribeUpdateDeshred> = {
       ping: isSet(object.ping) ? SubscribeUpdatePing.fromJSON(object.ping) : undefined,
       pong: isSet(object.pong) ? SubscribeUpdatePong.fromJSON(object.pong) : undefined,
       slot: isSet(object.slot) ? SubscribeUpdateSlot.fromJSON(object.slot) : undefined,
+      deshredUpdateParent: isSet(object.deshredUpdateParent)
+        ? SubscribeUpdateDeshredUpdateParent.fromJSON(object.deshredUpdateParent)
+        : isSet(object.deshred_update_parent)
+        ? SubscribeUpdateDeshredUpdateParent.fromJSON(object.deshred_update_parent)
+        : undefined,
       createdAt: isSet(object.createdAt)
         ? fromJsonTimestamp(object.createdAt)
         : isSet(object.created_at)
@@ -5800,6 +7204,9 @@ export const SubscribeUpdateDeshred: MessageFns<SubscribeUpdateDeshred> = {
     if (message.slot !== undefined) {
       obj.slot = SubscribeUpdateSlot.toJSON(message.slot);
     }
+    if (message.deshredUpdateParent !== undefined) {
+      obj.deshredUpdateParent = SubscribeUpdateDeshredUpdateParent.toJSON(message.deshredUpdateParent);
+    }
     if (message.createdAt !== undefined) {
       obj.createdAt = message.createdAt.toISOString();
     }
@@ -5824,7 +7231,823 @@ export const SubscribeUpdateDeshred: MessageFns<SubscribeUpdateDeshred> = {
     message.slot = (object.slot !== undefined && object.slot !== null)
       ? SubscribeUpdateSlot.fromPartial(object.slot)
       : undefined;
+    message.deshredUpdateParent = (object.deshredUpdateParent !== undefined && object.deshredUpdateParent !== null)
+      ? SubscribeUpdateDeshredUpdateParent.fromPartial(object.deshredUpdateParent)
+      : undefined;
     message.createdAt = object.createdAt ?? undefined;
+    return message;
+  },
+};
+
+function createBaseSubscribeGossipRequest(): SubscribeGossipRequest {
+  return {};
+}
+
+export const SubscribeGossipRequest: MessageFns<SubscribeGossipRequest> = {
+  encode(_: SubscribeGossipRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SubscribeGossipRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSubscribeGossipRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): SubscribeGossipRequest {
+    return {};
+  },
+
+  toJSON(_: SubscribeGossipRequest): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SubscribeGossipRequest>, I>>(base?: I): SubscribeGossipRequest {
+    return SubscribeGossipRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SubscribeGossipRequest>, I>>(_: I): SubscribeGossipRequest {
+    const message = createBaseSubscribeGossipRequest();
+    return message;
+  },
+};
+
+function createBaseSubscribeUpdateGossip(): SubscribeUpdateGossip {
+  return { node: undefined, removed: undefined, ping: undefined, snapshot: undefined, createdAt: undefined, seq: 0n };
+}
+
+export const SubscribeUpdateGossip: MessageFns<SubscribeUpdateGossip> = {
+  encode(message: SubscribeUpdateGossip, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.node !== undefined) {
+      SubscribeUpdateContactInfoNode.encode(message.node, writer.uint32(10).fork()).join();
+    }
+    if (message.removed !== undefined) {
+      SubscribeUpdateContactInfoRemoved.encode(message.removed, writer.uint32(18).fork()).join();
+    }
+    if (message.ping !== undefined) {
+      SubscribeUpdatePing.encode(message.ping, writer.uint32(26).fork()).join();
+    }
+    if (message.snapshot !== undefined) {
+      GossipTopology.encode(message.snapshot, writer.uint32(50).fork()).join();
+    }
+    if (message.createdAt !== undefined) {
+      Timestamp.encode(toTimestamp(message.createdAt), writer.uint32(42).fork()).join();
+    }
+    if (message.seq !== 0n) {
+      if (BigInt.asUintN(64, message.seq) !== message.seq) {
+        throw new globalThis.Error("value provided for field message.seq of type uint64 too large");
+      }
+      writer.uint32(56).uint64(message.seq);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SubscribeUpdateGossip {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSubscribeUpdateGossip();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.node = SubscribeUpdateContactInfoNode.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.removed = SubscribeUpdateContactInfoRemoved.decode(reader, reader.uint32());
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.ping = SubscribeUpdatePing.decode(reader, reader.uint32());
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.snapshot = GossipTopology.decode(reader, reader.uint32());
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.createdAt = fromTimestamp(Timestamp.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 7: {
+          if (tag !== 56) {
+            break;
+          }
+
+          message.seq = reader.uint64() as bigint;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SubscribeUpdateGossip {
+    return {
+      node: isSet(object.node) ? SubscribeUpdateContactInfoNode.fromJSON(object.node) : undefined,
+      removed: isSet(object.removed) ? SubscribeUpdateContactInfoRemoved.fromJSON(object.removed) : undefined,
+      ping: isSet(object.ping) ? SubscribeUpdatePing.fromJSON(object.ping) : undefined,
+      snapshot: isSet(object.snapshot) ? GossipTopology.fromJSON(object.snapshot) : undefined,
+      createdAt: isSet(object.createdAt)
+        ? fromJsonTimestamp(object.createdAt)
+        : isSet(object.created_at)
+        ? fromJsonTimestamp(object.created_at)
+        : undefined,
+      seq: isSet(object.seq) ? BigInt(object.seq) : 0n,
+    };
+  },
+
+  toJSON(message: SubscribeUpdateGossip): unknown {
+    const obj: any = {};
+    if (message.node !== undefined) {
+      obj.node = SubscribeUpdateContactInfoNode.toJSON(message.node);
+    }
+    if (message.removed !== undefined) {
+      obj.removed = SubscribeUpdateContactInfoRemoved.toJSON(message.removed);
+    }
+    if (message.ping !== undefined) {
+      obj.ping = SubscribeUpdatePing.toJSON(message.ping);
+    }
+    if (message.snapshot !== undefined) {
+      obj.snapshot = GossipTopology.toJSON(message.snapshot);
+    }
+    if (message.createdAt !== undefined) {
+      obj.createdAt = message.createdAt.toISOString();
+    }
+    if (message.seq !== 0n) {
+      obj.seq = message.seq.toString();
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SubscribeUpdateGossip>, I>>(base?: I): SubscribeUpdateGossip {
+    return SubscribeUpdateGossip.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SubscribeUpdateGossip>, I>>(object: I): SubscribeUpdateGossip {
+    const message = createBaseSubscribeUpdateGossip();
+    message.node = (object.node !== undefined && object.node !== null)
+      ? SubscribeUpdateContactInfoNode.fromPartial(object.node)
+      : undefined;
+    message.removed = (object.removed !== undefined && object.removed !== null)
+      ? SubscribeUpdateContactInfoRemoved.fromPartial(object.removed)
+      : undefined;
+    message.ping = (object.ping !== undefined && object.ping !== null)
+      ? SubscribeUpdatePing.fromPartial(object.ping)
+      : undefined;
+    message.snapshot = (object.snapshot !== undefined && object.snapshot !== null)
+      ? GossipTopology.fromPartial(object.snapshot)
+      : undefined;
+    message.createdAt = object.createdAt ?? undefined;
+    message.seq = object.seq ?? 0n;
+    return message;
+  },
+};
+
+function createBaseGossipTopology(): GossipTopology {
+  return { nodes: [] };
+}
+
+export const GossipTopology: MessageFns<GossipTopology> = {
+  encode(message: GossipTopology, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    for (const v of message.nodes) {
+      SubscribeUpdateContactInfoNode.encode(v!, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GossipTopology {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGossipTopology();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.nodes.push(SubscribeUpdateContactInfoNode.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GossipTopology {
+    return {
+      nodes: globalThis.Array.isArray(object?.nodes)
+        ? object.nodes.map((e: any) => SubscribeUpdateContactInfoNode.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: GossipTopology): unknown {
+    const obj: any = {};
+    if (message.nodes?.length) {
+      obj.nodes = message.nodes.map((e) => SubscribeUpdateContactInfoNode.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GossipTopology>, I>>(base?: I): GossipTopology {
+    return GossipTopology.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GossipTopology>, I>>(object: I): GossipTopology {
+    const message = createBaseGossipTopology();
+    message.nodes = object.nodes?.map((e) => SubscribeUpdateContactInfoNode.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseSubscribeUpdateContactInfoNode(): SubscribeUpdateContactInfoNode {
+  return {
+    pubkey: new Uint8Array(0),
+    wallclock: 0n,
+    outset: 0n,
+    shredVersion: 0,
+    versionMajor: 0,
+    versionMinor: 0,
+    versionPatch: 0,
+    versionCommit: 0,
+    versionFeatureSet: 0,
+    versionClientId: 0,
+    gossip: undefined,
+    tpuQuic: undefined,
+    tpuForwardsQuic: undefined,
+    tpuVoteUdp: undefined,
+    tpuVoteQuic: undefined,
+    tvuUdp: undefined,
+    tvuQuic: undefined,
+    serveRepairUdp: undefined,
+    serveRepairQuic: undefined,
+    rpc: undefined,
+    rpcPubsub: undefined,
+    alpenglow: undefined,
+  };
+}
+
+export const SubscribeUpdateContactInfoNode: MessageFns<SubscribeUpdateContactInfoNode> = {
+  encode(message: SubscribeUpdateContactInfoNode, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.pubkey.length !== 0) {
+      writer.uint32(10).bytes(message.pubkey);
+    }
+    if (message.wallclock !== 0n) {
+      if (BigInt.asUintN(64, message.wallclock) !== message.wallclock) {
+        throw new globalThis.Error("value provided for field message.wallclock of type uint64 too large");
+      }
+      writer.uint32(16).uint64(message.wallclock);
+    }
+    if (message.outset !== 0n) {
+      if (BigInt.asUintN(64, message.outset) !== message.outset) {
+        throw new globalThis.Error("value provided for field message.outset of type uint64 too large");
+      }
+      writer.uint32(24).uint64(message.outset);
+    }
+    if (message.shredVersion !== 0) {
+      writer.uint32(32).uint32(message.shredVersion);
+    }
+    if (message.versionMajor !== 0) {
+      writer.uint32(40).uint32(message.versionMajor);
+    }
+    if (message.versionMinor !== 0) {
+      writer.uint32(48).uint32(message.versionMinor);
+    }
+    if (message.versionPatch !== 0) {
+      writer.uint32(56).uint32(message.versionPatch);
+    }
+    if (message.versionCommit !== 0) {
+      writer.uint32(64).uint32(message.versionCommit);
+    }
+    if (message.versionFeatureSet !== 0) {
+      writer.uint32(72).uint32(message.versionFeatureSet);
+    }
+    if (message.versionClientId !== 0) {
+      writer.uint32(80).uint32(message.versionClientId);
+    }
+    if (message.gossip !== undefined) {
+      writer.uint32(90).string(message.gossip);
+    }
+    if (message.tpuQuic !== undefined) {
+      writer.uint32(98).string(message.tpuQuic);
+    }
+    if (message.tpuForwardsQuic !== undefined) {
+      writer.uint32(106).string(message.tpuForwardsQuic);
+    }
+    if (message.tpuVoteUdp !== undefined) {
+      writer.uint32(114).string(message.tpuVoteUdp);
+    }
+    if (message.tpuVoteQuic !== undefined) {
+      writer.uint32(122).string(message.tpuVoteQuic);
+    }
+    if (message.tvuUdp !== undefined) {
+      writer.uint32(130).string(message.tvuUdp);
+    }
+    if (message.tvuQuic !== undefined) {
+      writer.uint32(138).string(message.tvuQuic);
+    }
+    if (message.serveRepairUdp !== undefined) {
+      writer.uint32(146).string(message.serveRepairUdp);
+    }
+    if (message.serveRepairQuic !== undefined) {
+      writer.uint32(154).string(message.serveRepairQuic);
+    }
+    if (message.rpc !== undefined) {
+      writer.uint32(162).string(message.rpc);
+    }
+    if (message.rpcPubsub !== undefined) {
+      writer.uint32(170).string(message.rpcPubsub);
+    }
+    if (message.alpenglow !== undefined) {
+      writer.uint32(178).string(message.alpenglow);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SubscribeUpdateContactInfoNode {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSubscribeUpdateContactInfoNode();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.pubkey = reader.bytes();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.wallclock = reader.uint64() as bigint;
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.outset = reader.uint64() as bigint;
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.shredVersion = reader.uint32();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.versionMajor = reader.uint32();
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.versionMinor = reader.uint32();
+          continue;
+        }
+        case 7: {
+          if (tag !== 56) {
+            break;
+          }
+
+          message.versionPatch = reader.uint32();
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.versionCommit = reader.uint32();
+          continue;
+        }
+        case 9: {
+          if (tag !== 72) {
+            break;
+          }
+
+          message.versionFeatureSet = reader.uint32();
+          continue;
+        }
+        case 10: {
+          if (tag !== 80) {
+            break;
+          }
+
+          message.versionClientId = reader.uint32();
+          continue;
+        }
+        case 11: {
+          if (tag !== 90) {
+            break;
+          }
+
+          message.gossip = reader.string();
+          continue;
+        }
+        case 12: {
+          if (tag !== 98) {
+            break;
+          }
+
+          message.tpuQuic = reader.string();
+          continue;
+        }
+        case 13: {
+          if (tag !== 106) {
+            break;
+          }
+
+          message.tpuForwardsQuic = reader.string();
+          continue;
+        }
+        case 14: {
+          if (tag !== 114) {
+            break;
+          }
+
+          message.tpuVoteUdp = reader.string();
+          continue;
+        }
+        case 15: {
+          if (tag !== 122) {
+            break;
+          }
+
+          message.tpuVoteQuic = reader.string();
+          continue;
+        }
+        case 16: {
+          if (tag !== 130) {
+            break;
+          }
+
+          message.tvuUdp = reader.string();
+          continue;
+        }
+        case 17: {
+          if (tag !== 138) {
+            break;
+          }
+
+          message.tvuQuic = reader.string();
+          continue;
+        }
+        case 18: {
+          if (tag !== 146) {
+            break;
+          }
+
+          message.serveRepairUdp = reader.string();
+          continue;
+        }
+        case 19: {
+          if (tag !== 154) {
+            break;
+          }
+
+          message.serveRepairQuic = reader.string();
+          continue;
+        }
+        case 20: {
+          if (tag !== 162) {
+            break;
+          }
+
+          message.rpc = reader.string();
+          continue;
+        }
+        case 21: {
+          if (tag !== 170) {
+            break;
+          }
+
+          message.rpcPubsub = reader.string();
+          continue;
+        }
+        case 22: {
+          if (tag !== 178) {
+            break;
+          }
+
+          message.alpenglow = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SubscribeUpdateContactInfoNode {
+    return {
+      pubkey: isSet(object.pubkey) ? bytesFromBase64(object.pubkey) : new Uint8Array(0),
+      wallclock: isSet(object.wallclock) ? BigInt(object.wallclock) : 0n,
+      outset: isSet(object.outset) ? BigInt(object.outset) : 0n,
+      shredVersion: isSet(object.shredVersion)
+        ? globalThis.Number(object.shredVersion)
+        : isSet(object.shred_version)
+        ? globalThis.Number(object.shred_version)
+        : 0,
+      versionMajor: isSet(object.versionMajor)
+        ? globalThis.Number(object.versionMajor)
+        : isSet(object.version_major)
+        ? globalThis.Number(object.version_major)
+        : 0,
+      versionMinor: isSet(object.versionMinor)
+        ? globalThis.Number(object.versionMinor)
+        : isSet(object.version_minor)
+        ? globalThis.Number(object.version_minor)
+        : 0,
+      versionPatch: isSet(object.versionPatch)
+        ? globalThis.Number(object.versionPatch)
+        : isSet(object.version_patch)
+        ? globalThis.Number(object.version_patch)
+        : 0,
+      versionCommit: isSet(object.versionCommit)
+        ? globalThis.Number(object.versionCommit)
+        : isSet(object.version_commit)
+        ? globalThis.Number(object.version_commit)
+        : 0,
+      versionFeatureSet: isSet(object.versionFeatureSet)
+        ? globalThis.Number(object.versionFeatureSet)
+        : isSet(object.version_feature_set)
+        ? globalThis.Number(object.version_feature_set)
+        : 0,
+      versionClientId: isSet(object.versionClientId)
+        ? globalThis.Number(object.versionClientId)
+        : isSet(object.version_client_id)
+        ? globalThis.Number(object.version_client_id)
+        : 0,
+      gossip: isSet(object.gossip) ? globalThis.String(object.gossip) : undefined,
+      tpuQuic: isSet(object.tpuQuic)
+        ? globalThis.String(object.tpuQuic)
+        : isSet(object.tpu_quic)
+        ? globalThis.String(object.tpu_quic)
+        : undefined,
+      tpuForwardsQuic: isSet(object.tpuForwardsQuic)
+        ? globalThis.String(object.tpuForwardsQuic)
+        : isSet(object.tpu_forwards_quic)
+        ? globalThis.String(object.tpu_forwards_quic)
+        : undefined,
+      tpuVoteUdp: isSet(object.tpuVoteUdp)
+        ? globalThis.String(object.tpuVoteUdp)
+        : isSet(object.tpu_vote_udp)
+        ? globalThis.String(object.tpu_vote_udp)
+        : undefined,
+      tpuVoteQuic: isSet(object.tpuVoteQuic)
+        ? globalThis.String(object.tpuVoteQuic)
+        : isSet(object.tpu_vote_quic)
+        ? globalThis.String(object.tpu_vote_quic)
+        : undefined,
+      tvuUdp: isSet(object.tvuUdp)
+        ? globalThis.String(object.tvuUdp)
+        : isSet(object.tvu_udp)
+        ? globalThis.String(object.tvu_udp)
+        : undefined,
+      tvuQuic: isSet(object.tvuQuic)
+        ? globalThis.String(object.tvuQuic)
+        : isSet(object.tvu_quic)
+        ? globalThis.String(object.tvu_quic)
+        : undefined,
+      serveRepairUdp: isSet(object.serveRepairUdp)
+        ? globalThis.String(object.serveRepairUdp)
+        : isSet(object.serve_repair_udp)
+        ? globalThis.String(object.serve_repair_udp)
+        : undefined,
+      serveRepairQuic: isSet(object.serveRepairQuic)
+        ? globalThis.String(object.serveRepairQuic)
+        : isSet(object.serve_repair_quic)
+        ? globalThis.String(object.serve_repair_quic)
+        : undefined,
+      rpc: isSet(object.rpc) ? globalThis.String(object.rpc) : undefined,
+      rpcPubsub: isSet(object.rpcPubsub)
+        ? globalThis.String(object.rpcPubsub)
+        : isSet(object.rpc_pubsub)
+        ? globalThis.String(object.rpc_pubsub)
+        : undefined,
+      alpenglow: isSet(object.alpenglow) ? globalThis.String(object.alpenglow) : undefined,
+    };
+  },
+
+  toJSON(message: SubscribeUpdateContactInfoNode): unknown {
+    const obj: any = {};
+    if (message.pubkey.length !== 0) {
+      obj.pubkey = base64FromBytes(message.pubkey);
+    }
+    if (message.wallclock !== 0n) {
+      obj.wallclock = message.wallclock.toString();
+    }
+    if (message.outset !== 0n) {
+      obj.outset = message.outset.toString();
+    }
+    if (message.shredVersion !== 0) {
+      obj.shredVersion = Math.round(message.shredVersion);
+    }
+    if (message.versionMajor !== 0) {
+      obj.versionMajor = Math.round(message.versionMajor);
+    }
+    if (message.versionMinor !== 0) {
+      obj.versionMinor = Math.round(message.versionMinor);
+    }
+    if (message.versionPatch !== 0) {
+      obj.versionPatch = Math.round(message.versionPatch);
+    }
+    if (message.versionCommit !== 0) {
+      obj.versionCommit = Math.round(message.versionCommit);
+    }
+    if (message.versionFeatureSet !== 0) {
+      obj.versionFeatureSet = Math.round(message.versionFeatureSet);
+    }
+    if (message.versionClientId !== 0) {
+      obj.versionClientId = Math.round(message.versionClientId);
+    }
+    if (message.gossip !== undefined) {
+      obj.gossip = message.gossip;
+    }
+    if (message.tpuQuic !== undefined) {
+      obj.tpuQuic = message.tpuQuic;
+    }
+    if (message.tpuForwardsQuic !== undefined) {
+      obj.tpuForwardsQuic = message.tpuForwardsQuic;
+    }
+    if (message.tpuVoteUdp !== undefined) {
+      obj.tpuVoteUdp = message.tpuVoteUdp;
+    }
+    if (message.tpuVoteQuic !== undefined) {
+      obj.tpuVoteQuic = message.tpuVoteQuic;
+    }
+    if (message.tvuUdp !== undefined) {
+      obj.tvuUdp = message.tvuUdp;
+    }
+    if (message.tvuQuic !== undefined) {
+      obj.tvuQuic = message.tvuQuic;
+    }
+    if (message.serveRepairUdp !== undefined) {
+      obj.serveRepairUdp = message.serveRepairUdp;
+    }
+    if (message.serveRepairQuic !== undefined) {
+      obj.serveRepairQuic = message.serveRepairQuic;
+    }
+    if (message.rpc !== undefined) {
+      obj.rpc = message.rpc;
+    }
+    if (message.rpcPubsub !== undefined) {
+      obj.rpcPubsub = message.rpcPubsub;
+    }
+    if (message.alpenglow !== undefined) {
+      obj.alpenglow = message.alpenglow;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SubscribeUpdateContactInfoNode>, I>>(base?: I): SubscribeUpdateContactInfoNode {
+    return SubscribeUpdateContactInfoNode.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SubscribeUpdateContactInfoNode>, I>>(
+    object: I,
+  ): SubscribeUpdateContactInfoNode {
+    const message = createBaseSubscribeUpdateContactInfoNode();
+    message.pubkey = object.pubkey ?? new Uint8Array(0);
+    message.wallclock = object.wallclock ?? 0n;
+    message.outset = object.outset ?? 0n;
+    message.shredVersion = object.shredVersion ?? 0;
+    message.versionMajor = object.versionMajor ?? 0;
+    message.versionMinor = object.versionMinor ?? 0;
+    message.versionPatch = object.versionPatch ?? 0;
+    message.versionCommit = object.versionCommit ?? 0;
+    message.versionFeatureSet = object.versionFeatureSet ?? 0;
+    message.versionClientId = object.versionClientId ?? 0;
+    message.gossip = object.gossip ?? undefined;
+    message.tpuQuic = object.tpuQuic ?? undefined;
+    message.tpuForwardsQuic = object.tpuForwardsQuic ?? undefined;
+    message.tpuVoteUdp = object.tpuVoteUdp ?? undefined;
+    message.tpuVoteQuic = object.tpuVoteQuic ?? undefined;
+    message.tvuUdp = object.tvuUdp ?? undefined;
+    message.tvuQuic = object.tvuQuic ?? undefined;
+    message.serveRepairUdp = object.serveRepairUdp ?? undefined;
+    message.serveRepairQuic = object.serveRepairQuic ?? undefined;
+    message.rpc = object.rpc ?? undefined;
+    message.rpcPubsub = object.rpcPubsub ?? undefined;
+    message.alpenglow = object.alpenglow ?? undefined;
+    return message;
+  },
+};
+
+function createBaseSubscribeUpdateContactInfoRemoved(): SubscribeUpdateContactInfoRemoved {
+  return { pubkey: new Uint8Array(0) };
+}
+
+export const SubscribeUpdateContactInfoRemoved: MessageFns<SubscribeUpdateContactInfoRemoved> = {
+  encode(message: SubscribeUpdateContactInfoRemoved, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.pubkey.length !== 0) {
+      writer.uint32(10).bytes(message.pubkey);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SubscribeUpdateContactInfoRemoved {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSubscribeUpdateContactInfoRemoved();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.pubkey = reader.bytes();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SubscribeUpdateContactInfoRemoved {
+    return { pubkey: isSet(object.pubkey) ? bytesFromBase64(object.pubkey) : new Uint8Array(0) };
+  },
+
+  toJSON(message: SubscribeUpdateContactInfoRemoved): unknown {
+    const obj: any = {};
+    if (message.pubkey.length !== 0) {
+      obj.pubkey = base64FromBytes(message.pubkey);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SubscribeUpdateContactInfoRemoved>, I>>(
+    base?: I,
+  ): SubscribeUpdateContactInfoRemoved {
+    return SubscribeUpdateContactInfoRemoved.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SubscribeUpdateContactInfoRemoved>, I>>(
+    object: I,
+  ): SubscribeUpdateContactInfoRemoved {
+    const message = createBaseSubscribeUpdateContactInfoRemoved();
+    message.pubkey = object.pubkey ?? new Uint8Array(0);
     return message;
   },
 };

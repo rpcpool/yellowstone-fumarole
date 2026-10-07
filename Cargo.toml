@@ -57,9 +57,9 @@ tower = "~0.5.2"
 tracing = "~0.1.41"
 tracing-subscriber = { version = "~0.3.18", features = ["env-filter"] }
 uuid = { version = "1" }
-yellowstone-fumarole-client = { path = "crates/yellowstone-fumarole-client", version = "0.8.0" }
-yellowstone-grpc-client = "14.0.1"
-yellowstone-grpc-proto = "13.0.0"
+yellowstone-fumarole-client = { path = "crates/yellowstone-fumarole-client", version = "0.9.0" }
+yellowstone-grpc-client = "15.0.0"
+yellowstone-grpc-proto = "14.0.1"
 
 # NAPI-RS deps
 napi = "3.0.0"

@@ -37,9 +37,10 @@ use {
     },
     yellowstone_grpc_proto::geyser::{
         CommitmentLevel, SubscribeRequest, SubscribeRequestFilterAccounts,
-        SubscribeRequestFilterBlocksMeta, SubscribeRequestFilterSlots,
-        SubscribeRequestFilterTransactions, SubscribeUpdateAccount, SubscribeUpdateBlockMeta,
-        SubscribeUpdateSlot, SubscribeUpdateTransaction, SubscribeUpdateTransactionStatus,
+        SubscribeRequestFilterBlockFooter, SubscribeRequestFilterBlocksMeta,
+        SubscribeRequestFilterSlots, SubscribeRequestFilterTransactions, SubscribeUpdateAccount,
+        SubscribeUpdateBlockFooter, SubscribeUpdateBlockMeta, SubscribeUpdateSlot,
+        SubscribeUpdateTransaction, SubscribeUpdateTransactionStatus,
         subscribe_update::UpdateOneof,
     },
 };
@@ -212,6 +213,7 @@ pub enum SubscribeDataType {
     Slot,
     BlockMeta,
     Entry,
+    BlockFooter,
 }
 
 #[derive(Debug, Clone)]
@@ -268,8 +270,10 @@ impl FromStr for SubscribeInclude {
                     SubscribeDataType::Slot,
                     SubscribeDataType::BlockMeta,
                     SubscribeDataType::Entry,
+                    SubscribeDataType::BlockFooter,
                 ]),
                 "entry" => Ok(vec![SubscribeDataType::Entry]),
+                "footer" => Ok(vec![SubscribeDataType::BlockFooter]),
                 unknown => Err(format!("Invalid include type: {unknown}")),
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -344,9 +348,9 @@ struct SubscribeArgs {
 
     ///
     /// Comma separate list of Geyser event types you want to subscribe to.
-    /// Valid values are: [account, tx, slot, block_meta, all]
+    /// Valid values are: [account, tx, tx-status, slot, meta, entry, footer, all]
     /// If not specified, all event types will be subscribed to.
-    /// Examples: account,tx, all, slot,meta,tx, tx
+    /// Examples: account,tx, all, slot,meta,tx, tx, meta,footer
     #[clap(long, default_value = "all")]
     include: SubscribeInclude,
 
@@ -375,6 +379,11 @@ struct SubscribeArgs {
     /// Number of parallel data streams (TCP connections) to open to fumarole.
     #[clap(long, short, default_value = "1")]
     para: NonZeroU8,
+
+    /// Include the Alpenglow certificates in block footer updates.
+    /// Only applicable when `footer` is part of `--include`.
+    #[clap(long, default_value = "false")]
+    footer_certs: bool,
 
     /// Number of concurrent shard download per TCP connection. Only applicable when xx_enable_sharded_download is true.
     #[clap(long, default_value = "1")]
@@ -412,6 +421,27 @@ fn summarize_tx(tx: SubscribeUpdateTransaction) -> Option<String> {
     let tx = tx.transaction?;
     let sig = bs58::encode(tx.signature).into_string();
     Some(format!("tx,{slot},{sig}"))
+}
+
+fn summarize_block_footer(footer: SubscribeUpdateBlockFooter) -> Option<String> {
+    let SubscribeUpdateBlockFooter {
+        slot,
+        bank_id,
+        bank_hash,
+        block_producer_time_nanos,
+        block_user_agent,
+        block_final_cert,
+        skip_reward_cert,
+        notar_reward_cert,
+    } = footer;
+    let bank_hash = bs58::encode(bank_hash).into_string();
+    let user_agent = String::from_utf8_lossy(&block_user_agent);
+    Some(format!(
+        "footer,{slot},bank_id={bank_id},bank_hash={bank_hash},producer_time_ns={block_producer_time_nanos},user_agent={user_agent},final_cert={},skip_cert={},notar_cert={}",
+        block_final_cert.is_some(),
+        skip_reward_cert.is_some(),
+        notar_reward_cert.is_some(),
+    ))
 }
 
 fn summarize_tx_status(tx: SubscribeUpdateTransactionStatus) -> Option<String> {
@@ -697,6 +727,14 @@ impl SubscribeArgs {
                     request.entry =
                         HashMap::from([(self.default_filter_name(), Default::default())]);
                 }
+                SubscribeDataType::BlockFooter => {
+                    request.block_footer = HashMap::from([(
+                        self.default_filter_name(),
+                        SubscribeRequestFilterBlockFooter {
+                            include_certificates: Some(self.footer_certs),
+                        },
+                    )]);
+                }
             }
         }
         request
@@ -787,6 +825,9 @@ async fn subscribe(mut client: FumaroleClient, args: SubscribeArgs) {
                                 ..
                             } = block_meta;
                             Some(format!("block={slot}, tx_count={}, entry_count={}", block_meta.executed_transaction_count, block_meta.entries_count))
+                        }
+                        UpdateOneof::BlockFooter(block_footer) => {
+                            summarize_block_footer(block_footer)
                         }
                         _ => None,
                     }

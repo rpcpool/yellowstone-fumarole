@@ -11,6 +11,7 @@ import {
   commitmentLevelFromJSON,
   commitmentLevelToJSON,
   SubscribeRequestFilterAccounts,
+  SubscribeRequestFilterBlockFooter,
   SubscribeRequestFilterBlocksMeta,
   SubscribeRequestFilterEntry,
   SubscribeRequestFilterTransactions,
@@ -119,6 +120,7 @@ export interface BlockFilters {
   entries: { [key: string]: SubscribeRequestFilterEntry };
   blocksMeta: { [key: string]: SubscribeRequestFilterBlocksMeta };
   transactionsStatus: { [key: string]: SubscribeRequestFilterTransactions };
+  blockFooter: { [key: string]: SubscribeRequestFilterBlockFooter };
 }
 
 export interface BlockFilters_AccountsEntry {
@@ -146,12 +148,18 @@ export interface BlockFilters_TransactionsStatusEntry {
   value: SubscribeRequestFilterTransactions | undefined;
 }
 
+export interface BlockFilters_BlockFooterEntry {
+  key: string;
+  value: SubscribeRequestFilterBlockFooter | undefined;
+}
+
 export interface DownloadBlockShard {
   blockchainId: Uint8Array;
   blockUid: Uint8Array;
   shardIdx: number;
   blockFilters?: BlockFilters | undefined;
   slot?: bigint | undefined;
+  includeFooter: boolean;
 }
 
 export interface Ping {
@@ -1265,7 +1273,7 @@ export const GetSlotLagInfoRequest: MessageFns<GetSlotLagInfoRequest> = {
 };
 
 function createBaseBlockFilters(): BlockFilters {
-  return { accounts: {}, transactions: {}, entries: {}, blocksMeta: {}, transactionsStatus: {} };
+  return { accounts: {}, transactions: {}, entries: {}, blocksMeta: {}, transactionsStatus: {}, blockFooter: {} };
 }
 
 export const BlockFilters: MessageFns<BlockFilters> = {
@@ -1289,6 +1297,11 @@ export const BlockFilters: MessageFns<BlockFilters> = {
     globalThis.Object.entries(message.transactionsStatus).forEach(
       ([key, value]: [string, SubscribeRequestFilterTransactions]) => {
         BlockFilters_TransactionsStatusEntry.encode({ key: key as any, value }, writer.uint32(42).fork()).join();
+      },
+    );
+    globalThis.Object.entries(message.blockFooter).forEach(
+      ([key, value]: [string, SubscribeRequestFilterBlockFooter]) => {
+        BlockFilters_BlockFooterEntry.encode({ key: key as any, value }, writer.uint32(50).fork()).join();
       },
     );
     return writer;
@@ -1353,6 +1366,17 @@ export const BlockFilters: MessageFns<BlockFilters> = {
           const entry5 = BlockFilters_TransactionsStatusEntry.decode(reader, reader.uint32());
           if (entry5.value !== undefined) {
             message.transactionsStatus[entry5.key] = entry5.value;
+          }
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          const entry6 = BlockFilters_BlockFooterEntry.decode(reader, reader.uint32());
+          if (entry6.value !== undefined) {
+            message.blockFooter[entry6.key] = entry6.value;
           }
           continue;
         }
@@ -1428,6 +1452,23 @@ export const BlockFilters: MessageFns<BlockFilters> = {
           {},
         )
         : {},
+      blockFooter: isObject(object.blockFooter)
+        ? (globalThis.Object.entries(object.blockFooter) as [string, any][]).reduce(
+          (acc: { [key: string]: SubscribeRequestFilterBlockFooter }, [key, value]: [string, any]) => {
+            acc[key] = SubscribeRequestFilterBlockFooter.fromJSON(value);
+            return acc;
+          },
+          {},
+        )
+        : isObject(object.block_footer)
+        ? (globalThis.Object.entries(object.block_footer) as [string, any][]).reduce(
+          (acc: { [key: string]: SubscribeRequestFilterBlockFooter }, [key, value]: [string, any]) => {
+            acc[key] = SubscribeRequestFilterBlockFooter.fromJSON(value);
+            return acc;
+          },
+          {},
+        )
+        : {},
     };
   },
 
@@ -1478,6 +1519,15 @@ export const BlockFilters: MessageFns<BlockFilters> = {
         obj.transactionsStatus = {};
         entries.forEach(([k, v]) => {
           obj.transactionsStatus[k] = SubscribeRequestFilterTransactions.toJSON(v);
+        });
+      }
+    }
+    if (message.blockFooter) {
+      const entries = globalThis.Object.entries(message.blockFooter) as [string, SubscribeRequestFilterBlockFooter][];
+      if (entries.length > 0) {
+        obj.blockFooter = {};
+        entries.forEach(([k, v]) => {
+          obj.blockFooter[k] = SubscribeRequestFilterBlockFooter.toJSON(v);
         });
       }
     }
@@ -1552,6 +1602,19 @@ export const BlockFilters: MessageFns<BlockFilters> = {
           },
           {},
         );
+    message.blockFooter =
+      (globalThis.Object.entries(object.blockFooter ?? {}) as [string, SubscribeRequestFilterBlockFooter][]).reduce(
+        (
+          acc: { [key: string]: SubscribeRequestFilterBlockFooter },
+          [key, value]: [string, SubscribeRequestFilterBlockFooter],
+        ) => {
+          if (value !== undefined) {
+            acc[key] = SubscribeRequestFilterBlockFooter.fromPartial(value);
+          }
+          return acc;
+        },
+        {},
+      );
     return message;
   },
 };
@@ -1952,6 +2015,86 @@ export const BlockFilters_TransactionsStatusEntry: MessageFns<BlockFilters_Trans
   },
 };
 
+function createBaseBlockFilters_BlockFooterEntry(): BlockFilters_BlockFooterEntry {
+  return { key: "", value: undefined };
+}
+
+export const BlockFilters_BlockFooterEntry: MessageFns<BlockFilters_BlockFooterEntry> = {
+  encode(message: BlockFilters_BlockFooterEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.key !== "") {
+      writer.uint32(10).string(message.key);
+    }
+    if (message.value !== undefined) {
+      SubscribeRequestFilterBlockFooter.encode(message.value, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): BlockFilters_BlockFooterEntry {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseBlockFilters_BlockFooterEntry();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.key = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.value = SubscribeRequestFilterBlockFooter.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): BlockFilters_BlockFooterEntry {
+    return {
+      key: isSet(object.key) ? globalThis.String(object.key) : "",
+      value: isSet(object.value) ? SubscribeRequestFilterBlockFooter.fromJSON(object.value) : undefined,
+    };
+  },
+
+  toJSON(message: BlockFilters_BlockFooterEntry): unknown {
+    const obj: any = {};
+    if (message.key !== "") {
+      obj.key = message.key;
+    }
+    if (message.value !== undefined) {
+      obj.value = SubscribeRequestFilterBlockFooter.toJSON(message.value);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<BlockFilters_BlockFooterEntry>, I>>(base?: I): BlockFilters_BlockFooterEntry {
+    return BlockFilters_BlockFooterEntry.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<BlockFilters_BlockFooterEntry>, I>>(
+    object: I,
+  ): BlockFilters_BlockFooterEntry {
+    const message = createBaseBlockFilters_BlockFooterEntry();
+    message.key = object.key ?? "";
+    message.value = (object.value !== undefined && object.value !== null)
+      ? SubscribeRequestFilterBlockFooter.fromPartial(object.value)
+      : undefined;
+    return message;
+  },
+};
+
 function createBaseDownloadBlockShard(): DownloadBlockShard {
   return {
     blockchainId: new Uint8Array(0),
@@ -1959,6 +2102,7 @@ function createBaseDownloadBlockShard(): DownloadBlockShard {
     shardIdx: 0,
     blockFilters: undefined,
     slot: undefined,
+    includeFooter: false,
   };
 }
 
@@ -1981,6 +2125,9 @@ export const DownloadBlockShard: MessageFns<DownloadBlockShard> = {
         throw new globalThis.Error("value provided for field message.slot of type uint64 too large");
       }
       writer.uint32(40).uint64(message.slot);
+    }
+    if (message.includeFooter !== false) {
+      writer.uint32(48).bool(message.includeFooter);
     }
     return writer;
   },
@@ -2032,6 +2179,14 @@ export const DownloadBlockShard: MessageFns<DownloadBlockShard> = {
           message.slot = reader.uint64() as bigint;
           continue;
         }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.includeFooter = reader.bool();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2060,6 +2215,11 @@ export const DownloadBlockShard: MessageFns<DownloadBlockShard> = {
         : 0,
       blockFilters: isSet(object.blockFilters) ? BlockFilters.fromJSON(object.blockFilters) : undefined,
       slot: isSet(object.slot) ? BigInt(object.slot) : undefined,
+      includeFooter: isSet(object.includeFooter)
+        ? globalThis.Boolean(object.includeFooter)
+        : isSet(object.include_footer)
+        ? globalThis.Boolean(object.include_footer)
+        : false,
     };
   },
 
@@ -2080,6 +2240,9 @@ export const DownloadBlockShard: MessageFns<DownloadBlockShard> = {
     if (message.slot !== undefined) {
       obj.slot = message.slot.toString();
     }
+    if (message.includeFooter !== false) {
+      obj.includeFooter = message.includeFooter;
+    }
     return obj;
   },
 
@@ -2095,6 +2258,7 @@ export const DownloadBlockShard: MessageFns<DownloadBlockShard> = {
       ? BlockFilters.fromPartial(object.blockFilters)
       : undefined;
     message.slot = object.slot ?? undefined;
+    message.includeFooter = object.includeFooter ?? false;
     return message;
   },
 };

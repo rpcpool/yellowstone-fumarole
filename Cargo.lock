@@ -2857,7 +2857,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "yellowstone-fumarole-cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "bs58",
  "clap",
@@ -2886,7 +2886,7 @@ dependencies = [
 
 [[package]]
 name = "yellowstone-fumarole-client"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "bytesize",
@@ -2957,9 +2957,9 @@ dependencies = [
 
 [[package]]
 name = "yellowstone-grpc-client"
-version = "14.0.1"
+version = "15.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e209e7d3c4581583b5a8be60659c956e0f6dc25d79189bad2902ce87bf2dee31"
+checksum = "14d2f909d0f39eff9f03fca11c60115660defcf85c3eee5511ebb13c0ebc91d4"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -2978,9 +2978,9 @@ dependencies = [
 
 [[package]]
 name = "yellowstone-grpc-proto"
-version = "13.0.0"
+version = "14.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c3e496d8fd80a592ee4daea506bfd8c3ce87aeda55055ba88439c8eec6a9a62"
+checksum = "8f913b2244559b96aa636abf53188a7df450e14a3f8cb5b3e5d3202822759ff4"
 dependencies = [
  "anyhow",
  "prost",

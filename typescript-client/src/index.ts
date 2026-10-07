@@ -16,6 +16,8 @@ export {
   SubscribeRequestFilterBlocksMeta,
   SubscribeRequestFilterEntry,
   SubscribeRequestFilterSlots,
+  SubscribeRequestFilterBlockFooter,
+  SubscribeUpdateBlockFooter,
 } from './grpc/geyser.js'
 
 export {
