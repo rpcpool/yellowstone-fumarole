@@ -151,8 +151,38 @@ impl From<SubscribeRequest> for BlockFilters {
             entries: val.entry,
             blocks_meta: val.blocks_meta,
             transactions_status: val.transactions_status,
+            block_footer: val.block_footer,
         }
     }
+}
+
+///
+/// Shapes a downloaded block footer for the subscriber, or returns `None` when no
+/// `block_footer` filter is set.
+///
+/// The backend knows nothing of the subscriber's footer filters, so `filters` is set
+/// to their names here, and certificates are stripped unless a filter asks for them.
+///
+fn filter_block_footer(
+    subscribe_request: &SubscribeRequest,
+    mut update: SubscribeUpdate,
+) -> Option<SubscribeUpdate> {
+    if subscribe_request.block_footer.is_empty() {
+        return None;
+    }
+    let include_certificates = subscribe_request
+        .block_footer
+        .values()
+        .any(|filter| filter.include_certificates.unwrap_or(false));
+    if !include_certificates {
+        if let Some(UpdateOneof::BlockFooter(footer)) = update.update_oneof.as_mut() {
+            footer.block_final_cert = None;
+            footer.skip_reward_cert = None;
+            footer.notar_reward_cert = None;
+        }
+    }
+    update.filters = subscribe_request.block_footer.keys().cloned().collect();
+    Some(update)
 }
 
 enum LoopInstruction {
@@ -759,6 +789,8 @@ struct ScheduleShardDownload {
     block_uid: Vec<u8>,
     attempt: usize,
     bank_id: FumeBankId,
+    /// Whether this shard was asked to carry the block footer, kept so retries ask for it again.
+    include_footer: bool,
 }
 
 /// Context shared with the pipelined downloader so it can tag and dedup incoming updates.
@@ -943,6 +975,7 @@ pub struct CompletedDownloadBlockShardTask {
     shard_idx: FumeShardIdx,
     block_uid: [u8; 16],
     block_meta: Option<SubscribeUpdate>,
+    block_footer: Option<SubscribeUpdate>,
     slot: Slot,
 }
 
@@ -992,6 +1025,7 @@ where
     {
         let mut total_event_downloaded = 0;
         let mut block_meta: Option<SubscribeUpdate> = None;
+        let mut block_footer: Option<SubscribeUpdate> = None;
         let mut scheduled_shards = VecDeque::new();
         let mut t = Instant::now();
         tracing::trace!("starting continuous shard downloader loop");
@@ -1021,6 +1055,9 @@ where
                     #[allow(clippy::collapsible_else_if)]
                     if matches!(update.update_oneof, Some(UpdateOneof::BlockMeta(_))) {
                         block_meta = Some(update);
+                    } else if matches!(update.update_oneof, Some(UpdateOneof::BlockFooter(_))) {
+                        // Held back like the block meta: emitted once every shard of the block is done.
+                        block_footer = Some(update);
                     } else {
                         let event_bank_id = if let Some(expected) = scheduled_shards.front() {
                             let ScheduledShardCtx {
@@ -1121,6 +1158,7 @@ where
                         shard_idx: footer.shard_indices[0],
                         // Reset: the next shard on this connection may belong to another block (e.g. a fork).
                         block_meta: block_meta.take(),
+                        block_footer: block_footer.take(),
                         block_uid: footer_block_uid,
                         slot: footer.slot,
                     };
@@ -1252,6 +1290,7 @@ where
                         block_uid: queued_shard_download.request.block_uid.clone(),
                         bank_id: queued_shard_download.bank_id.clone(),
                         attempt: queued_shard_download.attempt,
+                        include_footer: queued_shard_download.request.include_footer,
                     };
                     self.shard_scheduled_for_download.push_back(scheduled_shard_download);
                     let _ = scheduled_shard_tx.send(ScheduledShardCtx {
@@ -1339,6 +1378,7 @@ struct ShardedSlotDownloadProgress {
     bank_id: FumeBankId,
     started_at: Instant,
     block_meta: Option<SubscribeUpdate>,
+    block_footer: Option<SubscribeUpdate>,
     remaining_shard_idx: Vec<FumeShardIdx>,
 }
 
@@ -1545,6 +1585,7 @@ where
                     shard_idx: scheduled_shard_download.shard_idx as i32,
                     block_filters: None,
                     slot: Some(scheduled_shard_download.bank_id.slot),
+                    include_footer: scheduled_shard_download.include_footer,
                 },
                 bank_id: scheduled_shard_download.bank_id,
                 attempt: scheduled_shard_download.attempt,
@@ -1643,6 +1684,9 @@ where
             if let Some(block_meta) = completed.block_meta.take() {
                 slot_progression.block_meta = Some(block_meta);
             }
+            if let Some(block_footer) = completed.block_footer.take() {
+                slot_progression.block_footer = Some(block_footer);
+            }
 
             (
                 slot_progression.bank_id.clone(),
@@ -1681,6 +1725,19 @@ where
                 }
                 let block_meta = completed.block_meta;
                 tracing::trace!("slot {slot} download completed");
+                // The footer is always downloaded but only yielded to subscribers that asked for it.
+                if let Some(block_footer) = completed
+                    .block_footer
+                    .and_then(|update| filter_block_footer(&self.subscribe_request, update))
+                {
+                    let _ = self
+                        .dragonsmouth_outlet
+                        .send(Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
+                            bank_id: bank_id.clone(),
+                            update: block_footer,
+                        })))
+                        .await;
+                }
                 if let Some(block_meta) = block_meta {
                     let _ = self
                         .dragonsmouth_outlet
@@ -1725,6 +1782,10 @@ where
         let slot = bank_id.slot;
         let num_shards = task_spec.download_request.num_shards;
         let shard_idx_vec = (0..num_shards).collect::<Vec<_>>();
+        // One shard per block, picked at random, is asked to send the block footer
+        // (`include_footer = true`). The backend sends it last on that shard, right before the block meta.
+        // Picking at random spreads the footer work across downloader lanes.
+        let footer_shard_idx = (num_shards > 0).then(|| rand::random_range(0..num_shards));
         for shard_idx in &shard_idx_vec {
             let download_shard_task = DownloadBlockShard {
                 blockchain_id: task_spec.download_request.blockchain_id.clone().to_vec(),
@@ -1732,6 +1793,8 @@ where
                 shard_idx: *shard_idx as i32,
                 block_filters: None,
                 slot: Some(slot),
+                // Always downloaded, whether or not the subscriber asked for footers.
+                include_footer: Some(*shard_idx) == footer_shard_idx,
             };
             let queued_download = QueuedShardDownload {
                 bank_id: bank_id.clone(),
@@ -1745,6 +1808,7 @@ where
             started_at: Instant::now(),
             remaining_shard_idx: shard_idx_vec,
             block_meta: None,
+            block_footer: None,
         };
         self.block_download_progression_map
             .insert(block_uid, slot_progress);
@@ -1817,6 +1881,7 @@ where
                                         shard_idx: schedule_shard_download.shard_idx as i32,
                                         block_filters: None,
                                         slot: Some(schedule_shard_download.bank_id.slot),
+                                        include_footer: schedule_shard_download.include_footer,
                                     },
                                     bank_id: schedule_shard_download.bank_id,
                                     attempt: attempt + 1,
@@ -2117,6 +2182,14 @@ mod tests {
                 .contains_key(&request.block_uid)
         );
         {
+            // Exactly one shard, whichever was picked, carries the footer.
+            assert_eq!(
+                drained
+                    .iter()
+                    .filter(|queued| queued.request.include_footer)
+                    .count(),
+                1
+            );
             for (shard_idx, queued) in drained.into_iter().enumerate() {
                 assert_eq!(queued.bank_id, request.bank_id);
                 assert_eq!(queued.attempt, 1);
@@ -2152,6 +2225,7 @@ mod tests {
                 bank_id: FumeBankId::new(42, None),
                 started_at: Instant::now(),
                 block_meta: None,
+                block_footer: None,
                 remaining_shard_idx: vec![0],
             },
         );
@@ -2166,6 +2240,7 @@ mod tests {
                     yellowstone_grpc_proto::geyser::SubscribeUpdateBlockMeta::default(),
                 )),
             }),
+            block_footer: None,
             slot: 42,
         };
 
@@ -2222,6 +2297,7 @@ mod tests {
                 bank_id: FumeBankId::new(43, None),
                 started_at: Instant::now(),
                 block_meta: None,
+                block_footer: None,
                 remaining_shard_idx: vec![0],
             },
         );
@@ -2230,6 +2306,7 @@ mod tests {
             shard_idx: 0,
             block_uid: [8u8; 16],
             block_meta: None,
+            block_footer: None,
             slot: 43,
         };
 
@@ -2290,6 +2367,7 @@ mod tests {
             block_uid: vec![2; 16],
             attempt: 1,
             bank_id: FumeBankId::new(55, None),
+            include_footer: true,
         });
 
         let (recycled_tx, recycled_rx) = mpsc::channel(2);
@@ -2302,6 +2380,7 @@ mod tests {
                     shard_idx: 5,
                     block_filters: None,
                     slot: Some(56),
+                    include_footer: false,
                 },
                 attempt: 2,
             })
@@ -2334,6 +2413,13 @@ mod tests {
         assert!(matches!(first.request.shard_idx, 3 | 5));
         assert!(matches!(second.request.shard_idx, 3 | 5));
         assert_ne!(first.request.shard_idx, second.request.shard_idx);
+        for recycled in [&first, &second] {
+            // The footer request must survive recycling, or the block loses its footer.
+            assert_eq!(
+                recycled.request.include_footer,
+                recycled.request.shard_idx == 3
+            );
+        }
 
         let queue_0 = orchestrator.shard_download_queue_rxs[0]
             .as_mut()
@@ -2637,6 +2723,7 @@ mod tests {
                     shard_idx: 0,
                     block_uid: request.block_uid,
                     block_meta: None,
+                    block_footer: None,
                     slot: SLOT,
                 })
                 .await;
@@ -2742,5 +2829,232 @@ mod tests {
         assert_eq!(completed_b.block_uid, uid_b);
         // Fork A block meta must not leak into fork B completion.
         assert!(completed_b.block_meta.is_none());
+    }
+
+    fn mk_block_footer(slot: Slot) -> SubscribeUpdate {
+        SubscribeUpdate {
+            filters: vec![],
+            created_at: None,
+            update_oneof: Some(UpdateOneof::BlockFooter(
+                yellowstone_grpc_proto::geyser::SubscribeUpdateBlockFooter {
+                    slot,
+                    block_final_cert: Some(Default::default()),
+                    skip_reward_cert: Some(Default::default()),
+                    notar_reward_cert: Some(Default::default()),
+                    ..Default::default()
+                },
+            )),
+        }
+    }
+
+    fn mk_block_meta() -> SubscribeUpdate {
+        SubscribeUpdate {
+            filters: vec![],
+            created_at: None,
+            update_oneof: Some(UpdateOneof::BlockMeta(
+                yellowstone_grpc_proto::geyser::SubscribeUpdateBlockMeta::default(),
+            )),
+        }
+    }
+
+    /// Completes a one-shard block carrying a footer and returns the dragonsmouth events.
+    async fn complete_block_with_footer(
+        subscribe_request: SubscribeRequest,
+    ) -> Vec<FumaroleRuntimeEvent> {
+        let (mut orchestrator, _outlet_rx, mut dragonsmouth_outlet_rx) = make_test_orchestrator();
+        orchestrator.subscribe_request = Arc::new(subscribe_request);
+        orchestrator.block_download_progression_map.insert(
+            [9u8; 16],
+            ShardedSlotDownloadProgress {
+                bank_id: FumeBankId::new(44, None),
+                started_at: Instant::now(),
+                block_meta: None,
+                block_footer: None,
+                remaining_shard_idx: vec![0],
+            },
+        );
+        orchestrator
+            .handle_shard_download_completed(CompletedDownloadBlockShardTask {
+                shard_idx: 0,
+                block_uid: [9u8; 16],
+                block_meta: Some(mk_block_meta()),
+                block_footer: Some(mk_block_footer(44)),
+                slot: 44,
+            })
+            .await;
+        drop(orchestrator);
+        let mut events = Vec::new();
+        while let Some(event) = dragonsmouth_outlet_rx.recv().await {
+            events.push(event.expect("runtime event"));
+        }
+        events
+    }
+
+    fn event_kind(event: &FumaroleRuntimeEvent) -> &'static str {
+        match event {
+            FumaroleRuntimeEvent::Data(data) => match data.update.update_oneof {
+                Some(UpdateOneof::BlockFooter(_)) => "footer",
+                Some(UpdateOneof::BlockMeta(_)) => "meta",
+                _ => "other",
+            },
+            FumaroleRuntimeEvent::SlotEnded(_) => "slot_ended",
+            FumaroleRuntimeEvent::Committable(_) => "committable",
+        }
+    }
+
+    #[tokio::test]
+    async fn sharded_orchestrator_drops_block_footer_when_not_subscribed() {
+        let events = complete_block_with_footer(SubscribeRequest::default()).await;
+        let kinds = events.iter().map(event_kind).collect::<Vec<_>>();
+        assert_eq!(kinds, vec!["meta", "slot_ended"]);
+    }
+
+    #[tokio::test]
+    async fn sharded_orchestrator_emits_block_footer_before_block_meta_when_subscribed() {
+        let mut subscribe_request = SubscribeRequest::default();
+        subscribe_request.block_footer.insert(
+            "footers".to_owned(),
+            geyser::SubscribeRequestFilterBlockFooter::default(),
+        );
+        let events = complete_block_with_footer(subscribe_request).await;
+        let kinds = events.iter().map(event_kind).collect::<Vec<_>>();
+        assert_eq!(kinds, vec!["footer", "meta", "slot_ended"]);
+
+        let FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent { bank_id, update }) = &events[0]
+        else {
+            panic!("expected footer data event")
+        };
+        assert_eq!(bank_id, &FumeBankId::new(44, None));
+        assert_eq!(update.filters, vec!["footers".to_owned()]);
+        let Some(UpdateOneof::BlockFooter(footer)) = &update.update_oneof else {
+            panic!("expected block footer")
+        };
+        assert_eq!(footer.slot, 44);
+        // No filter asked for certificates.
+        assert!(footer.block_final_cert.is_none());
+        assert!(footer.skip_reward_cert.is_none());
+        assert!(footer.notar_reward_cert.is_none());
+    }
+
+    #[tokio::test]
+    async fn sharded_orchestrator_keeps_block_footer_certificates_when_requested() {
+        let mut subscribe_request = SubscribeRequest::default();
+        subscribe_request.block_footer.insert(
+            "footers".to_owned(),
+            geyser::SubscribeRequestFilterBlockFooter {
+                include_certificates: Some(true),
+            },
+        );
+        let events = complete_block_with_footer(subscribe_request).await;
+        let FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent { update, .. }) = &events[0] else {
+            panic!("expected footer data event")
+        };
+        let Some(UpdateOneof::BlockFooter(footer)) = &update.update_oneof else {
+            panic!("expected block footer")
+        };
+        assert!(footer.block_final_cert.is_some());
+        assert!(footer.skip_reward_cert.is_some());
+        assert!(footer.notar_reward_cert.is_some());
+    }
+
+    #[tokio::test]
+    async fn sharded_orchestrator_holds_block_footer_until_every_shard_is_done() {
+        let mut subscribe_request = SubscribeRequest::default();
+        subscribe_request.block_footer.insert(
+            "footers".to_owned(),
+            geyser::SubscribeRequestFilterBlockFooter::default(),
+        );
+        let (mut orchestrator, _outlet_rx, mut dragonsmouth_outlet_rx) = make_test_orchestrator();
+        orchestrator.subscribe_request = Arc::new(subscribe_request);
+        orchestrator.block_download_progression_map.insert(
+            [5u8; 16],
+            ShardedSlotDownloadProgress {
+                bank_id: FumeBankId::new(45, None),
+                started_at: Instant::now(),
+                block_meta: None,
+                block_footer: None,
+                remaining_shard_idx: vec![0, 1],
+            },
+        );
+
+        // The footer shard finishes first: nothing is emitted yet.
+        orchestrator
+            .handle_shard_download_completed(CompletedDownloadBlockShardTask {
+                shard_idx: 0,
+                block_uid: [5u8; 16],
+                block_meta: Some(mk_block_meta()),
+                block_footer: Some(mk_block_footer(45)),
+                slot: 45,
+            })
+            .await;
+        assert!(dragonsmouth_outlet_rx.try_recv().is_err());
+
+        orchestrator
+            .handle_shard_download_completed(CompletedDownloadBlockShardTask {
+                shard_idx: 1,
+                block_uid: [5u8; 16],
+                block_meta: None,
+                block_footer: None,
+                slot: 45,
+            })
+            .await;
+        drop(orchestrator);
+        let mut kinds = Vec::new();
+        while let Some(event) = dragonsmouth_outlet_rx.recv().await {
+            kinds.push(event_kind(&event.expect("runtime event")));
+        }
+        assert_eq!(kinds, vec!["footer", "meta", "slot_ended"]);
+    }
+
+    #[tokio::test]
+    async fn pipelined_downloader_holds_back_block_footer_with_completed_shard() {
+        let (outlet_tx, mut outlet_rx) =
+            futures_mpsc::unbounded::<Result<FumaroleRuntimeEvent, FumaroleSubscribeError>>();
+        let (completed_tx, mut completed_rx) = mpsc::channel(4);
+        let uid = [3u8; 16];
+        let (scheduled_tx, scheduled_rx) = mpsc::unbounded_channel();
+        scheduled_tx
+            .send(ScheduledShardCtx {
+                bank_id: FumeBankId::new(46, None),
+                block_uid: uid,
+                shard_idx: 0,
+            })
+            .expect("send scheduled shard ctx");
+        drop(scheduled_tx);
+
+        let stream = tokio_stream::iter(vec![
+            Ok(mk_update(mk_entry(46, 1))),
+            Ok(DataResponse {
+                response: Some(data_response::Response::Update(mk_block_footer(46))),
+            }),
+            Ok(DataResponse {
+                response: Some(data_response::Response::Update(mk_block_meta())),
+            }),
+            Ok(mk_footer(uid, 46, 0)),
+        ]);
+
+        let result = PipelinedShardDownloader::pipelined_downloader(
+            stream,
+            outlet_tx,
+            completed_tx,
+            DedupState::default(),
+            scheduled_rx,
+        )
+        .await;
+        assert!(matches!(result, Ok((None, _))));
+
+        // Only the entry is forwarded right away.
+        let mut forwarded = Vec::new();
+        while let Some(event) = outlet_rx.next().await {
+            forwarded.push(event_kind(&event.expect("runtime event")));
+        }
+        assert_eq!(forwarded, vec!["other"]);
+
+        let completed = completed_rx.recv().await.expect("shard completion");
+        assert!(matches!(
+            completed.block_footer.and_then(|u| u.update_oneof),
+            Some(UpdateOneof::BlockFooter(_))
+        ));
+        assert!(completed.block_meta.is_some());
     }
 }

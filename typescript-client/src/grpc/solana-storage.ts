@@ -16,6 +16,7 @@ export enum RewardType {
   Staking = 3,
   Voting = 4,
   DeactivatedStake = 5,
+  VATDebit = 6,
   UNRECOGNIZED = -1,
 }
 
@@ -39,6 +40,9 @@ export function rewardTypeFromJSON(object: any): RewardType {
     case 5:
     case "DeactivatedStake":
       return RewardType.DeactivatedStake;
+    case 6:
+    case "VATDebit":
+      return RewardType.VATDebit;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -60,6 +64,8 @@ export function rewardTypeToJSON(object: RewardType): string {
       return "Voting";
     case RewardType.DeactivatedStake:
       return "DeactivatedStake";
+    case RewardType.VATDebit:
+      return "VATDebit";
     case RewardType.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
