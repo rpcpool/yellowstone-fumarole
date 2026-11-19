@@ -750,9 +750,9 @@ impl BlockStream {
 /// When [`FumaroleEvent::SlotEnded`] arrives, the buffered payload updates
 /// for that bank are emitted as [`FumaroleBlockStreamEvent::Block`].
 ///
-/// `Slot` status and `BlockMeta` updates are surfaced immediately as
-/// [`FumaroleBlockStreamEvent::SlotStatus`] and
-/// [`FumaroleBlockStreamEvent::BlockMeta`] respectively.
+/// `Slot` status updates are surfaced immediately as
+/// [`FumaroleBlockStreamEvent::SlotStatus`]. `BlockMeta` updates are buffered like any
+/// other payload update and arrive inside the [`FumaroleBlockStreamEvent::Block`].
 ///
 /// # Generic Parameter
 ///
@@ -761,8 +761,7 @@ impl BlockStream {
 /// # Notes
 ///
 /// This adapter is intended for block-oriented consumers that want explicit block
-/// boundaries while still receiving slot-status and block-meta events as soon as
-/// they appear.
+/// boundaries while still receiving slot-status events as soon as they appear.
 ///
 impl Stream for BlockStream {
     type Item = Result<FumaroleBlockStreamEvent, FumaroleSubscribeError>;

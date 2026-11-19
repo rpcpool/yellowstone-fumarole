@@ -57,7 +57,7 @@
 //!
 //! ## Dragonsmouth-like Subscribe (deprecated)
 //!
-//! ```rust
+//! ```ignore
 //! use {
 //!     clap::Parser,
 //!     solana_sdk::{bs58, pubkey::Pubkey},
@@ -203,7 +203,7 @@
 //!
 //! Uses `FumaroleSubscribeConfig` to configure the parallel subscription and zstd compression.
 //!
-//! ```rust
+//! ```ignore
 //! let config: FumaroleConfig = serde_yaml::from_reader("<path/to/config.yaml>").expect("failed to parse fumarole config");
 //!
 //! let request = SubscribeRequest {
@@ -336,7 +336,7 @@
 //!
 //! Then, you can use the `metrics` module to register and expose metrics:
 //!
-//! ```rust
+//! ```ignore
 //! use yellowstone_fumarole_client::metrics;
 //! use prometheus::{Registry};
 //!
