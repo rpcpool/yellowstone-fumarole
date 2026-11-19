@@ -1072,7 +1072,7 @@ async fn main() {
             .unwrap_or_else(|_| panic!("Failed to read config file at {config_path:?}"))
     };
     let config: FumeConfig =
-        serde_yaml::from_reader(config_file).expect("failed to parse fumarole config");
+        serde_saphyr::from_reader(config_file).expect("failed to parse fumarole config");
 
     tracing::debug!("Using config: {config:?}");
 

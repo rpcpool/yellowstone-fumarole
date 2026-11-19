@@ -39,11 +39,11 @@
 //! }
 //! ```
 //!
-//! The preferred way to create `FumaroleConfig` is to use `serde_yaml` deserialization from a YAML file.
+//! The preferred way to create `FumaroleConfig` is to use `serde_saphyr` deserialization from a YAML file.
 //!
 //! ```ignore
 //! let config_file = std::fs::File::open("path/to/config.yaml").unwrap();
-//! let config: FumaroleConfig = serde_yaml::from_reader(config_file).unwrap();
+//! let config: FumaroleConfig = serde_saphyr::from_reader(config_file).unwrap();
 //! ```
 //!
 //! Here's an example of a YAML file:
@@ -179,7 +179,7 @@
 //!     let args: Args = Args::parse();
 //!     let config = std::fs::read_to_string(&args.config).expect("Failed to read config file");
 //!     let config: FumaroleConfig =
-//!         serde_yaml::from_str(&config).expect("Failed to parse config file");
+//!         serde_saphyr::from_str(&config).expect("Failed to parse config file");
 //!
 //!     match args.action {
 //!         Action::Subscribe(sub_args) => {
@@ -204,7 +204,7 @@
 //! Uses `FumaroleSubscribeConfig` to configure the parallel subscription and zstd compression.
 //!
 //! ```ignore
-//! let config: FumaroleConfig = serde_yaml::from_reader("<path/to/config.yaml>").expect("failed to parse fumarole config");
+//! let config: FumaroleConfig = serde_saphyr::from_reader("<path/to/config.yaml>").expect("failed to parse fumarole config");
 //!
 //! let request = SubscribeRequest {
 //!    transactions: HashMap::from([(

@@ -810,8 +810,8 @@ struct ScheduledShardCtx {
 /// at an epoch boundary) all have none, and keying on it dropped every write after the first.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct AccountWriteKey {
-    /// The written account's pubkey.
-    pubkey: Vec<u8>,
+    /// The written account's pubkey bytes.
+    pubkey: [u8; 32],
     /// The write's `write_version`, distinct for every account write of the block.
     write_version: u64,
 }
@@ -964,16 +964,21 @@ impl DedupState {
     /// # Returns
     ///
     /// The update's [`DedupKey`], or [`None`] when it must be forwarded without dedup: Ping
-    /// and Pong, which are not block data, and an account or transaction update missing its
-    /// payload, which has nothing to key on.
+    /// and Pong, which are not block data, an account or transaction update missing its
+    /// payload, which has nothing to key on, and an account update whose pubkey is not 32
+    /// bytes.
     fn key_for_update(ev: &UpdateOneof) -> Option<DedupKey> {
         match ev {
-            UpdateOneof::Account(msg) => msg.account.as_ref().map(|account_info| {
-                DedupKey::Account(AccountWriteKey {
-                    pubkey: account_info.pubkey.clone(),
+            UpdateOneof::Account(msg) => {
+                let account_info = msg.account.as_ref()?;
+                // A pubkey that is not 32 bytes can't be a Solana account: forward the
+                // update untouched rather than guess a key for it.
+                let pubkey = account_info.pubkey.as_slice().try_into().ok()?;
+                Some(DedupKey::Account(AccountWriteKey {
+                    pubkey,
                     write_version: account_info.write_version,
-                })
-            }),
+                }))
+            }
             UpdateOneof::Slot(msg) => Some(DedupKey::Slot(SlotStatusKey {
                 slot: msg.slot,
                 status: msg.status,
@@ -2693,6 +2698,21 @@ mod tests {
 
         assert!(!dedup_state.dedup(block_uid, 0, &write));
         assert!(dedup_state.dedup(block_uid, 0, &write));
+    }
+
+    #[tokio::test]
+    async fn dedup_state_forwards_account_write_with_malformed_pubkey() {
+        let mut dedup_state = DedupState::default();
+        let block_uid = [42u8; 16];
+        let mut write = mk_account_without_txn(42, [6u8; 32], 100);
+        let UpdateOneof::Account(msg) = &mut write else {
+            unreachable!("mk_account_without_txn builds an account update");
+        };
+        msg.account.as_mut().unwrap().pubkey = vec![6u8; 31];
+
+        // No key to dedup on: every copy is forwarded.
+        assert!(!dedup_state.dedup(block_uid, 0, &write));
+        assert!(!dedup_state.dedup(block_uid, 0, &write));
     }
 
     #[tokio::test]

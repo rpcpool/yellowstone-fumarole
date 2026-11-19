@@ -36,7 +36,6 @@ rustc-hash = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
-serde_yaml = { workspace = true }
 semver = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
@@ -48,6 +47,9 @@ tower = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 yellowstone-grpc-proto = { workspace = true }
+
+[dev-dependencies]
+serde-saphyr = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

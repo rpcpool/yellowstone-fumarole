@@ -110,7 +110,7 @@ mod tests {
             x-baz: jazz 
         "#;
 
-        let config: FumaroleConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: FumaroleConfig = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(config.max_decoding_message_size_bytes, 512_000_000);
         assert_eq!(config.x_token, Some("some-token".to_string()));
         assert_eq!(config.x_metadata.len(), 2);
@@ -128,8 +128,8 @@ mod tests {
         endpoint: http://127.0.0.1:9090
         x-token: some-token
         "#;
-        let config1: FumaroleConfig = serde_yaml::from_str(yaml1).unwrap();
-        let config2: FumaroleConfig = serde_yaml::from_str(yaml2).unwrap();
+        let config1: FumaroleConfig = serde_saphyr::from_str(yaml1).unwrap();
+        let config2: FumaroleConfig = serde_saphyr::from_str(yaml2).unwrap();
         assert_eq!(config1.x_token, config2.x_token);
     }
 }
