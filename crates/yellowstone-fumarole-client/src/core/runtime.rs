@@ -801,26 +801,87 @@ struct ScheduledShardCtx {
     shard_idx: FumeShardIdx,
 }
 
+/// Identifies one account write within a block.
+///
+/// Agave gives every account write its own `write_version`, and the server returns it
+/// unchanged. The transaction signature is not part of the key: writes made outside any
+/// transaction (the Clock sysvar at bank creation and again from the Alpenglow footer, the
+/// leader's vote account from the footer's vote rewards and again at freeze, EpochRewards
+/// at an epoch boundary) all have none, and keying on it dropped every write after the first.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct AccountWriteKey {
+    /// The written account's pubkey bytes.
+    pubkey: [u8; 32],
+    /// The write's `write_version`, distinct for every account write of the block.
+    write_version: u64,
+}
+
+/// Identifies one slot status update within a block.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SlotStatusKey {
+    /// The slot the status belongs to.
+    slot: Slot,
+    /// The raw `SlotStatus` value.
+    status: i32,
+}
+
+/// What makes an update unique within one block, used by [`DedupState`] to recognize an
+/// update it already forwarded when a shard is downloaded again.
+///
+/// Every key must tell apart two distinct updates of the same block: two updates sharing a
+/// key in one shard means the second is dropped.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum DedupKey {
-    Account {
-        pubkey: Vec<u8>,
-        txn_signature: Option<Vec<u8>>,
-    },
+    Account(AccountWriteKey),
     Transaction {
+        index: u64,
+    },
+    /// Kept apart from [`DedupKey::Transaction`]: with both the transaction and the
+    /// transaction-status filters set, the server sends both for the same index in one shard.
+    TransactionStatus {
         index: u64,
     },
     Entry {
         index: u64,
     },
+    /// One UpdateParent per cleared bank.
+    EntryUpdateParent {
+        cleared_bank_id: u64,
+    },
+    Slot(SlotStatusKey),
+    /// At most one block update per block.
+    Block,
 }
 
 const DEDUP_WINDOW_SIZE: usize = 100_000;
 const ORCHESTRATOR_DOWNLOADER_QUEUE_CAPACITY: usize = 3;
 const PENDING_SHARD_DOWNLOAD_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Absorbs retried shard downloads.
+///
+/// When a shard download fails partway, the shard is downloaded again from the start, and
+/// the updates already forwarded from the first attempt must not be forwarded twice. The
+/// state records a [`DedupKey`] per update seen for each `(block_uid, shard_idx)` until that
+/// shard finishes, then remembers the finished shard so a late copy of it is skipped whole.
+///
+/// The server merges a shard's per-event-type streams, so a retry can interleave accounts,
+/// transactions and entries differently than the first attempt: dedup goes by key, never by
+/// position in the stream. A key must therefore be unique per update within a block.
+///
 /// Dedup is keyed by block uid rather than slot: two forks of the same slot can be
 /// downloaded concurrently and must not dedup each other's shards.
+///
+/// # Examples
+///
+/// ```ignore
+/// let mut dedup_state = DedupState::default();
+/// if !dedup_state.dedup(block_uid, shard_idx, &update) {
+///     // forward `update`
+/// }
+/// // On `BlockShardDownloadFinish`:
+/// dedup_state.mark_shard_done(block_uid, shard_idx);
+/// dedup_state.shrink_seen_if_needed();
+/// ```
 #[derive(Default, Debug, Clone)]
 struct DedupState {
     seen: HashMap<(FumeBlockUID, FumeShardIdx), FxHashSet<DedupKey>>,
@@ -829,7 +890,19 @@ struct DedupState {
 }
 
 impl DedupState {
-    /// Returns true when the event should be skipped as duplicate.
+    /// Decides whether an update from a shard download was already forwarded.
+    ///
+    /// # Arguments
+    ///
+    /// * `block_uid` - The block the shard belongs to.
+    /// * `shard_idx` - The shard's index within the block.
+    /// * `ev` - The update received from the shard download.
+    ///
+    /// # Returns
+    ///
+    /// `true` when `ev` must be skipped: its shard already finished, or an update with the
+    /// same [`DedupKey`] was already seen in this shard. Updates that have no key (Ping and
+    /// Pong) are always forwarded.
     fn dedup(
         &mut self,
         block_uid: FumeBlockUID,
@@ -841,8 +914,8 @@ impl DedupState {
         }
 
         let Some(key) = Self::key_for_update(ev) else {
-            // Non-deduped event kinds are skipped by default.
-            return true;
+            // Not block data (Ping/Pong): a duplicate is harmless, so forward it.
+            return false;
         };
         let shard_key = (block_uid, shard_idx);
         let shard_seen = self.seen.entry(shard_key).or_default();
@@ -879,15 +952,37 @@ impl DedupState {
         }
     }
 
+    /// Computes the key that identifies an update within its block.
+    ///
+    /// The `match` has no catch-all arm on purpose: a new [`UpdateOneof`] variant must get
+    /// its own decision here.
+    ///
+    /// # Arguments
+    ///
+    /// * `ev` - The update to key.
+    ///
+    /// # Returns
+    ///
+    /// The update's [`DedupKey`], or [`None`] when it must be forwarded without dedup: Ping
+    /// and Pong, which are not block data, an account or transaction update missing its
+    /// payload, which has nothing to key on, and an account update whose pubkey is not 32
+    /// bytes.
     fn key_for_update(ev: &UpdateOneof) -> Option<DedupKey> {
         match ev {
             UpdateOneof::Account(msg) => {
-                msg.account.as_ref().map(|account_info| DedupKey::Account {
-                    pubkey: account_info.pubkey.clone(),
-                    txn_signature: account_info.txn_signature.clone(),
-                })
+                let account_info = msg.account.as_ref()?;
+                // A pubkey that is not 32 bytes can't be a Solana account: forward the
+                // update untouched rather than guess a key for it.
+                let pubkey = account_info.pubkey.as_slice().try_into().ok()?;
+                Some(DedupKey::Account(AccountWriteKey {
+                    pubkey,
+                    write_version: account_info.write_version,
+                }))
             }
-            UpdateOneof::Slot(_) => None,
+            UpdateOneof::Slot(msg) => Some(DedupKey::Slot(SlotStatusKey {
+                slot: msg.slot,
+                status: msg.status,
+            })),
             UpdateOneof::Transaction(msg) => {
                 msg.transaction
                     .as_ref()
@@ -895,14 +990,18 @@ impl DedupState {
                         index: tx_info.index,
                     })
             }
-            UpdateOneof::TransactionStatus(msg) => Some(DedupKey::Transaction { index: msg.index }),
-            UpdateOneof::BlockMeta(_)
-            | UpdateOneof::Block(_)
-            | UpdateOneof::BlockFooter(_)
-            | UpdateOneof::EntryUpdateParent(_)
-            | UpdateOneof::Ping(_)
-            | UpdateOneof::Pong(_) => None,
+            UpdateOneof::TransactionStatus(msg) => {
+                Some(DedupKey::TransactionStatus { index: msg.index })
+            }
             UpdateOneof::Entry(msg) => Some(DedupKey::Entry { index: msg.index }),
+            UpdateOneof::EntryUpdateParent(msg) => Some(DedupKey::EntryUpdateParent {
+                cleared_bank_id: msg.cleared_bank_id,
+            }),
+            UpdateOneof::Block(_) => Some(DedupKey::Block),
+            // `pipelined_downloader` holds the block meta and footer back before dedup runs,
+            // so they never get here; they are kept per block in its completion instead.
+            UpdateOneof::BlockMeta(_) | UpdateOneof::BlockFooter(_) => None,
+            UpdateOneof::Ping(_) | UpdateOneof::Pong(_) => None,
         }
     }
 }
@@ -2544,18 +2643,241 @@ mod tests {
         assert!(!dedup_state.dedup(fork_block_uid, 0, &update));
     }
 
+    /// Builds an account update written outside any transaction, like the Clock sysvar.
+    fn mk_account_without_txn(slot: Slot, pubkey: [u8; 32], write_version: u64) -> UpdateOneof {
+        UpdateOneof::Account(geyser::SubscribeUpdateAccount {
+            account: Some(geyser::SubscribeUpdateAccountInfo {
+                pubkey: pubkey.to_vec(),
+                write_version,
+                txn_signature: None,
+                ..Default::default()
+            }),
+            slot,
+            is_startup: false,
+            bank_id: Some(1),
+        })
+    }
+
+    fn mk_transaction(slot: Slot, index: u64) -> UpdateOneof {
+        UpdateOneof::Transaction(geyser::SubscribeUpdateTransaction {
+            transaction: Some(geyser::SubscribeUpdateTransactionInfo {
+                index,
+                ..Default::default()
+            }),
+            slot,
+            bank_id: 1,
+        })
+    }
+
+    fn mk_transaction_status(slot: Slot, index: u64) -> UpdateOneof {
+        UpdateOneof::TransactionStatus(geyser::SubscribeUpdateTransactionStatus {
+            slot,
+            index,
+            ..Default::default()
+        })
+    }
+
     #[tokio::test]
-    async fn dedup_state_skips_non_keyed_updates_by_default() {
+    async fn dedup_state_forwards_account_writes_with_distinct_write_versions() {
         let mut dedup_state = DedupState::default();
-        let update = UpdateOneof::Slot(SubscribeUpdateSlot {
+        let block_uid = [42u8; 16];
+        // The Clock sysvar written at bank creation and again from the footer: same pubkey,
+        // no transaction signature, different write versions.
+        let first_write = mk_account_without_txn(42, [6u8; 32], 100);
+        let second_write = mk_account_without_txn(42, [6u8; 32], 101);
+
+        assert!(!dedup_state.dedup(block_uid, 0, &first_write));
+        assert!(!dedup_state.dedup(block_uid, 0, &second_write));
+    }
+
+    #[tokio::test]
+    async fn dedup_state_skips_repeated_account_write() {
+        let mut dedup_state = DedupState::default();
+        let block_uid = [42u8; 16];
+        let write = mk_account_without_txn(42, [6u8; 32], 100);
+
+        assert!(!dedup_state.dedup(block_uid, 0, &write));
+        assert!(dedup_state.dedup(block_uid, 0, &write));
+    }
+
+    #[tokio::test]
+    async fn dedup_state_forwards_account_write_with_malformed_pubkey() {
+        let mut dedup_state = DedupState::default();
+        let block_uid = [42u8; 16];
+        let mut write = mk_account_without_txn(42, [6u8; 32], 100);
+        let UpdateOneof::Account(msg) = &mut write else {
+            unreachable!("mk_account_without_txn builds an account update");
+        };
+        msg.account.as_mut().unwrap().pubkey = vec![6u8; 31];
+
+        // No key to dedup on: every copy is forwarded.
+        assert!(!dedup_state.dedup(block_uid, 0, &write));
+        assert!(!dedup_state.dedup(block_uid, 0, &write));
+    }
+
+    #[tokio::test]
+    async fn dedup_state_keeps_transaction_and_transaction_status_apart() {
+        let mut dedup_state = DedupState::default();
+        let block_uid = [42u8; 16];
+        let status = mk_transaction_status(42, 5);
+        let transaction = mk_transaction(42, 5);
+
+        assert!(!dedup_state.dedup(block_uid, 0, &status));
+        assert!(!dedup_state.dedup(block_uid, 0, &transaction));
+        assert!(dedup_state.dedup(block_uid, 0, &status));
+        assert!(dedup_state.dedup(block_uid, 0, &transaction));
+    }
+
+    #[tokio::test]
+    async fn dedup_state_forwards_entry_update_parent_once() {
+        let mut dedup_state = DedupState::default();
+        let block_uid = [42u8; 16];
+        let update_parent =
+            UpdateOneof::EntryUpdateParent(geyser::SubscribeUpdateEntryUpdateParent {
+                slot: 42,
+                cleared_bank_id: 7,
+                parent_slot: 40,
+                parent_block_id: vec![1u8; 32],
+            });
+        let other_update_parent =
+            UpdateOneof::EntryUpdateParent(geyser::SubscribeUpdateEntryUpdateParent {
+                slot: 42,
+                cleared_bank_id: 8,
+                parent_slot: 40,
+                parent_block_id: vec![1u8; 32],
+            });
+
+        assert!(!dedup_state.dedup(block_uid, 0, &update_parent));
+        assert!(dedup_state.dedup(block_uid, 0, &update_parent));
+        assert!(!dedup_state.dedup(block_uid, 0, &other_update_parent));
+    }
+
+    #[tokio::test]
+    async fn dedup_state_always_forwards_ping_and_pong() {
+        let mut dedup_state = DedupState::default();
+        let block_uid = [42u8; 16];
+        let ping = UpdateOneof::Ping(geyser::SubscribeUpdatePing {});
+        let pong = UpdateOneof::Pong(geyser::SubscribeUpdatePong { id: 3 });
+
+        for _ in 0..2 {
+            assert!(!dedup_state.dedup(block_uid, 0, &ping));
+            assert!(!dedup_state.dedup(block_uid, 0, &pong));
+        }
+    }
+
+    #[tokio::test]
+    async fn dedup_state_forwards_slot_update_once() {
+        let mut dedup_state = DedupState::default();
+        let block_uid = [42u8; 16];
+        let mk_slot = |status| {
+            UpdateOneof::Slot(SubscribeUpdateSlot {
+                slot: 42,
+                parent: Some(41),
+                status,
+                dead_error: None,
+                bank_id: None,
+            })
+        };
+
+        assert!(!dedup_state.dedup(block_uid, 0, &mk_slot(1)));
+        assert!(dedup_state.dedup(block_uid, 0, &mk_slot(1)));
+        // Another status of the same slot is a distinct update.
+        assert!(!dedup_state.dedup(block_uid, 0, &mk_slot(2)));
+    }
+
+    #[tokio::test]
+    async fn dedup_state_forwards_block_update_once() {
+        let mut dedup_state = DedupState::default();
+        let block_uid = [42u8; 16];
+        let block = UpdateOneof::Block(geyser::SubscribeUpdateBlock {
             slot: 42,
-            parent: Some(41),
-            status: 1,
-            dead_error: Some(String::new()),
-            bank_id: None,
+            ..Default::default()
         });
 
-        assert!(dedup_state.dedup([42u8; 16], 0, &update));
+        assert!(!dedup_state.dedup(block_uid, 0, &block));
+        assert!(dedup_state.dedup(block_uid, 0, &block));
+    }
+
+    #[tokio::test]
+    async fn pipelined_downloader_forwards_each_clock_write_once_across_a_retried_shard() {
+        const SLOT: Slot = 50;
+        const CLOCK_PUBKEY: [u8; 32] = [6u8; 32];
+        let block_uid = [4u8; 16];
+        let bank_id = FumeBankId::new(SLOT, None);
+        let (outlet_tx, mut outlet_rx) =
+            futures_mpsc::unbounded::<Result<FumaroleRuntimeEvent, FumaroleSubscribeError>>();
+        let (completed_tx, mut completed_rx) = mpsc::channel(4);
+        let scheduled_shard_rx = || {
+            let (scheduled_tx, scheduled_rx) = mpsc::unbounded_channel();
+            scheduled_tx
+                .send(ScheduledShardCtx {
+                    bank_id: bank_id.clone(),
+                    block_uid,
+                    shard_idx: 0,
+                })
+                .expect("send scheduled shard ctx");
+            scheduled_rx
+        };
+
+        // First attempt: both Clock writes arrive, then the connection drops.
+        let first_attempt = tokio_stream::iter(vec![
+            Ok(mk_update(mk_account_without_txn(SLOT, CLOCK_PUBKEY, 100))),
+            Ok(mk_update(mk_account_without_txn(SLOT, CLOCK_PUBKEY, 101))),
+            Err(DataplaneStreamError::from(tonic::Status::unavailable(
+                "connection dropped",
+            ))),
+        ]);
+        let result = PipelinedShardDownloader::pipelined_downloader(
+            first_attempt,
+            outlet_tx.clone(),
+            completed_tx.clone(),
+            DedupState::default(),
+            scheduled_shard_rx(),
+        )
+        .await;
+        let Err((ShardDownloaderErrorKind::DataplaneError(_), dedup_state)) = result else {
+            panic!("expected the first attempt to fail")
+        };
+
+        // The retry downloads the shard again from the start; the server's merged streams
+        // may deliver the writes in another order.
+        let retry = tokio_stream::iter(vec![
+            Ok(mk_update(mk_account_without_txn(SLOT, CLOCK_PUBKEY, 101))),
+            Ok(mk_update(mk_account_without_txn(SLOT, CLOCK_PUBKEY, 100))),
+            Ok(mk_footer(block_uid, SLOT, 0)),
+        ]);
+        let result = PipelinedShardDownloader::pipelined_downloader(
+            retry,
+            outlet_tx,
+            completed_tx,
+            dedup_state,
+            scheduled_shard_rx(),
+        )
+        .await;
+        assert!(matches!(result, Ok((None, _))));
+
+        let mut forwarded_write_versions = Vec::new();
+        while let Some(event) = outlet_rx.next().await {
+            let Ok(FumaroleRuntimeEvent::Data(FumaroleRuntimeDataEvent {
+                bank_id: event_bank_id,
+                update,
+            })) = event
+            else {
+                panic!("expected data event")
+            };
+            assert_eq!(event_bank_id, bank_id);
+            let Some(UpdateOneof::Account(account)) = update.update_oneof else {
+                panic!("expected account update")
+            };
+            let account_info = account.account.expect("account info");
+            assert_eq!(account_info.pubkey, CLOCK_PUBKEY.to_vec());
+            forwarded_write_versions.push(account_info.write_version);
+        }
+        assert_eq!(forwarded_write_versions, vec![100, 101]);
+
+        let completed = completed_rx.recv().await.expect("shard completion");
+        assert_eq!(completed.block_uid, block_uid);
+        assert_eq!(completed.shard_idx, 0);
     }
 
     #[tokio::test]

@@ -18,7 +18,7 @@ name = "dragonsmouth"
 [dependencies]
 bs58 = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-serde_yaml = { workspace = true }
+serde-saphyr = { workspace = true }
 solana-pubkey = { workspace = true }
 solana-signature = { workspace = true }
 thiserror = { workspace = true }

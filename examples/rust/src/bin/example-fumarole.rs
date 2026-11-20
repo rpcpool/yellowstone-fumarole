@@ -111,7 +111,7 @@ async fn main() {
     let args: Args = Args::parse();
     let config = std::fs::read_to_string(&args.config).expect("Failed to read config file");
     let config: FumaroleConfig =
-        serde_yaml::from_str(&config).expect("Failed to parse config file");
+        serde_saphyr::from_str(&config).expect("Failed to parse config file");
 
     match args.action {
         Action::Subscribe(sub_args) => {

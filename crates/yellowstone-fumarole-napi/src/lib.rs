@@ -104,23 +104,39 @@ fn grpc_err(status: tonic::Status) -> Error {
     ))
 }
 
+/// Builds the Rust client's [`RustFumaroleConfig`] from the options passed from JavaScript.
+///
+/// The options go through [`RustFumaroleConfig`]'s `Deserialize` impl rather than a struct
+/// literal, so every field the options leave out gets the same default as in a YAML config
+/// file.
+///
+/// # Arguments
+///
+/// * `options` - The [`FumaroleConfigOptions`] passed from JavaScript.
+///
+/// # Returns
+///
+/// The [`RustFumaroleConfig`] the options describe.
+///
+/// # Errors
+///
+/// Returns an [`Error`] if the options don't deserialize into a [`RustFumaroleConfig`].
 fn to_rust_config(options: FumaroleConfigOptions) -> Result<RustFumaroleConfig> {
-    use serde_yaml::Value;
-    let mut map = serde_yaml::Mapping::new();
+    let mut map = serde_json::Map::new();
     map.insert(
-        Value::String("endpoint".to_string()),
-        Value::String(options.endpoint),
+        "endpoint".to_string(),
+        serde_json::Value::String(options.endpoint),
     );
     if let Some(token) = options.x_token {
-        map.insert(Value::String("x-token".to_string()), Value::String(token));
+        map.insert("x-token".to_string(), serde_json::Value::String(token));
     }
     if let Some(max_size) = options.max_decoding_message_size_bytes {
         map.insert(
-            Value::String("max_decoding_message_size_bytes".to_string()),
-            Value::Number(max_size.into()),
+            "max_decoding_message_size_bytes".to_string(),
+            serde_json::Value::Number(max_size.into()),
         );
     }
-    serde_yaml::from_value(Value::Mapping(map)).map_err(napi_err)
+    serde_json::from_value(serde_json::Value::Object(map)).map_err(napi_err)
 }
 
 fn to_rust_subscribe_config(
@@ -437,5 +453,41 @@ impl FumaroleClient {
             .map_err(grpc_err)?
             .into_inner();
         Ok(Buffer::from(response.encode_to_vec()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_rust_config_carries_every_option() {
+        let config = to_rust_config(FumaroleConfigOptions {
+            endpoint: "https://fumarole.example:443".to_string(),
+            x_token: Some("some-token".to_string()),
+            max_decoding_message_size_bytes: Some(1_000),
+        })
+        .expect("valid options");
+
+        assert_eq!(config.endpoint, "https://fumarole.example:443");
+        assert_eq!(config.x_token, Some("some-token".to_string()));
+        assert_eq!(config.max_decoding_message_size_bytes, 1_000);
+    }
+
+    #[test]
+    fn to_rust_config_applies_config_file_defaults_to_missing_options() {
+        let config = to_rust_config(FumaroleConfigOptions {
+            endpoint: "https://fumarole.example:443".to_string(),
+            x_token: None,
+            max_decoding_message_size_bytes: None,
+        })
+        .expect("valid options");
+
+        assert_eq!(config.x_token, None);
+        assert_eq!(
+            config.max_decoding_message_size_bytes,
+            RustFumaroleConfig::default_max_decoding_message_size_bytes()
+        );
+        assert!(config.x_metadata.is_empty());
     }
 }

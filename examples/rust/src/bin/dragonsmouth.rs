@@ -547,7 +547,7 @@ async fn main() {
     let config_path = args.config;
     let config = std::fs::read_to_string(config_path).expect("Failed to read config file");
     let config: FumaroleConfig =
-        serde_yaml::from_str(&config).expect("Failed to parse config file");
+        serde_saphyr::from_str(&config).expect("Failed to parse config file");
 
     let endpoint = config.endpoint;
 
